@@ -12,6 +12,9 @@ ALTER TABLE worker_metrics ADD COLUMN IF NOT EXISTS container_running_count INT 
 ALTER TABLE worker_metrics ADD COLUMN IF NOT EXISTS uptime_seconds FLOAT AFTER network_tx_bytes;
 ALTER TABLE worker_metrics ADD COLUMN IF NOT EXISTS process_count INT AFTER uptime_seconds;
 
+-- 002: Add runner_version to workers table
+ALTER TABLE workers ADD COLUMN IF NOT EXISTS runner_version VARCHAR(50) AFTER docker_version;
+
 -- 002: Remove keyring_secret_key from registries (Lattice is self-contained)
 ALTER TABLE registries DROP COLUMN IF EXISTS keyring_secret_key;
 ALTER TABLE registries DROP COLUMN IF EXISTS auth_config;

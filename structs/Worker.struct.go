@@ -11,6 +11,7 @@ type Worker struct {
 	OS              *string    `json:"os"`
 	Arch            *string    `json:"arch"`
 	DockerVersion   *string    `json:"docker_version"`
+	RunnerVersion   *string    `json:"runner_version"`
 	LastHeartbeatAt *time.Time `json:"last_heartbeat_at"`
 	Labels          *string    `json:"labels"`
 	Active          bool       `json:"active"`

@@ -27,7 +27,11 @@ import (
 //go:embed install/runner.sh
 var installRunnerScript []byte
 
+// Set via -ldflags at build time: -ldflags "-X main.Version=abc1234"
+var Version = "v0.0.1"
+
 func main() {
+	fmt.Printf("Lattice API %s\n\n", Version)
 	routers.InstallScript = installRunnerScript
 
 	// 1. Database
@@ -119,7 +123,8 @@ func main() {
 			arch, _ := msg.Payload["arch"].(string)
 			dockerVersion, _ := msg.Payload["docker_version"].(string)
 			ipAddress, _ := msg.Payload["ip_address"].(string)
-			_ = query.UpdateWorkerInfo(db.DB, session.WorkerID, osStr, arch, dockerVersion, ipAddress)
+			runnerVersion, _ := msg.Payload["runner_version"].(string)
+			_ = query.UpdateWorkerInfo(db.DB, session.WorkerID, osStr, arch, dockerVersion, ipAddress, runnerVersion)
 
 		case socket.MsgDeploymentProgress:
 			adminHub.BroadcastJSON(map[string]any{
@@ -166,6 +171,12 @@ func main() {
 
 	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("Lattice API"))
+	}).Methods(http.MethodGet)
+
+	// Version (public)
+	r.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"version":"%s"}`, Version)
 	}).Methods(http.MethodGet)
 
 	// Install script (public)

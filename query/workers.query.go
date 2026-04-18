@@ -18,6 +18,7 @@ var workerColumns = []string{
 	"workers.os",
 	"workers.arch",
 	"workers.docker_version",
+	"workers.runner_version",
 	"workers.last_heartbeat_at",
 	"workers.labels",
 	"workers.active",
@@ -36,6 +37,7 @@ func scanWorker(row scanner) (*structs.Worker, error) {
 		&w.OS,
 		&w.Arch,
 		&w.DockerVersion,
+		&w.RunnerVersion,
 		&w.LastHeartbeatAt,
 		&w.Labels,
 		&w.Active,
@@ -210,10 +212,10 @@ func UpdateWorkerHeartbeat(engine db.Queryable, workerID int, status string) err
 	return err
 }
 
-func UpdateWorkerInfo(engine db.Queryable, workerID int, os, arch, dockerVersion, ipAddress string) error {
+func UpdateWorkerInfo(engine db.Queryable, workerID int, os, arch, dockerVersion, ipAddress, runnerVersion string) error {
 	_, err := engine.Exec(
-		"UPDATE workers SET os = ?, arch = ?, docker_version = ?, ip_address = ? WHERE id = ?",
-		os, arch, dockerVersion, ipAddress, workerID,
+		"UPDATE workers SET os = ?, arch = ?, docker_version = ?, ip_address = ?, runner_version = ? WHERE id = ?",
+		os, arch, dockerVersion, ipAddress, runnerVersion, workerID,
 	)
 	return err
 }
