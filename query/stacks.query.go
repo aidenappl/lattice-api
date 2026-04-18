@@ -55,6 +55,8 @@ func ListStacks(engine db.Queryable, req ListStacksRequest) (*[]structs.Stack, e
 
 	if req.Active != nil {
 		q = q.Where(sq.Eq{"stacks.active": *req.Active})
+	} else {
+		q = q.Where(sq.Eq{"stacks.active": true})
 	}
 	if req.WorkerID != nil {
 		q = q.Where(sq.Eq{"stacks.worker_id": *req.WorkerID})
@@ -97,7 +99,7 @@ func ListStacks(engine db.Queryable, req ListStacksRequest) (*[]structs.Stack, e
 }
 
 func GetStackByID(engine db.Queryable, id int) (*structs.Stack, error) {
-	q := sq.Select(stackColumns...).From("stacks").Where(sq.Eq{"stacks.id": id})
+	q := sq.Select(stackColumns...).From("stacks").Where(sq.Eq{"stacks.id": id, "stacks.active": true})
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

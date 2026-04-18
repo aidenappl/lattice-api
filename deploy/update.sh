@@ -31,9 +31,9 @@ if [ -f "$INSTALL_DIR/.env" ]; then
     set +a
 fi
 
-# Pull latest images
+# Pull latest app images (skip mariadb — only re-pull if image tag changes in compose)
 echo "Pulling latest images..."
-sudo docker compose --env-file .env pull
+sudo docker compose --env-file .env pull lattice-api lattice-web
 echo ""
 
 # Download latest migrations
@@ -80,9 +80,9 @@ for file in $(ls "$INSTALL_DIR/migrations"/*.sql | sort); do
 done
 echo ""
 
-# Restart services with new images
+# Restart app services with new images (mariadb only restarts if its config changed)
 echo "Restarting services..."
-sudo docker compose --env-file .env up -d --force-recreate
+sudo docker compose --env-file .env up -d --force-recreate lattice-api lattice-web
 echo ""
 
 # Show status

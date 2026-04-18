@@ -28,7 +28,7 @@ import (
 var installRunnerScript []byte
 
 // Set via -ldflags at build time: -ldflags "-X main.Version=abc1234"
-var Version = "v0.0.4"
+var Version = "v0.0.5"
 
 func main() {
 	fmt.Printf("Lattice API %s\n\n", Version)
@@ -140,6 +140,7 @@ func main() {
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
+			go handleContainerStatus(msg.Payload)
 
 		case socket.MsgContainerLogs:
 			adminHub.BroadcastJSON(map[string]any{
@@ -428,6 +429,56 @@ func handleDeploymentProgress(payload map[string]any) {
 		if err := query.UpdateDeploymentStatus(db.DB, int(deploymentID), status); err != nil {
 			log.Printf("failed to update deployment=%d status: %v", int(deploymentID), err)
 		}
+
+		// On terminal states, update all containers in the deployment
+		if status == "deployed" || status == "failed" {
+			containerStatus := "running"
+			if status == "failed" {
+				containerStatus = "error"
+			}
+			dcs, err := query.ListDeploymentContainers(db.DB, int(deploymentID))
+			if err != nil {
+				log.Printf("failed to list deployment containers for status update: %v", err)
+			} else if dcs != nil {
+				for _, dc := range *dcs {
+					s := containerStatus
+					_, _ = query.UpdateContainer(db.DB, dc.ContainerID, query.UpdateContainerRequest{Status: &s})
+				}
+			}
+		}
+	}
+}
+
+func handleContainerStatus(payload map[string]any) {
+	containerName, _ := payload["container_name"].(string)
+	action, _ := payload["action"].(string)
+	status, _ := payload["status"].(string)
+
+	if containerName == "" || status != "success" {
+		return
+	}
+
+	// Map action to container DB status
+	var dbStatus string
+	switch action {
+	case "stop", "remove":
+		dbStatus = "stopped"
+	case "restart", "recreate":
+		dbStatus = "running"
+	default:
+		return
+	}
+
+	c, err := query.GetContainerByName(db.DB, containerName)
+	if err != nil {
+		log.Printf("container status: could not find container %q: %v", containerName, err)
+		return
+	}
+
+	if _, err := query.UpdateContainer(db.DB, c.ID, query.UpdateContainerRequest{Status: &dbStatus}); err != nil {
+		log.Printf("container status: failed to update %q to %s: %v", containerName, dbStatus, err)
+	} else {
+		log.Printf("container status: %s → %s", containerName, dbStatus)
 	}
 }
 
