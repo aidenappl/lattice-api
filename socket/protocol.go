@@ -7,18 +7,24 @@ import (
 
 // Worker -> Orchestrator message types
 const (
-	MsgHeartbeat          = "heartbeat"
-	MsgContainerStatus    = "container_status"
-	MsgDeploymentProgress = "deployment_progress"
-	MsgContainerLogs      = "container_logs"
-	MsgRegistration       = "registration"
+	MsgHeartbeat             = "heartbeat"
+	MsgContainerStatus       = "container_status"
+	MsgContainerHealthStatus = "container_health_status"
+	MsgContainerSync         = "container_sync"
+	MsgDeploymentProgress    = "deployment_progress"
+	MsgContainerLogs         = "container_logs"
+	MsgRegistration          = "registration"
 )
 
 // Orchestrator -> Worker message types
 const (
 	MsgDeploy        = "deploy"
+	MsgStart         = "start"
 	MsgStop          = "stop"
+	MsgKill          = "kill"
 	MsgRestart       = "restart"
+	MsgPause         = "pause"
+	MsgUnpause       = "unpause"
 	MsgRemove        = "remove"
 	MsgRecreate      = "recreate"
 	MsgPullImage     = "pull_image"

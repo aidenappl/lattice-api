@@ -31,6 +31,7 @@ func HandleCreateContainer(w http.ResponseWriter, r *http.Request) {
 		RestartPolicy *string  `json:"restart_policy"`
 		Command       *string  `json:"command"`
 		Entrypoint    *string  `json:"entrypoint"`
+		HealthCheck   *string  `json:"health_check"`
 		RegistryID    *int     `json:"registry_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -66,6 +67,7 @@ func HandleCreateContainer(w http.ResponseWriter, r *http.Request) {
 		RestartPolicy: body.RestartPolicy,
 		Command:       body.Command,
 		Entrypoint:    body.Entrypoint,
+		HealthCheck:   body.HealthCheck,
 		RegistryID:    body.RegistryID,
 	})
 	if err != nil {

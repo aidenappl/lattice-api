@@ -28,7 +28,7 @@ import (
 var installRunnerScript []byte
 
 // Set via -ldflags at build time: -ldflags "-X main.Version=abc1234"
-var Version = "v0.0.9"
+var Version = "v0.1.0"
 
 func main() {
 	fmt.Printf("Lattice API %s\n\n", Version)
@@ -142,6 +142,17 @@ func main() {
 			})
 			go handleContainerStatus(msg.Payload)
 
+		case socket.MsgContainerHealthStatus:
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "container_health_status",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
+			go handleContainerHealthStatus(msg.Payload)
+
+		case socket.MsgContainerSync:
+			go handleContainerSync(msg.Payload)
+
 		case socket.MsgContainerLogs:
 			adminHub.BroadcastJSON(map[string]any{
 				"type":      "container_logs",
@@ -235,18 +246,24 @@ func main() {
 	admin.HandleFunc("/stacks/import", routers.HandleImportCompose).Methods(http.MethodPost)
 	admin.HandleFunc("/stacks/{id}", routers.HandleGetStack).Methods(http.MethodGet)
 	admin.HandleFunc("/stacks/{id}", routers.HandleUpdateStack).Methods(http.MethodPut)
-	admin.HandleFunc("/stacks/{id}", routers.HandleDeleteStack).Methods(http.MethodDelete)
+	admin.HandleFunc("/stacks/{id}", containerActionHandler.HandleDeleteStack).Methods(http.MethodDelete)
 	admin.HandleFunc("/stacks/{id}/compose", routers.HandleUpdateCompose).Methods(http.MethodPut)
 	admin.HandleFunc("/stacks/{id}/deploy", deployHandler.HandleDeployStack).Methods(http.MethodPost)
 
 	// Containers
+	admin.HandleFunc("/containers", routers.HandleListAllContainers).Methods(http.MethodGet)
 	admin.HandleFunc("/stacks/{id}/containers", routers.HandleGetContainers).Methods(http.MethodGet)
 	admin.HandleFunc("/stacks/{id}/containers", routers.HandleCreateContainer).Methods(http.MethodPost)
+	admin.HandleFunc("/containers/{id}", routers.HandleGetContainer).Methods(http.MethodGet)
 	admin.HandleFunc("/containers/{id}", routers.HandleUpdateContainer).Methods(http.MethodPut)
-	admin.HandleFunc("/containers/{id}", routers.HandleDeleteContainer).Methods(http.MethodDelete)
+	admin.HandleFunc("/containers/{id}", containerActionHandler.HandleDeleteContainer).Methods(http.MethodDelete)
 	admin.HandleFunc("/containers/{id}/logs", routers.HandleGetContainerLogs).Methods(http.MethodGet)
+	admin.HandleFunc("/containers/{id}/start", containerActionHandler.HandleStartContainer).Methods(http.MethodPost)
 	admin.HandleFunc("/containers/{id}/stop", containerActionHandler.HandleStopContainer).Methods(http.MethodPost)
+	admin.HandleFunc("/containers/{id}/kill", containerActionHandler.HandleKillContainer).Methods(http.MethodPost)
 	admin.HandleFunc("/containers/{id}/restart", containerActionHandler.HandleRestartContainer).Methods(http.MethodPost)
+	admin.HandleFunc("/containers/{id}/pause", containerActionHandler.HandlePauseContainer).Methods(http.MethodPost)
+	admin.HandleFunc("/containers/{id}/unpause", containerActionHandler.HandleUnpauseContainer).Methods(http.MethodPost)
 	admin.HandleFunc("/containers/{id}/remove", containerActionHandler.HandleRemoveContainer).Methods(http.MethodPost)
 	admin.HandleFunc("/containers/{id}/recreate", containerActionHandler.HandleRecreateContainer).Methods(http.MethodPost)
 
@@ -503,10 +520,64 @@ func handleContainerStatus(payload map[string]any) {
 		return
 	}
 
-	if _, err := query.UpdateContainer(db.DB, c.ID, query.UpdateContainerRequest{Status: &dbStatus}); err != nil {
+	req := query.UpdateContainerRequest{Status: &dbStatus}
+	// On recreate/restart, reset health_status to "starting" if the container has a healthcheck.
+	if (action == "recreate" || action == "restart") && c.HealthCheck != nil {
+		hs := "starting"
+		req.HealthStatus = &hs
+	}
+
+	if _, err := query.UpdateContainer(db.DB, c.ID, req); err != nil {
 		log.Printf("container status: failed to update %q to %s: %v", containerName, dbStatus, err)
 	} else {
 		log.Printf("container status: %s → %s", containerName, dbStatus)
+	}
+}
+
+// handleContainerHealthStatus processes health_status messages from workers.
+func handleContainerHealthStatus(payload map[string]any) {
+	containerName, _ := payload["container_name"].(string)
+	healthStatus, _ := payload["health_status"].(string)
+	if containerName == "" || healthStatus == "" {
+		return
+	}
+
+	c, err := query.GetContainerByName(db.DB, containerName)
+	if err != nil {
+		log.Printf("container health: could not find container %q: %v", containerName, err)
+		return
+	}
+
+	if _, err := query.UpdateContainer(db.DB, c.ID, query.UpdateContainerRequest{HealthStatus: &healthStatus}); err != nil {
+		log.Printf("container health: failed to update %q health_status to %s: %v", containerName, healthStatus, err)
+	} else {
+		log.Printf("container health: %s → %s", containerName, healthStatus)
+	}
+}
+
+// handleContainerSync reconciles live Docker state sent every heartbeat.
+// It only writes to DB if the state differs from what is stored.
+func handleContainerSync(payload map[string]any) {
+	containerName, _ := payload["container_name"].(string)
+	latticeStatus, _ := payload["status"].(string)
+	if containerName == "" || latticeStatus == "" {
+		return
+	}
+
+	c, err := query.GetContainerByName(db.DB, containerName)
+	if err != nil {
+		// Container not managed by Lattice — ignore
+		return
+	}
+
+	if c.Status == latticeStatus {
+		return
+	}
+
+	if _, err := query.UpdateContainer(db.DB, c.ID, query.UpdateContainerRequest{Status: &latticeStatus}); err != nil {
+		log.Printf("container sync: failed to update %q to %s: %v", containerName, latticeStatus, err)
+	} else {
+		log.Printf("container sync: %s → %s (was %s)", containerName, latticeStatus, c.Status)
 	}
 }
 

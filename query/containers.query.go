@@ -24,6 +24,8 @@ var containerColumns = []string{
 	"containers.restart_policy",
 	"containers.command",
 	"containers.entrypoint",
+	"containers.health_check",
+	"containers.health_status",
 	"containers.registry_id",
 	"containers.active",
 	"containers.updated_at",
@@ -48,6 +50,8 @@ func scanContainer(row scanner) (*structs.Container, error) {
 		&c.RestartPolicy,
 		&c.Command,
 		&c.Entrypoint,
+		&c.HealthCheck,
+		&c.HealthStatus,
 		&c.RegistryID,
 		&c.Active,
 		&c.UpdatedAt,
@@ -62,6 +66,45 @@ func ListContainersByStack(engine db.Queryable, stackID int) (*[]structs.Contain
 		Where(sq.Eq{"containers.stack_id": stackID}).
 		Where(sq.Eq{"containers.active": true}).
 		OrderBy("containers.id ASC")
+
+	qStr, args, err := q.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build sql query: %w", err)
+	}
+
+	rows, err := engine.Query(qStr, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute sql query: %w", err)
+	}
+	defer rows.Close()
+
+	var containers []structs.Container
+	for rows.Next() {
+		c, err := scanContainer(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan container: %w", err)
+		}
+		containers = append(containers, *c)
+	}
+
+	return &containers, rows.Err()
+}
+
+// ListAllContainers returns all active containers, optionally filtered by stackID or workerID
+// (workerID is resolved through the stack→worker relationship).
+func ListAllContainers(engine db.Queryable, stackID *int, workerID *int) (*[]structs.Container, error) {
+	q := sq.Select(containerColumns...).
+		From("containers").
+		Where(sq.Eq{"containers.active": true}).
+		OrderBy("containers.stack_id ASC, containers.id ASC")
+
+	if stackID != nil {
+		q = q.Where(sq.Eq{"containers.stack_id": *stackID})
+	}
+	if workerID != nil {
+		q = q.Join("stacks ON stacks.id = containers.stack_id").
+			Where(sq.Eq{"stacks.worker_id": *workerID})
+	}
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
@@ -117,15 +160,16 @@ type CreateContainerRequest struct {
 	RestartPolicy *string
 	Command       *string
 	Entrypoint    *string
+	HealthCheck   *string
 	RegistryID    *int
 }
 
 func CreateContainer(engine db.Queryable, req CreateContainerRequest) (*structs.Container, error) {
 	q := sq.Insert("containers").
 		Columns("stack_id", "name", "image", "tag", "port_mappings", "env_vars", "volumes",
-			"cpu_limit", "memory_limit", "replicas", "restart_policy", "command", "entrypoint", "registry_id").
+			"cpu_limit", "memory_limit", "replicas", "restart_policy", "command", "entrypoint", "health_check", "registry_id").
 		Values(req.StackID, req.Name, req.Image, req.Tag, req.PortMappings, req.EnvVars, req.Volumes,
-			req.CPULimit, req.MemoryLimit, req.Replicas, req.RestartPolicy, req.Command, req.Entrypoint, req.RegistryID)
+			req.CPULimit, req.MemoryLimit, req.Replicas, req.RestartPolicy, req.Command, req.Entrypoint, req.HealthCheck, req.RegistryID)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
@@ -159,6 +203,8 @@ type UpdateContainerRequest struct {
 	RestartPolicy *string
 	Command       *string
 	Entrypoint    *string
+	HealthCheck   *string
+	HealthStatus  *string
 	RegistryID    *int
 	Active        *bool
 }
@@ -217,6 +263,14 @@ func UpdateContainer(engine db.Queryable, id int, req UpdateContainerRequest) (*
 	}
 	if req.Entrypoint != nil {
 		q = q.Set("entrypoint", *req.Entrypoint)
+		hasUpdate = true
+	}
+	if req.HealthCheck != nil {
+		q = q.Set("health_check", *req.HealthCheck)
+		hasUpdate = true
+	}
+	if req.HealthStatus != nil {
+		q = q.Set("health_status", *req.HealthStatus)
 		hasUpdate = true
 	}
 	if req.RegistryID != nil {

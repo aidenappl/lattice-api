@@ -18,6 +18,8 @@ type Container struct {
 	RestartPolicy *string   `json:"restart_policy"`
 	Command       *string   `json:"command"`
 	Entrypoint    *string   `json:"entrypoint"`
+	HealthCheck   *string   `json:"health_check"`
+	HealthStatus  string    `json:"health_status"`
 	RegistryID    *int      `json:"registry_id"`
 	Active        bool      `json:"active"`
 	UpdatedAt     time.Time `json:"updated_at"`

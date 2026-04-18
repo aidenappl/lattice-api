@@ -134,6 +134,14 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 				spec["entrypoint"] = ep
 			}
 		}
+		if c.HealthCheck != nil {
+			var hc map[string]any
+			if err := json.Unmarshal([]byte(*c.HealthCheck), &hc); err != nil {
+				log.Printf("invalid health_check JSON for container %s: %v", c.Name, err)
+			} else {
+				spec["health_check"] = hc
+			}
+		}
 
 		// Resolve registry credentials
 		if c.RegistryID != nil {
