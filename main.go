@@ -28,7 +28,7 @@ import (
 var installRunnerScript []byte
 
 // Set via -ldflags at build time: -ldflags "-X main.Version=abc1234"
-var Version = "v0.0.2"
+var Version = "v0.0.3"
 
 func main() {
 	fmt.Printf("Lattice API %s\n\n", Version)
