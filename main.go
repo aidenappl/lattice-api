@@ -307,33 +307,45 @@ func main() {
 func handleHeartbeatMetrics(workerID int, payload map[string]any) {
 	req := query.CreateMetricsRequest{WorkerID: workerID}
 
-	if v, ok := payload["cpu_percent"].(float64); ok {
-		req.CPUPercent = &v
+	extractFloat := func(key string) *float64 {
+		if v, ok := payload[key].(float64); ok {
+			return &v
+		}
+		return nil
 	}
-	if v, ok := payload["memory_used_mb"].(float64); ok {
-		req.MemoryUsedMB = &v
+	extractInt := func(key string) *int {
+		if v, ok := payload[key].(float64); ok {
+			i := int(v)
+			return &i
+		}
+		return nil
 	}
-	if v, ok := payload["memory_total_mb"].(float64); ok {
-		req.MemoryTotalMB = &v
+	extractInt64 := func(key string) *int64 {
+		if v, ok := payload[key].(float64); ok {
+			i := int64(v)
+			return &i
+		}
+		return nil
 	}
-	if v, ok := payload["disk_used_mb"].(float64); ok {
-		req.DiskUsedMB = &v
-	}
-	if v, ok := payload["disk_total_mb"].(float64); ok {
-		req.DiskTotalMB = &v
-	}
-	if v, ok := payload["container_count"].(float64); ok {
-		count := int(v)
-		req.ContainerCount = &count
-	}
-	if v, ok := payload["network_rx_bytes"].(float64); ok {
-		rx := int64(v)
-		req.NetworkRxBytes = &rx
-	}
-	if v, ok := payload["network_tx_bytes"].(float64); ok {
-		tx := int64(v)
-		req.NetworkTxBytes = &tx
-	}
+
+	req.CPUPercent = extractFloat("cpu_percent")
+	req.CPUCores = extractInt("cpu_cores")
+	req.LoadAvg1 = extractFloat("load_avg_1")
+	req.LoadAvg5 = extractFloat("load_avg_5")
+	req.LoadAvg15 = extractFloat("load_avg_15")
+	req.MemoryUsedMB = extractFloat("memory_used_mb")
+	req.MemoryTotalMB = extractFloat("memory_total_mb")
+	req.MemoryFreeMB = extractFloat("memory_free_mb")
+	req.SwapUsedMB = extractFloat("swap_used_mb")
+	req.SwapTotalMB = extractFloat("swap_total_mb")
+	req.DiskUsedMB = extractFloat("disk_used_mb")
+	req.DiskTotalMB = extractFloat("disk_total_mb")
+	req.ContainerCount = extractInt("container_count")
+	req.ContainerRunningCount = extractInt("container_running_count")
+	req.NetworkRxBytes = extractInt64("network_rx_bytes")
+	req.NetworkTxBytes = extractInt64("network_tx_bytes")
+	req.UptimeSeconds = extractFloat("uptime_seconds")
+	req.ProcessCount = extractInt("process_count")
 
 	if err := query.CreateMetrics(db.DB, req); err != nil {
 		log.Printf("failed to store heartbeat metrics for worker=%d: %v", workerID, err)

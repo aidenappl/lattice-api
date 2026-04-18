@@ -12,13 +12,23 @@ var metricsColumns = []string{
 	"worker_metrics.id",
 	"worker_metrics.worker_id",
 	"worker_metrics.cpu_percent",
+	"worker_metrics.cpu_cores",
+	"worker_metrics.load_avg_1",
+	"worker_metrics.load_avg_5",
+	"worker_metrics.load_avg_15",
 	"worker_metrics.memory_used_mb",
 	"worker_metrics.memory_total_mb",
+	"worker_metrics.memory_free_mb",
+	"worker_metrics.swap_used_mb",
+	"worker_metrics.swap_total_mb",
 	"worker_metrics.disk_used_mb",
 	"worker_metrics.disk_total_mb",
 	"worker_metrics.container_count",
+	"worker_metrics.container_running_count",
 	"worker_metrics.network_rx_bytes",
 	"worker_metrics.network_tx_bytes",
+	"worker_metrics.uptime_seconds",
+	"worker_metrics.process_count",
 	"worker_metrics.recorded_at",
 }
 
@@ -28,13 +38,23 @@ func scanMetrics(row scanner) (*structs.WorkerMetrics, error) {
 		&m.ID,
 		&m.WorkerID,
 		&m.CPUPercent,
+		&m.CPUCores,
+		&m.LoadAvg1,
+		&m.LoadAvg5,
+		&m.LoadAvg15,
 		&m.MemoryUsedMB,
 		&m.MemoryTotalMB,
+		&m.MemoryFreeMB,
+		&m.SwapUsedMB,
+		&m.SwapTotalMB,
 		&m.DiskUsedMB,
 		&m.DiskTotalMB,
 		&m.ContainerCount,
+		&m.ContainerRunningCount,
 		&m.NetworkRxBytes,
 		&m.NetworkTxBytes,
+		&m.UptimeSeconds,
+		&m.ProcessCount,
 		&m.RecordedAt,
 	)
 	return &m, err
@@ -101,23 +121,45 @@ func ListMetrics(engine db.Queryable, req ListMetricsRequest) (*[]structs.Worker
 }
 
 type CreateMetricsRequest struct {
-	WorkerID       int
-	CPUPercent     *float64
-	MemoryUsedMB   *float64
-	MemoryTotalMB  *float64
-	DiskUsedMB     *float64
-	DiskTotalMB    *float64
-	ContainerCount *int
-	NetworkRxBytes *int64
-	NetworkTxBytes *int64
+	WorkerID              int
+	CPUPercent            *float64
+	CPUCores              *int
+	LoadAvg1              *float64
+	LoadAvg5              *float64
+	LoadAvg15             *float64
+	MemoryUsedMB          *float64
+	MemoryTotalMB         *float64
+	MemoryFreeMB          *float64
+	SwapUsedMB            *float64
+	SwapTotalMB           *float64
+	DiskUsedMB            *float64
+	DiskTotalMB           *float64
+	ContainerCount        *int
+	ContainerRunningCount *int
+	NetworkRxBytes        *int64
+	NetworkTxBytes        *int64
+	UptimeSeconds         *float64
+	ProcessCount          *int
 }
 
 func CreateMetrics(engine db.Queryable, req CreateMetricsRequest) error {
 	q := sq.Insert("worker_metrics").
-		Columns("worker_id", "cpu_percent", "memory_used_mb", "memory_total_mb",
-			"disk_used_mb", "disk_total_mb", "container_count", "network_rx_bytes", "network_tx_bytes").
-		Values(req.WorkerID, req.CPUPercent, req.MemoryUsedMB, req.MemoryTotalMB,
-			req.DiskUsedMB, req.DiskTotalMB, req.ContainerCount, req.NetworkRxBytes, req.NetworkTxBytes)
+		Columns("worker_id", "cpu_percent", "cpu_cores",
+			"load_avg_1", "load_avg_5", "load_avg_15",
+			"memory_used_mb", "memory_total_mb", "memory_free_mb",
+			"swap_used_mb", "swap_total_mb",
+			"disk_used_mb", "disk_total_mb",
+			"container_count", "container_running_count",
+			"network_rx_bytes", "network_tx_bytes",
+			"uptime_seconds", "process_count").
+		Values(req.WorkerID, req.CPUPercent, req.CPUCores,
+			req.LoadAvg1, req.LoadAvg5, req.LoadAvg15,
+			req.MemoryUsedMB, req.MemoryTotalMB, req.MemoryFreeMB,
+			req.SwapUsedMB, req.SwapTotalMB,
+			req.DiskUsedMB, req.DiskTotalMB,
+			req.ContainerCount, req.ContainerRunningCount,
+			req.NetworkRxBytes, req.NetworkTxBytes,
+			req.UptimeSeconds, req.ProcessCount)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

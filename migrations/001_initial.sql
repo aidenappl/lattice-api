@@ -197,17 +197,27 @@ CREATE INDEX idx_dc_container ON deployment_containers (container_id);
 -- ---
 
 CREATE TABLE IF NOT EXISTS worker_metrics (
-    id               INT AUTO_INCREMENT PRIMARY KEY,
-    worker_id        INT NOT NULL,
-    cpu_percent      FLOAT,
-    memory_used_mb   FLOAT,
-    memory_total_mb  FLOAT,
-    disk_used_mb     FLOAT,
-    disk_total_mb    FLOAT,
-    container_count  INT,
-    network_rx_bytes BIGINT,
-    network_tx_bytes BIGINT,
-    recorded_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
+    id                      INT AUTO_INCREMENT PRIMARY KEY,
+    worker_id               INT NOT NULL,
+    cpu_percent             FLOAT,
+    cpu_cores               INT,
+    load_avg_1              FLOAT,
+    load_avg_5              FLOAT,
+    load_avg_15             FLOAT,
+    memory_used_mb          FLOAT,
+    memory_total_mb         FLOAT,
+    memory_free_mb          FLOAT,
+    swap_used_mb            FLOAT,
+    swap_total_mb           FLOAT,
+    disk_used_mb            FLOAT,
+    disk_total_mb           FLOAT,
+    container_count         INT,
+    container_running_count INT,
+    network_rx_bytes        BIGINT,
+    network_tx_bytes        BIGINT,
+    uptime_seconds          FLOAT,
+    process_count           INT,
+    recorded_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP(),
     CONSTRAINT fk_metrics_worker FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE
 );
 
