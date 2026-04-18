@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/middleware"
@@ -61,6 +62,9 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 	if stack.EnvVars != nil {
 		_ = json.Unmarshal([]byte(*stack.EnvVars), &stackEnvVars)
 	}
+
+	// Load all registries for auto-matching by image hostname
+	allRegistries, _ := query.ListRegistries(db.DB)
 
 	// Build container specs with registry auth resolved
 	containerSpecs := make([]map[string]any, 0, len(*containers))
@@ -144,6 +148,26 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 				}
 				if len(auth) > 0 {
 					spec["registry_auth"] = auth
+				}
+			}
+		} else if allRegistries != nil {
+			// Auto-match registry by image hostname
+			for _, reg := range *allRegistries {
+				regHost := strings.TrimPrefix(strings.TrimPrefix(reg.URL, "https://"), "http://")
+				regHost = strings.TrimSuffix(regHost, "/")
+				if strings.HasPrefix(c.Image, regHost+"/") || c.Image == regHost {
+					auth := map[string]string{}
+					if reg.Username != nil {
+						auth["username"] = *reg.Username
+					}
+					if reg.Password != nil {
+						auth["password"] = *reg.Password
+					}
+					if len(auth) > 0 {
+						spec["registry_auth"] = auth
+						log.Printf("deploy: auto-matched registry %q for image %s", reg.Name, c.Image)
+					}
+					break
 				}
 			}
 		}

@@ -28,7 +28,7 @@ import (
 var installRunnerScript []byte
 
 // Set via -ldflags at build time: -ldflags "-X main.Version=abc1234"
-var Version = "v0.0.5"
+var Version = "v0.0.6"
 
 func main() {
 	fmt.Printf("Lattice API %s\n\n", Version)
@@ -430,19 +430,34 @@ func handleDeploymentProgress(payload map[string]any) {
 			log.Printf("failed to update deployment=%d status: %v", int(deploymentID), err)
 		}
 
-		// On terminal states, update all containers in the deployment
-		if status == "deployed" || status == "failed" {
-			containerStatus := "running"
-			if status == "failed" {
-				containerStatus = "error"
-			}
-			dcs, err := query.ListDeploymentContainers(db.DB, int(deploymentID))
+		// On terminal states, update stack status and all containers in the deployment
+		if status == "deployed" || status == "failed" || status == "rolled_back" {
+			// Update stack status to match
+			dep, err := query.GetDeploymentByID(db.DB, int(deploymentID))
 			if err != nil {
-				log.Printf("failed to list deployment containers for status update: %v", err)
-			} else if dcs != nil {
-				for _, dc := range *dcs {
-					s := containerStatus
-					_, _ = query.UpdateContainer(db.DB, dc.ContainerID, query.UpdateContainerRequest{Status: &s})
+				log.Printf("failed to get deployment %d for stack status update: %v", int(deploymentID), err)
+			} else {
+				stackStatus := status
+				if status == "rolled_back" {
+					stackStatus = "failed"
+				}
+				_, _ = query.UpdateStack(db.DB, dep.StackID, query.UpdateStackRequest{Status: &stackStatus})
+			}
+
+			// Update container statuses
+			if status == "deployed" || status == "failed" {
+				containerStatus := "running"
+				if status == "failed" {
+					containerStatus = "error"
+				}
+				dcs, err := query.ListDeploymentContainers(db.DB, int(deploymentID))
+				if err != nil {
+					log.Printf("failed to list deployment containers for status update: %v", err)
+				} else if dcs != nil {
+					for _, dc := range *dcs {
+						s := containerStatus
+						_, _ = query.UpdateContainer(db.DB, dc.ContainerID, query.UpdateContainerRequest{Status: &s})
+					}
 				}
 			}
 		}
