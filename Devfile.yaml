@@ -1,10 +1,48 @@
 commands:
+    - name: dev
+      description: Start HTTP development server (sources .env)
+      run: source .env && go run .
+      syncAfter: false
+    - name: dev-https
+      description: Start HTTPS development server (requires setup-local first)
+      run: source .env && TLS_CERT=certs/local.pem TLS_KEY=certs/local-key.pem go run .
+      syncAfter: false
+    - name: setup-ssl
+      description: Install mkcert trust store and generate local TLS certificates
+      run: mkcert -install && mkdir -p certs && mkcert -cert-file certs/local.pem -key-file certs/local-key.pem lattice-api.local.appleby.cloud
+      syncAfter: false
+    - name: setup-hosts
+      description: Add lattice-api.local.appleby.cloud to /etc/hosts
+      run: |
+        if grep -q "lattice-api.local.appleby.cloud" /etc/hosts; then
+          echo "✓ lattice-api.local.appleby.cloud already in /etc/hosts"
+        else
+          echo "127.0.0.1 lattice-api.local.appleby.cloud" | sudo tee -a /etc/hosts
+          echo "✓ Added lattice-api.local.appleby.cloud to /etc/hosts"
+        fi
+      syncAfter: false
+    - name: setup-local
+      description: One-time setup for local HTTPS development
+      run: |
+        echo "Installing mkcert..."
+        brew install mkcert || true
+        echo "Setting up SSL certificates..."
+        mkcert -install
+        mkdir -p certs
+        mkcert -cert-file certs/local.pem -key-file certs/local-key.pem lattice-api.local.appleby.cloud
+        echo "Adding lattice-api.local.appleby.cloud to /etc/hosts..."
+        if grep -q "lattice-api.local.appleby.cloud" /etc/hosts; then
+          echo "✓ lattice-api.local.appleby.cloud already in /etc/hosts"
+        else
+          echo "127.0.0.1 lattice-api.local.appleby.cloud" | sudo tee -a /etc/hosts
+          echo "✓ Added lattice-api.local.appleby.cloud to /etc/hosts"
+        fi
+        echo ""
+        echo "Setup complete! Run 'dev dev-https' to start the HTTPS server."
+      syncAfter: false
     - name: build
       description: Build the binary
       run: go build -o bin/app .
-    - name: run
-      description: Run the application
-      run: go run .
     - name: test
       description: Run tests
       run: go test ./...

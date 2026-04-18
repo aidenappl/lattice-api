@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"log"
 	"net/http"
@@ -23,8 +24,14 @@ import (
 	"github.com/rs/cors"
 )
 
+//go:embed install/runner.sh
+var installRunnerScript []byte
+
 func main() {
+	routers.InstallScript = installRunnerScript
+
 	// 1. Database
+	db.Init()
 	if err := db.PingDB(db.DB); err != nil {
 		log.Fatal("failed to ping db: ", err)
 	}
@@ -161,6 +168,9 @@ func main() {
 		_, _ = w.Write([]byte("Lattice API"))
 	}).Methods(http.MethodGet)
 
+	// Install script (public)
+	r.HandleFunc("/install/runner", routers.HandleInstallRunner).Methods(http.MethodGet)
+
 	// Auth routes (unprotected)
 	r.HandleFunc("/auth/login", routers.HandleLocalLogin).Methods(http.MethodPost)
 	r.HandleFunc("/auth/refresh", routers.HandleAuthRefresh).Methods(http.MethodPost)
@@ -187,7 +197,9 @@ func main() {
 	admin.HandleFunc("/workers/{id}", routers.HandleGetWorker).Methods(http.MethodGet)
 	admin.HandleFunc("/workers/{id}", routers.HandleUpdateWorker).Methods(http.MethodPut)
 	admin.HandleFunc("/workers/{id}", routers.HandleDeleteWorker).Methods(http.MethodDelete)
+	admin.HandleFunc("/workers/{id}/tokens", routers.HandleGetWorkerTokens).Methods(http.MethodGet)
 	admin.HandleFunc("/workers/{id}/tokens", routers.HandleCreateWorkerToken).Methods(http.MethodPost)
+	admin.HandleFunc("/workers/{id}/metrics", routers.HandleGetWorkerMetrics).Methods(http.MethodGet)
 	admin.HandleFunc("/worker-tokens/{id}", routers.HandleDeleteWorkerToken).Methods(http.MethodDelete)
 
 	// Stacks
@@ -213,8 +225,12 @@ func main() {
 	// Registries
 	admin.HandleFunc("/registries", routers.HandleGetRegistries).Methods(http.MethodGet)
 	admin.HandleFunc("/registries", routers.HandleCreateRegistry).Methods(http.MethodPost)
+	admin.HandleFunc("/registries/test", routers.HandleTestRegistryInline).Methods(http.MethodPost)
 	admin.HandleFunc("/registries/{id}", routers.HandleUpdateRegistry).Methods(http.MethodPut)
 	admin.HandleFunc("/registries/{id}", routers.HandleDeleteRegistry).Methods(http.MethodDelete)
+	admin.HandleFunc("/registries/{id}/test", routers.HandleTestRegistry).Methods(http.MethodPost)
+	admin.HandleFunc("/registries/{id}/repositories", routers.HandleListRegistryRepos).Methods(http.MethodGet)
+	admin.HandleFunc("/registries/{id}/tags", routers.HandleListRegistryTags).Methods(http.MethodGet)
 
 	// Users
 	admin.HandleFunc("/users", routers.HandleGetUsers).Methods(http.MethodGet)
@@ -253,9 +269,6 @@ func main() {
 	})
 
 	// 7. Server with graceful shutdown
-	fmt.Printf("Lattice API running on port %s\n", env.Port)
-	fmt.Println()
-
 	server := &http.Server{
 		Addr:         ":" + env.Port,
 		Handler:      corsMiddleware.Handler(r),
@@ -265,8 +278,16 @@ func main() {
 	}
 
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal("server error: ", err)
+		if env.TLSCert != "" && env.TLSKey != "" {
+			fmt.Printf("Lattice API running (HTTPS) on port %s\n\n", env.Port)
+			if err := server.ListenAndServeTLS(env.TLSCert, env.TLSKey); err != nil && err != http.ErrServerClosed {
+				log.Fatal("server error: ", err)
+			}
+		} else {
+			fmt.Printf("Lattice API running on port %s\n\n", env.Port)
+			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatal("server error: ", err)
+			}
 		}
 	}()
 

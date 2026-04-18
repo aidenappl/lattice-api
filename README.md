@@ -19,7 +19,7 @@ Central orchestrator API for the Lattice platform. Manages workers, stacks, cont
 
 | Variable | Required | Description |
 |---|---|---|
-| `DATABASE_DSN` | Yes | MariaDB DSN (e.g. `user:pass@tcp(host:3306)/lattice?parseTime=true`) |
+| `DATABASE_DSN` | Yes | MariaDB base DSN without database name (e.g. `user:pass@tcp(host:3306)`) — schema `lattice` is appended automatically |
 | `JWT_SIGNING_KEY` | Yes | HMAC-SHA512 signing key for local auth tokens |
 | `PORT` | No | Server port (default `8000`) |
 | `LATTICE_ADMIN_EMAIL` | No | Bootstrap admin email (creates local admin if no users exist) |

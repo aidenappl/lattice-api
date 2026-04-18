@@ -33,6 +33,10 @@ var (
 	FortaDisableAutoRefresh = getEnv("FORTA_DISABLE_AUTO_REFRESH", "false") == "true"
 	FortaEnforceGrants      = getEnv("FORTA_ENFORCE_GRANTS", "true") == "true"
 
+	// TLS (optional — for local HTTPS development)
+	TLSCert = getEnv("TLS_CERT", "")
+	TLSKey  = getEnv("TLS_KEY", "")
+
 	// CORS
 	AllowedOrigins = getEnv("ALLOWED_ORIGINS", "")
 )

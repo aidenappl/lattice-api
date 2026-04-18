@@ -48,9 +48,13 @@ func HandleCreateWorkerToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	responder.NewCreated(w, map[string]any{
-		"token":     plaintext,
-		"token_id":  token.ID,
-		"worker_id": token.WorkerID,
-		"name":      token.Name,
+		"token":        plaintext,
+		"id":           token.ID,
+		"worker_id":    token.WorkerID,
+		"name":         token.Name,
+		"last_used_at": token.LastUsedAt,
+		"active":       token.Active,
+		"inserted_at":  token.InsertedAt,
+		"updated_at":   token.UpdatedAt,
 	}, "worker token created")
 }

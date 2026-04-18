@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aidenappl/lattice-api/env"
@@ -15,17 +16,30 @@ const (
 )
 
 func PingDB(db *sql.DB) error {
-	fmt.Print("Connecting to Lattice DB...")
 	if err := db.Ping(); err != nil {
 		fmt.Println(" ❌ Failed")
 		return err
 	}
-	fmt.Println(" ✅ Done")
 	return nil
 }
 
-var DB = func() *sql.DB {
-	db, err := sql.Open("mysql", env.CoreDBDSN)
+var DB *sql.DB
+
+const schema = "lattice"
+
+func Init() {
+	fmt.Print("Connecting to Lattice DB...")
+
+	// Strip any existing path or query params from the base DSN so we can
+	// cleanly append the schema and our own params. Keyring may return the
+	// DSN with or without query params already attached.
+	base := env.CoreDBDSN
+	if idx := strings.IndexAny(base, "/?"); idx != -1 {
+		base = base[:idx]
+	}
+	dsn := base + "/" + schema + "?charset=utf8mb4&parseTime=True"
+
+	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		panic(fmt.Sprintf("failed to connect to database: %v", err))
 	}
@@ -35,8 +49,8 @@ var DB = func() *sql.DB {
 	db.SetMaxIdleConns(10)                 // Keep idle connections ready
 	db.SetConnMaxLifetime(5 * time.Minute) // Recycle connections
 
-	return db
-}()
+	DB = db
+}
 
 type Queryable interface {
 	Exec(query string, args ...interface{}) (sql.Result, error)

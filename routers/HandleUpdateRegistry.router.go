@@ -22,8 +22,9 @@ func HandleUpdateRegistry(w http.ResponseWriter, r *http.Request) {
 		Name             *string `json:"name"`
 		URL              *string `json:"url"`
 		Type             *string `json:"type"`
+		Username         *string `json:"username"`
+		Password         *string `json:"password"`
 		KeyringSecretKey *string `json:"keyring_secret_key"`
-		AuthConfig       *string `json:"auth_config"`
 		Active           *bool   `json:"active"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -31,12 +32,13 @@ func HandleUpdateRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	registry, err := query.UpdateRegistry(db.DB, id, query.UpdateRegistryRequest{
+	reg, err := query.UpdateRegistry(db.DB, id, query.UpdateRegistryRequest{
 		Name:             body.Name,
 		URL:              body.URL,
 		Type:             body.Type,
+		Username:         body.Username,
+		Password:         body.Password,
 		KeyringSecretKey: body.KeyringSecretKey,
-		AuthConfig:       body.AuthConfig,
 		Active:           body.Active,
 	})
 	if err != nil {
@@ -44,5 +46,5 @@ func HandleUpdateRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	responder.New(w, registry, "registry updated")
+	responder.New(w, reg, "registry updated")
 }

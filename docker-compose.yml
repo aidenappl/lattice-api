@@ -20,7 +20,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_DSN: "root:lattice@tcp(mariadb:3306)/lattice?parseTime=true"
+      DATABASE_DSN: "root:lattice@tcp(mariadb:3306)"
       JWT_SIGNING_KEY: "dev-jwt-signing-key-change-in-production"
       LATTICE_ADMIN_EMAIL: "admin@lattice.local"
       LATTICE_ADMIN_PASSWORD: "admin"
