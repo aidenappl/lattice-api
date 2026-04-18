@@ -17,15 +17,26 @@ type composeFile struct {
 }
 
 type composeService struct {
-	Image       string            `yaml:"image"`
-	Ports       []string          `yaml:"ports"`
-	Environment any               `yaml:"environment"`
-	Volumes     []string          `yaml:"volumes"`
-	Command     any               `yaml:"command"`
-	Entrypoint  any               `yaml:"entrypoint"`
-	Restart     string            `yaml:"restart"`
-	Deploy      *composeDeploy    `yaml:"deploy"`
-	Labels      map[string]string `yaml:"labels"`
+	Image         string         `yaml:"image"`
+	ContainerName string         `yaml:"container_name"`
+	Ports         []string       `yaml:"ports"`
+	Environment   any            `yaml:"environment"`
+	Volumes       []string       `yaml:"volumes"`
+	Command       any            `yaml:"command"`
+	Entrypoint    any            `yaml:"entrypoint"`
+	Restart       string         `yaml:"restart"`
+	Deploy        *composeDeploy `yaml:"deploy"`
+	Labels        any            `yaml:"labels"`
+	Healthcheck   *composeHealth `yaml:"healthcheck"`
+	Networks      any            `yaml:"networks"`
+}
+
+type composeHealth struct {
+	Test        any    `yaml:"test"`
+	Interval    string `yaml:"interval"`
+	Timeout     string `yaml:"timeout"`
+	Retries     int    `yaml:"retries"`
+	StartPeriod string `yaml:"start_period"`
 }
 
 type composeDeploy struct {
@@ -54,10 +65,6 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 		responder.BadBody(w, err)
 		return
 	}
-	if body.Name == "" {
-		responder.MissingBodyFields(w, "name")
-		return
-	}
 	if body.ComposeYAML == "" {
 		responder.MissingBodyFields(w, "compose_yaml")
 		return
@@ -77,6 +84,14 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-derive stack name from first service if not provided
+	if body.Name == "" {
+		for svcName := range compose.Services {
+			body.Name = svcName
+			break
+		}
+	}
+
 	// Create stack
 	stack, err := query.CreateStack(db.DB, query.CreateStackRequest{
 		Name:               body.Name,
@@ -93,9 +108,15 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 	for name, svc := range compose.Services {
 		image, tag := parseImageRef(svc.Image)
 
+		// Use container_name if specified, otherwise use the service name
+		containerName := name
+		if svc.ContainerName != "" {
+			containerName = svc.ContainerName
+		}
+
 		req := query.CreateContainerRequest{
 			StackID:  stack.ID,
-			Name:     name,
+			Name:     containerName,
 			Image:    image,
 			Tag:      tag,
 			Replicas: 1,
