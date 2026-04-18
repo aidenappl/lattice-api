@@ -28,7 +28,7 @@ import (
 var installRunnerScript []byte
 
 // Set via -ldflags at build time: -ldflags "-X main.Version=abc1234"
-var Version = "v0.0.8"
+var Version = "v0.0.9"
 
 func main() {
 	fmt.Printf("Lattice API %s\n\n", Version)
@@ -526,10 +526,13 @@ func handleContainerLog(workerID int, payload map[string]any) {
 		req.Stream = v
 	}
 
-	// Resolve container_name to container_id
+	// Resolve container_name to container_id and always store the name
 	if name, ok := payload["container_name"].(string); ok && name != "" {
+		req.ContainerName = &name
 		if c, err := query.GetContainerByName(db.DB, name); err == nil {
 			req.ContainerID = &c.ID
+		} else {
+			log.Printf("container log: could not resolve container name %q to ID: %v", name, err)
 		}
 	}
 

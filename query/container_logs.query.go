@@ -11,6 +11,7 @@ import (
 var logColumns = []string{
 	"container_logs.id",
 	"container_logs.container_id",
+	"container_logs.container_name",
 	"container_logs.worker_id",
 	"container_logs.stream",
 	"container_logs.message",
@@ -22,6 +23,7 @@ func scanLog(row scanner) (*structs.ContainerLog, error) {
 	err := row.Scan(
 		&l.ID,
 		&l.ContainerID,
+		&l.ContainerName,
 		&l.WorkerID,
 		&l.Stream,
 		&l.Message,
@@ -31,11 +33,12 @@ func scanLog(row scanner) (*structs.ContainerLog, error) {
 }
 
 type ListLogsRequest struct {
-	Limit       int
-	Offset      int
-	WorkerID    *int
-	ContainerID *int
-	Stream      *string
+	Limit         int
+	Offset        int
+	WorkerID      *int
+	ContainerID   *int
+	ContainerName *string
+	Stream        *string
 }
 
 func ListContainerLogs(engine db.Queryable, req ListLogsRequest) (*[]structs.ContainerLog, error) {
@@ -45,7 +48,14 @@ func ListContainerLogs(engine db.Queryable, req ListLogsRequest) (*[]structs.Con
 		q = q.Where(sq.Eq{"container_logs.worker_id": *req.WorkerID})
 	}
 	if req.ContainerID != nil {
-		q = q.Where(sq.Eq{"container_logs.container_id": *req.ContainerID})
+		if req.ContainerName != nil {
+			q = q.Where(sq.Or{
+				sq.Eq{"container_logs.container_id": *req.ContainerID},
+				sq.Eq{"container_logs.container_name": *req.ContainerName},
+			})
+		} else {
+			q = q.Where(sq.Eq{"container_logs.container_id": *req.ContainerID})
+		}
 	}
 	if req.Stream != nil {
 		q = q.Where(sq.Eq{"container_logs.stream": *req.Stream})
@@ -85,16 +95,17 @@ func ListContainerLogs(engine db.Queryable, req ListLogsRequest) (*[]structs.Con
 }
 
 type CreateContainerLogRequest struct {
-	ContainerID *int
-	WorkerID    int
-	Stream      string
-	Message     string
+	ContainerID   *int
+	ContainerName *string
+	WorkerID      int
+	Stream        string
+	Message       string
 }
 
 func CreateContainerLog(engine db.Queryable, req CreateContainerLogRequest) error {
 	q := sq.Insert("container_logs").
-		Columns("container_id", "worker_id", "stream", "message").
-		Values(req.ContainerID, req.WorkerID, req.Stream, req.Message)
+		Columns("container_id", "container_name", "worker_id", "stream", "message").
+		Values(req.ContainerID, req.ContainerName, req.WorkerID, req.Stream, req.Message)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
