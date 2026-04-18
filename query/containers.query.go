@@ -249,3 +249,23 @@ func DeleteContainer(engine db.Queryable, id int) error {
 	_, err := engine.Exec("UPDATE containers SET active = 0 WHERE id = ?", id)
 	return err
 }
+
+func GetContainerByName(engine db.Queryable, name string) (*structs.Container, error) {
+	q := sq.Select(containerColumns...).From("containers").
+		Where(sq.Eq{"containers.name": name}).
+		Where(sq.Eq{"containers.active": true}).
+		Limit(1)
+
+	qStr, args, err := q.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build sql query: %w", err)
+	}
+
+	row := engine.QueryRow(qStr, args...)
+	c, err := scanContainer(row)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan container: %w", err)
+	}
+
+	return c, nil
+}

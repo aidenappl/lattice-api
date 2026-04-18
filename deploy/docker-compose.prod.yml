@@ -8,6 +8,8 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-lattice}
       MYSQL_DATABASE: lattice
+    ports:
+      - "127.0.0.1:3306:3306"
     volumes:
       - mariadb_data:/var/lib/mysql
       - ./migrations:/docker-entrypoint-initdb.d

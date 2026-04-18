@@ -16,6 +16,7 @@ var stackColumns = []string{
 	"stacks.status",
 	"stacks.deployment_strategy",
 	"stacks.auto_deploy",
+	"stacks.env_vars",
 	"stacks.active",
 	"stacks.updated_at",
 	"stacks.inserted_at",
@@ -31,6 +32,7 @@ func scanStack(row scanner) (*structs.Stack, error) {
 		&s.Status,
 		&s.DeploymentStrategy,
 		&s.AutoDeploy,
+		&s.EnvVars,
 		&s.Active,
 		&s.UpdatedAt,
 		&s.InsertedAt,
@@ -115,12 +117,13 @@ type CreateStackRequest struct {
 	WorkerID           *int
 	DeploymentStrategy string
 	AutoDeploy         bool
+	EnvVars            *string
 }
 
 func CreateStack(engine db.Queryable, req CreateStackRequest) (*structs.Stack, error) {
 	q := sq.Insert("stacks").
-		Columns("name", "description", "worker_id", "deployment_strategy", "auto_deploy").
-		Values(req.Name, req.Description, req.WorkerID, req.DeploymentStrategy, req.AutoDeploy)
+		Columns("name", "description", "worker_id", "deployment_strategy", "auto_deploy", "env_vars").
+		Values(req.Name, req.Description, req.WorkerID, req.DeploymentStrategy, req.AutoDeploy, req.EnvVars)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
@@ -147,6 +150,7 @@ type UpdateStackRequest struct {
 	Status             *string
 	DeploymentStrategy *string
 	AutoDeploy         *bool
+	EnvVars            *string
 	Active             *bool
 }
 
@@ -176,6 +180,10 @@ func UpdateStack(engine db.Queryable, id int, req UpdateStackRequest) (*structs.
 	}
 	if req.AutoDeploy != nil {
 		q = q.Set("auto_deploy", *req.AutoDeploy)
+		hasUpdate = true
+	}
+	if req.EnvVars != nil {
+		q = q.Set("env_vars", *req.EnvVars)
 		hasUpdate = true
 	}
 	if req.Active != nil {

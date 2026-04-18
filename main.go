@@ -28,7 +28,7 @@ import (
 var installRunnerScript []byte
 
 // Set via -ldflags at build time: -ldflags "-X main.Version=abc1234"
-var Version = "v0.0.1"
+var Version = "v0.0.2"
 
 func main() {
 	fmt.Printf("Lattice API %s\n\n", Version)
@@ -147,6 +147,7 @@ func main() {
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
+			go handleContainerLog(session.WorkerID, msg.Payload)
 		}
 	}
 
@@ -156,6 +157,11 @@ func main() {
 	deployHandler := &routers.DeployHandler{
 		WorkerHub: workerHub,
 		AdminHub:  adminHub,
+	}
+
+	// Container action handler (needs hub references)
+	containerActionHandler := &routers.ContainerActionHandler{
+		WorkerHub: workerHub,
 	}
 
 	// 5. Router
@@ -216,6 +222,7 @@ func main() {
 	// Stacks
 	admin.HandleFunc("/stacks", routers.HandleGetStacks).Methods(http.MethodGet)
 	admin.HandleFunc("/stacks", routers.HandleCreateStack).Methods(http.MethodPost)
+	admin.HandleFunc("/stacks/import", routers.HandleImportCompose).Methods(http.MethodPost)
 	admin.HandleFunc("/stacks/{id}", routers.HandleGetStack).Methods(http.MethodGet)
 	admin.HandleFunc("/stacks/{id}", routers.HandleUpdateStack).Methods(http.MethodPut)
 	admin.HandleFunc("/stacks/{id}", routers.HandleDeleteStack).Methods(http.MethodDelete)
@@ -226,6 +233,11 @@ func main() {
 	admin.HandleFunc("/stacks/{id}/containers", routers.HandleCreateContainer).Methods(http.MethodPost)
 	admin.HandleFunc("/containers/{id}", routers.HandleUpdateContainer).Methods(http.MethodPut)
 	admin.HandleFunc("/containers/{id}", routers.HandleDeleteContainer).Methods(http.MethodDelete)
+	admin.HandleFunc("/containers/{id}/logs", routers.HandleGetContainerLogs).Methods(http.MethodGet)
+	admin.HandleFunc("/containers/{id}/stop", containerActionHandler.HandleStopContainer).Methods(http.MethodPost)
+	admin.HandleFunc("/containers/{id}/restart", containerActionHandler.HandleRestartContainer).Methods(http.MethodPost)
+	admin.HandleFunc("/containers/{id}/remove", containerActionHandler.HandleRemoveContainer).Methods(http.MethodPost)
+	admin.HandleFunc("/containers/{id}/recreate", containerActionHandler.HandleRecreateContainer).Methods(http.MethodPost)
 
 	// Deployments
 	admin.HandleFunc("/deployments", routers.HandleGetDeployments).Methods(http.MethodGet)
@@ -265,7 +277,7 @@ func main() {
 	}
 
 	corsMiddleware := cors.New(cors.Options{
-		AllowedOrigins: allowedOrigins,
+		AllowedOrigins:   allowedOrigins,
 		AllowCredentials: true,
 		AllowedHeaders: []string{
 			"X-Requested-With",
@@ -375,5 +387,33 @@ func handleDeploymentProgress(payload map[string]any) {
 
 	if err := query.UpdateDeploymentStatus(db.DB, int(deploymentID), status); err != nil {
 		log.Printf("failed to update deployment=%d status: %v", int(deploymentID), err)
+	}
+}
+
+func handleContainerLog(workerID int, payload map[string]any) {
+	message, ok := payload["message"].(string)
+	if !ok || message == "" {
+		return
+	}
+
+	req := query.CreateContainerLogRequest{
+		WorkerID: workerID,
+		Message:  message,
+		Stream:   "stdout",
+	}
+
+	if v, ok := payload["stream"].(string); ok {
+		req.Stream = v
+	}
+
+	// Resolve container_name to container_id
+	if name, ok := payload["container_name"].(string); ok && name != "" {
+		if c, err := query.GetContainerByName(db.DB, name); err == nil {
+			req.ContainerID = &c.ID
+		}
+	}
+
+	if err := query.CreateContainerLog(db.DB, req); err != nil {
+		log.Printf("failed to store container log for worker=%d: %v", workerID, err)
 	}
 }

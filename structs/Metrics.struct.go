@@ -34,3 +34,12 @@ type ContainerEvent struct {
 	Message     *string   `json:"message"`
 	RecordedAt  time.Time `json:"recorded_at"`
 }
+
+type ContainerLog struct {
+	ID          int       `json:"id"`
+	ContainerID *int      `json:"container_id"`
+	WorkerID    int       `json:"worker_id"`
+	Stream      string    `json:"stream"`
+	Message     string    `json:"message"`
+	RecordedAt  time.Time `json:"recorded_at"`
+}

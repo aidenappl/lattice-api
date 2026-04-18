@@ -61,7 +61,8 @@ TMPDIR=$(mktemp -d)
 echo "Building lattice-runner..."
 git clone --depth=1 "https://github.com/${REPO}.git" "$TMPDIR/lattice-runner" 2>/dev/null
 cd "$TMPDIR/lattice-runner"
-CGO_ENABLED=0 go build -ldflags="-w -s" -o "${BINARY_NAME}" .
+GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+CGO_ENABLED=0 go build -ldflags="-w -s -X main.Version=v0.0.2-${GIT_HASH}" -o "${BINARY_NAME}" .
 
 # Install binary
 echo "Installing to ${INSTALL_DIR}..."

@@ -86,10 +86,16 @@ sudo curl -fsSL -o "$INSTALL_DIR/docker-compose.yml" \
     "https://raw.githubusercontent.com/aidenappl/lattice-api/main/deploy/docker-compose.prod.yml"
 echo "Wrote $INSTALL_DIR/docker-compose.yml"
 
-# Download migration
-sudo curl -fsSL -o "$INSTALL_DIR/migrations/001_initial.sql" \
-    "https://raw.githubusercontent.com/aidenappl/lattice-api/main/migrations/001_initial.sql"
-echo "Wrote $INSTALL_DIR/migrations/001_initial.sql"
+# Download all migrations
+echo "Downloading migrations..."
+MIGRATIONS_URL="https://raw.githubusercontent.com/aidenappl/lattice-api/main/migrations"
+MIGRATION_FILES=$(curl -fsSL "https://api.github.com/repos/aidenappl/lattice-api/contents/migrations" | \
+    grep '"name"' | sed 's/.*"name": "\(.*\)".*/\1/' | sort)
+
+for file in $MIGRATION_FILES; do
+    sudo curl -fsSL -o "$INSTALL_DIR/migrations/$file" "$MIGRATIONS_URL/$file"
+    echo "  $file"
+done
 
 echo ""
 
@@ -98,8 +104,35 @@ echo "Pulling images..."
 cd "$INSTALL_DIR"
 sudo docker compose --env-file .env pull
 
-# Start
+# Start MariaDB first and wait for it to be healthy
 echo ""
+echo "Starting MariaDB..."
+sudo docker compose --env-file .env up -d mariadb
+
+echo "Waiting for MariaDB to be ready..."
+RETRIES=30
+until sudo docker compose exec mariadb mariadb -u root -p"${DB_ROOT_PASSWORD:-lattice}" -e "SELECT 1" >/dev/null 2>&1; do
+    RETRIES=$((RETRIES - 1))
+    if [ "$RETRIES" -le 0 ]; then
+        echo "ERROR: MariaDB did not become ready in time."
+        exit 1
+    fi
+    sleep 2
+done
+echo "MariaDB is ready."
+
+# Run migrations
+echo "Running migrations..."
+DB_CONTAINER=$(sudo docker compose ps -q mariadb)
+for file in $(ls "$INSTALL_DIR/migrations"/*.sql | sort); do
+    filename=$(basename "$file")
+    echo "  Applying $filename..."
+    sudo docker exec -i "$DB_CONTAINER" mariadb -u root -p"${DB_ROOT_PASSWORD:-lattice}" lattice < "$file" 2>&1 | \
+        grep -v "^$" | grep -vi "^warning" || true
+done
+echo ""
+
+# Start all services
 echo "Starting Lattice..."
 sudo docker compose --env-file .env up -d
 

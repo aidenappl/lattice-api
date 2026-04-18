@@ -16,6 +16,7 @@ func HandleCreateStack(w http.ResponseWriter, r *http.Request) {
 		WorkerID           *int    `json:"worker_id"`
 		DeploymentStrategy string  `json:"deployment_strategy"`
 		AutoDeploy         bool    `json:"auto_deploy"`
+		EnvVars            *string `json:"env_vars"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		responder.BadBody(w, err)
@@ -35,6 +36,7 @@ func HandleCreateStack(w http.ResponseWriter, r *http.Request) {
 		WorkerID:           body.WorkerID,
 		DeploymentStrategy: body.DeploymentStrategy,
 		AutoDeploy:         body.AutoDeploy,
+		EnvVars:            body.EnvVars,
 	})
 	if err != nil {
 		responder.QueryError(w, err, "failed to create stack")

@@ -25,6 +25,7 @@ func HandleUpdateStack(w http.ResponseWriter, r *http.Request) {
 		Status             *string `json:"status"`
 		DeploymentStrategy *string `json:"deployment_strategy"`
 		AutoDeploy         *bool   `json:"auto_deploy"`
+		EnvVars            *string `json:"env_vars"`
 		Active             *bool   `json:"active"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -39,6 +40,7 @@ func HandleUpdateStack(w http.ResponseWriter, r *http.Request) {
 		Status:             body.Status,
 		DeploymentStrategy: body.DeploymentStrategy,
 		AutoDeploy:         body.AutoDeploy,
+		EnvVars:            body.EnvVars,
 		Active:             body.Active,
 	})
 	if err != nil {

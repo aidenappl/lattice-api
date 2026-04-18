@@ -10,6 +10,7 @@ type Stack struct {
 	Status             string    `json:"status"`
 	DeploymentStrategy string    `json:"deployment_strategy"`
 	AutoDeploy         bool      `json:"auto_deploy"`
+	EnvVars            *string   `json:"env_vars"`
 	Active             bool      `json:"active"`
 	UpdatedAt          time.Time `json:"updated_at"`
 	InsertedAt         time.Time `json:"inserted_at"`

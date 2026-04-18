@@ -55,8 +55,19 @@ echo "Running migrations..."
 DB_CONTAINER=$(sudo docker compose ps -q mariadb 2>/dev/null)
 
 if [ -z "$DB_CONTAINER" ]; then
-    echo "ERROR: MariaDB container not running. Start it first: sudo docker compose up -d mariadb"
-    exit 1
+    echo "MariaDB not running — starting it..."
+    sudo docker compose --env-file .env up -d mariadb
+    echo "Waiting for MariaDB to be ready..."
+    RETRIES=30
+    until sudo docker compose exec mariadb mariadb -u root -p"$DB_PASSWORD" -e "SELECT 1" >/dev/null 2>&1; do
+        RETRIES=$((RETRIES - 1))
+        if [ "$RETRIES" -le 0 ]; then
+            echo "ERROR: MariaDB did not become ready in time."
+            exit 1
+        fi
+        sleep 2
+    done
+    DB_CONTAINER=$(sudo docker compose ps -q mariadb)
 fi
 
 DB_PASSWORD="${DB_ROOT_PASSWORD:-lattice}"

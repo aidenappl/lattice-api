@@ -20,6 +20,7 @@ const (
 	MsgStop         = "stop"
 	MsgRestart      = "restart"
 	MsgRemove       = "remove"
+	MsgRecreate     = "recreate"
 	MsgPullImage    = "pull_image"
 	MsgExec         = "exec"
 	MsgConfigUpdate = "config_update"

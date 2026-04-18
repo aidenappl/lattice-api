@@ -56,6 +56,12 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Parse stack-level env vars
+	stackEnvVars := map[string]any{}
+	if stack.EnvVars != nil {
+		_ = json.Unmarshal([]byte(*stack.EnvVars), &stackEnvVars)
+	}
+
 	// Build container specs with registry auth resolved
 	containerSpecs := make([]map[string]any, 0, len(*containers))
 	for _, c := range *containers {
@@ -70,18 +76,37 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 
 		if c.PortMappings != nil {
 			var pm []any
-			_ = json.Unmarshal([]byte(*c.PortMappings), &pm)
-			spec["port_mappings"] = pm
+			if err := json.Unmarshal([]byte(*c.PortMappings), &pm); err != nil {
+				log.Printf("invalid port_mappings JSON for container %s: %v", c.Name, err)
+			} else {
+				spec["port_mappings"] = pm
+			}
 		}
 		if c.EnvVars != nil {
 			var ev map[string]any
-			_ = json.Unmarshal([]byte(*c.EnvVars), &ev)
-			spec["env_vars"] = ev
+			if err := json.Unmarshal([]byte(*c.EnvVars), &ev); err != nil {
+				log.Printf("invalid env_vars JSON for container %s: %v", c.Name, err)
+			} else {
+				// Merge stack-level env vars (container-level overrides stack-level)
+				merged := make(map[string]any, len(stackEnvVars)+len(ev))
+				for k, v := range stackEnvVars {
+					merged[k] = v
+				}
+				for k, v := range ev {
+					merged[k] = v
+				}
+				spec["env_vars"] = merged
+			}
+		} else if len(stackEnvVars) > 0 {
+			spec["env_vars"] = stackEnvVars
 		}
 		if c.Volumes != nil {
 			var vol map[string]any
-			_ = json.Unmarshal([]byte(*c.Volumes), &vol)
-			spec["volumes"] = vol
+			if err := json.Unmarshal([]byte(*c.Volumes), &vol); err != nil {
+				log.Printf("invalid volumes JSON for container %s: %v", c.Name, err)
+			} else {
+				spec["volumes"] = vol
+			}
 		}
 		if c.CPULimit != nil {
 			spec["cpu_limit"] = *c.CPULimit
@@ -91,13 +116,19 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		}
 		if c.Command != nil {
 			var cmd []string
-			_ = json.Unmarshal([]byte(*c.Command), &cmd)
-			spec["command"] = cmd
+			if err := json.Unmarshal([]byte(*c.Command), &cmd); err != nil {
+				log.Printf("invalid command JSON for container %s: %v", c.Name, err)
+			} else {
+				spec["command"] = cmd
+			}
 		}
 		if c.Entrypoint != nil {
 			var ep []string
-			_ = json.Unmarshal([]byte(*c.Entrypoint), &ep)
-			spec["entrypoint"] = ep
+			if err := json.Unmarshal([]byte(*c.Entrypoint), &ep); err != nil {
+				log.Printf("invalid entrypoint JSON for container %s: %v", c.Name, err)
+			} else {
+				spec["entrypoint"] = ep
+			}
 		}
 
 		// Resolve registry credentials
@@ -129,6 +160,19 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		responder.QueryError(w, err, "failed to create deployment")
 		return
+	}
+
+	// Record deployment containers
+	for _, c := range *containers {
+		_, err := query.CreateDeploymentContainer(db.DB, query.CreateDeploymentContainerRequest{
+			DeploymentID: deployment.ID,
+			ContainerID:  c.ID,
+			Image:        c.Image,
+			Tag:          c.Tag,
+		})
+		if err != nil {
+			log.Printf("failed to record deployment container %s: %v", c.Name, err)
+		}
 	}
 
 	deployingStatus := "deploying"
