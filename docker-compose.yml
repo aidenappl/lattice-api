@@ -1,0 +1,42 @@
+services:
+  mariadb:
+    image: mariadb:11
+    environment:
+      MYSQL_ROOT_PASSWORD: lattice
+      MYSQL_DATABASE: lattice
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  lattice-api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_DSN: "root:lattice@tcp(mariadb:3306)/lattice?parseTime=true"
+      JWT_SIGNING_KEY: "dev-jwt-signing-key-change-in-production"
+      LATTICE_ADMIN_EMAIL: "admin@lattice.local"
+      LATTICE_ADMIN_PASSWORD: "admin"
+      PORT: "8000"
+      ENVIRONMENT: "development"
+      ALLOWED_ORIGINS: "http://localhost:3000"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+
+  lattice-web:
+    build: ../lattice-web
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_LATTICE_API: "http://localhost:8000"
+
+volumes:
+  mariadb_data:
