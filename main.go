@@ -226,6 +226,7 @@ func main() {
 	admin.HandleFunc("/stacks/{id}", routers.HandleGetStack).Methods(http.MethodGet)
 	admin.HandleFunc("/stacks/{id}", routers.HandleUpdateStack).Methods(http.MethodPut)
 	admin.HandleFunc("/stacks/{id}", routers.HandleDeleteStack).Methods(http.MethodDelete)
+	admin.HandleFunc("/stacks/{id}/compose", routers.HandleUpdateCompose).Methods(http.MethodPut)
 	admin.HandleFunc("/stacks/{id}/deploy", deployHandler.HandleDeployStack).Methods(http.MethodPost)
 
 	// Containers

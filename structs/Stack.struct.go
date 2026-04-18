@@ -11,6 +11,7 @@ type Stack struct {
 	DeploymentStrategy string    `json:"deployment_strategy"`
 	AutoDeploy         bool      `json:"auto_deploy"`
 	EnvVars            *string   `json:"env_vars"`
+	ComposeYAML        *string   `json:"compose_yaml"`
 	Active             bool      `json:"active"`
 	UpdatedAt          time.Time `json:"updated_at"`
 	InsertedAt         time.Time `json:"inserted_at"`

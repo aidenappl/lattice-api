@@ -98,6 +98,7 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 		Description:        body.Description,
 		WorkerID:           body.WorkerID,
 		DeploymentStrategy: body.DeploymentStrategy,
+		ComposeYAML:        &body.ComposeYAML,
 	})
 	if err != nil {
 		responder.QueryError(w, err, "failed to create stack")
