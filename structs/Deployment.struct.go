@@ -27,3 +27,12 @@ type DeploymentContainer struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 	InsertedAt    time.Time `json:"inserted_at"`
 }
+
+type DeploymentLog struct {
+	ID           int       `json:"id"`
+	DeploymentID int       `json:"deployment_id"`
+	Level        string    `json:"level"`
+	Stage        *string   `json:"stage"`
+	Message      string    `json:"message"`
+	RecordedAt   time.Time `json:"recorded_at"`
+}

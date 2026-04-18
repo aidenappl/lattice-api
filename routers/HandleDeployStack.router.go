@@ -180,6 +180,13 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		Status: &deployingStatus,
 	})
 
+	// Log deployment initiation
+	_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+		DeploymentID: deployment.ID,
+		Level:        "info",
+		Message:      fmt.Sprintf("Deployment initiated by user %d for stack '%s' (strategy=%s, containers=%d)", user.ID, stack.Name, stack.DeploymentStrategy, len(*containers)),
+	})
+
 	// Send deploy command to worker
 	payload := map[string]any{
 		"deployment_id": deployment.ID,
@@ -193,9 +200,23 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		Payload: payload,
 	}); err != nil {
 		log.Printf("failed to send deploy command to worker=%d: %v", *stack.WorkerID, err)
+		_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+			DeploymentID: deployment.ID,
+			Level:        "error",
+			Message:      fmt.Sprintf("Failed to send deploy command to worker %d: %v", *stack.WorkerID, err),
+		})
+		failedStatus := "failed"
+		_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{Status: &failedStatus})
+		_ = query.UpdateDeploymentStatus(db.DB, deployment.ID, "failed")
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send deploy command: %v", err))
 		return
 	}
+
+	_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+		DeploymentID: deployment.ID,
+		Level:        "info",
+		Message:      fmt.Sprintf("Deploy command sent to worker %d via WebSocket", *stack.WorkerID),
+	})
 
 	responder.NewCreated(w, deployment, "deployment created and sent to worker")
 }

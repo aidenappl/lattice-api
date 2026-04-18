@@ -161,3 +161,45 @@ func ApproveDeployment(engine db.Queryable, id int, approvedBy int) error {
 	)
 	return err
 }
+
+// Deployment Logs
+
+type CreateDeploymentLogRequest struct {
+	DeploymentID int
+	Level        string
+	Stage        *string
+	Message      string
+}
+
+func CreateDeploymentLog(engine db.Queryable, req CreateDeploymentLogRequest) error {
+	level := req.Level
+	if level == "" {
+		level = "info"
+	}
+	_, err := engine.Exec(
+		"INSERT INTO deployment_logs (deployment_id, level, stage, message) VALUES (?, ?, ?, ?)",
+		req.DeploymentID, level, req.Stage, req.Message,
+	)
+	return err
+}
+
+func ListDeploymentLogs(engine db.Queryable, deploymentID int) (*[]structs.DeploymentLog, error) {
+	rows, err := engine.Query(
+		"SELECT id, deployment_id, level, stage, message, recorded_at FROM deployment_logs WHERE deployment_id = ? ORDER BY id ASC",
+		deploymentID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query deployment logs: %w", err)
+	}
+	defer rows.Close()
+
+	var logs []structs.DeploymentLog
+	for rows.Next() {
+		var l structs.DeploymentLog
+		if err := rows.Scan(&l.ID, &l.DeploymentID, &l.Level, &l.Stage, &l.Message, &l.RecordedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan deployment log: %w", err)
+		}
+		logs = append(logs, l)
+	}
+	return &logs, rows.Err()
+}

@@ -28,7 +28,7 @@ import (
 var installRunnerScript []byte
 
 // Set via -ldflags at build time: -ldflags "-X main.Version=abc1234"
-var Version = "v0.0.3"
+var Version = "v0.0.4"
 
 func main() {
 	fmt.Printf("Lattice API %s\n\n", Version)
@@ -243,6 +243,7 @@ func main() {
 	// Deployments
 	admin.HandleFunc("/deployments", routers.HandleGetDeployments).Methods(http.MethodGet)
 	admin.HandleFunc("/deployments/{id}", routers.HandleGetDeployment).Methods(http.MethodGet)
+	admin.HandleFunc("/deployments/{id}/logs", routers.HandleGetDeploymentLogs).Methods(http.MethodGet)
 	admin.HandleFunc("/deployments/{id}/approve", routers.HandleApproveDeployment).Methods(http.MethodPost)
 	admin.HandleFunc("/deployments/{id}/rollback", routers.HandleRollbackDeployment).Methods(http.MethodPost)
 
@@ -381,13 +382,52 @@ func handleDeploymentProgress(payload map[string]any) {
 	if !ok {
 		return
 	}
-	status, ok := payload["status"].(string)
-	if !ok {
-		return
+	status, _ := payload["status"].(string)
+	message, _ := payload["message"].(string)
+	step, _ := payload["step"].(string)
+	containerName, _ := payload["container_name"].(string)
+
+	// Determine log level from status
+	level := "info"
+	if status == "failed" {
+		level = "error"
 	}
 
-	if err := query.UpdateDeploymentStatus(db.DB, int(deploymentID), status); err != nil {
-		log.Printf("failed to update deployment=%d status: %v", int(deploymentID), err)
+	// Build a descriptive stage
+	var stage *string
+	if step != "" {
+		s := step
+		if containerName != "" {
+			s = containerName + ":" + step
+		}
+		stage = &s
+	} else if containerName != "" {
+		stage = &containerName
+	}
+
+	// Build the log message
+	logMsg := message
+	if logMsg == "" {
+		logMsg = fmt.Sprintf("status=%s", status)
+	}
+
+	log.Printf("deploy[%d]: [%s] %s (stage=%v)", int(deploymentID), level, logMsg, stage)
+
+	// Store deployment log
+	if err := query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+		DeploymentID: int(deploymentID),
+		Level:        level,
+		Stage:        stage,
+		Message:      logMsg,
+	}); err != nil {
+		log.Printf("failed to store deployment log: %v", err)
+	}
+
+	// Update deployment status if it's a terminal/state-change status
+	if status == "deploying" || status == "deployed" || status == "failed" || status == "rolled_back" {
+		if err := query.UpdateDeploymentStatus(db.DB, int(deploymentID), status); err != nil {
+			log.Printf("failed to update deployment=%d status: %v", int(deploymentID), err)
+		}
 	}
 }
 
