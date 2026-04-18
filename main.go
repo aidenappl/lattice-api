@@ -28,7 +28,7 @@ import (
 var installRunnerScript []byte
 
 // Set via -ldflags at build time: -ldflags "-X main.Version=abc1234"
-var Version = "v0.0.6"
+var Version = "v0.0.7"
 
 func main() {
 	fmt.Printf("Lattice API %s\n\n", Version)
@@ -165,6 +165,11 @@ func main() {
 		WorkerHub: workerHub,
 	}
 
+	// Worker action handler (needs hub references)
+	workerActionHandler := &routers.WorkerActionHandler{
+		WorkerHub: workerHub,
+	}
+
 	// 5. Router
 	r := mux.NewRouter()
 
@@ -218,6 +223,10 @@ func main() {
 	admin.HandleFunc("/workers/{id}/tokens", routers.HandleGetWorkerTokens).Methods(http.MethodGet)
 	admin.HandleFunc("/workers/{id}/tokens", routers.HandleCreateWorkerToken).Methods(http.MethodPost)
 	admin.HandleFunc("/workers/{id}/metrics", routers.HandleGetWorkerMetrics).Methods(http.MethodGet)
+	admin.HandleFunc("/workers/{id}/reboot", workerActionHandler.HandleRebootWorker).Methods(http.MethodPost)
+	admin.HandleFunc("/workers/{id}/upgrade", workerActionHandler.HandleUpgradeRunner).Methods(http.MethodPost)
+	admin.HandleFunc("/workers/{id}/stop-all", workerActionHandler.HandleStopAllContainers).Methods(http.MethodPost)
+	admin.HandleFunc("/workers/{id}/start-all", workerActionHandler.HandleStartAllContainers).Methods(http.MethodPost)
 	admin.HandleFunc("/worker-tokens/{id}", routers.HandleDeleteWorkerToken).Methods(http.MethodDelete)
 
 	// Stacks

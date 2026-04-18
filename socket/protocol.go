@@ -16,16 +16,20 @@ const (
 
 // Orchestrator -> Worker message types
 const (
-	MsgDeploy       = "deploy"
-	MsgStop         = "stop"
-	MsgRestart      = "restart"
-	MsgRemove       = "remove"
-	MsgRecreate     = "recreate"
-	MsgPullImage    = "pull_image"
-	MsgExec         = "exec"
-	MsgConfigUpdate = "config_update"
-	MsgAck          = "ack"
-	MsgConnected    = "connected"
+	MsgDeploy        = "deploy"
+	MsgStop          = "stop"
+	MsgRestart       = "restart"
+	MsgRemove        = "remove"
+	MsgRecreate      = "recreate"
+	MsgPullImage     = "pull_image"
+	MsgExec          = "exec"
+	MsgConfigUpdate  = "config_update"
+	MsgAck           = "ack"
+	MsgConnected     = "connected"
+	MsgRebootOS      = "reboot_os"
+	MsgUpgradeRunner = "upgrade_runner"
+	MsgStopAll       = "stop_all"
+	MsgStartAll      = "start_all"
 )
 
 // Envelope is the standard message sent orchestrator -> worker.
