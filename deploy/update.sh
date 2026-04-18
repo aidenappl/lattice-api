@@ -82,7 +82,7 @@ echo ""
 
 # Restart services with new images
 echo "Restarting services..."
-sudo docker compose --env-file .env up -d
+sudo docker compose --env-file .env up -d --force-recreate
 echo ""
 
 # Show status
