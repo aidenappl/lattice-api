@@ -1,0 +1,59 @@
+version: "3.8"
+
+# Lattice Orchestrator production stack
+# Deploy: curl -fsSL https://raw.githubusercontent.com/aidenappl/lattice-api/main/deploy/setup.sh | bash
+
+services:
+  mariadb:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-lattice}
+      MYSQL_DATABASE: lattice
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  lattice-api:
+    image: ${REGISTRY_URL:-registry.appleby.cloud}/lattice-api:latest
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      DATABASE_DSN: "root:${DB_ROOT_PASSWORD:-lattice}@tcp(mariadb:3306)"
+      JWT_SIGNING_KEY: "${JWT_SIGNING_KEY}"
+      LATTICE_ADMIN_EMAIL: "${ADMIN_EMAIL:-admin@lattice.local}"
+      LATTICE_ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
+      PORT: "8000"
+      ENVIRONMENT: "production"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-https://lattice.appleby.cloud}"
+      TLS_CERT: ""
+      TLS_KEY: ""
+      # Forta (optional)
+      FORTA_API_DOMAIN: "${FORTA_API_DOMAIN:-}"
+      FORTA_LOGIN_DOMAIN: "${FORTA_LOGIN_DOMAIN:-}"
+      FORTA_APP_DOMAIN: "${FORTA_APP_DOMAIN:-}"
+      FORTA_CLIENT_ID: "${FORTA_CLIENT_ID:-}"
+      FORTA_CLIENT_SECRET: "${FORTA_CLIENT_SECRET:-}"
+      FORTA_CALLBACK_URL: "${FORTA_CALLBACK_URL:-}"
+      FORTA_JWT_SIGNING_KEY: "${FORTA_JWT_SIGNING_KEY:-}"
+      FORTA_COOKIE_DOMAIN: "${FORTA_COOKIE_DOMAIN:-}"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+
+  lattice-web:
+    image: ${REGISTRY_URL:-registry.appleby.cloud}/lattice-web:latest
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    environment:
+      NEXT_PUBLIC_LATTICE_API: "${PUBLIC_API_URL:-http://localhost:8000}"
+
+volumes:
+  mariadb_data:
