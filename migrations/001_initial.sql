@@ -66,7 +66,6 @@ CREATE TABLE IF NOT EXISTS registries (
     type             ENUM('dockerhub', 'ghcr', 'custom') NOT NULL DEFAULT 'custom',
     username         VARCHAR(255),
     password         VARCHAR(512),
-    keyring_secret_key VARCHAR(255),
     active           TINYINT(1) NOT NULL DEFAULT 1,
     updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP() ON UPDATE CURRENT_TIMESTAMP(),
     inserted_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP()

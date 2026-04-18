@@ -15,7 +15,6 @@ var registryColumns = []string{
 	"registries.type",
 	"registries.username",
 	"registries.password",
-	"registries.keyring_secret_key",
 	"registries.active",
 	"registries.updated_at",
 	"registries.inserted_at",
@@ -30,7 +29,6 @@ func scanRegistry(row scanner) (*structs.Registry, error) {
 		&r.Type,
 		&r.Username,
 		&r.Password,
-		&r.KeyringSecretKey,
 		&r.Active,
 		&r.UpdatedAt,
 		&r.InsertedAt,
@@ -85,18 +83,17 @@ func GetRegistryByID(engine db.Queryable, id int) (*structs.Registry, error) {
 }
 
 type CreateRegistryRequest struct {
-	Name             string
-	URL              string
-	Type             string
-	Username         *string
-	Password         *string
-	KeyringSecretKey *string
+	Name     string
+	URL      string
+	Type     string
+	Username *string
+	Password *string
 }
 
 func CreateRegistry(engine db.Queryable, req CreateRegistryRequest) (*structs.Registry, error) {
 	q := sq.Insert("registries").
-		Columns("name", "url", "type", "username", "password", "keyring_secret_key").
-		Values(req.Name, req.URL, req.Type, req.Username, req.Password, req.KeyringSecretKey)
+		Columns("name", "url", "type", "username", "password").
+		Values(req.Name, req.URL, req.Type, req.Username, req.Password)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
@@ -117,13 +114,12 @@ func CreateRegistry(engine db.Queryable, req CreateRegistryRequest) (*structs.Re
 }
 
 type UpdateRegistryRequest struct {
-	Name             *string
-	URL              *string
-	Type             *string
-	Username         *string
-	Password         *string
-	KeyringSecretKey *string
-	Active           *bool
+	Name     *string
+	URL      *string
+	Type     *string
+	Username *string
+	Password *string
+	Active   *bool
 }
 
 func UpdateRegistry(engine db.Queryable, id int, req UpdateRegistryRequest) (*structs.Registry, error) {
@@ -148,10 +144,6 @@ func UpdateRegistry(engine db.Queryable, id int, req UpdateRegistryRequest) (*st
 	}
 	if req.Password != nil {
 		q = q.Set("password", *req.Password)
-		hasUpdate = true
-	}
-	if req.KeyringSecretKey != nil {
-		q = q.Set("keyring_secret_key", *req.KeyringSecretKey)
 		hasUpdate = true
 	}
 	if req.Active != nil {

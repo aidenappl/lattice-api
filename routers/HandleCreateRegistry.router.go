@@ -12,12 +12,11 @@ import (
 
 func HandleCreateRegistry(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name             string  `json:"name"`
-		URL              string  `json:"url"`
-		Type             string  `json:"type"`
-		Username         *string `json:"username"`
-		Password         *string `json:"password"`
-		KeyringSecretKey *string `json:"keyring_secret_key"`
+		Name     string  `json:"name"`
+		URL      string  `json:"url"`
+		Type     string  `json:"type"`
+		Username *string `json:"username"`
+		Password *string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		responder.BadBody(w, err)
@@ -46,12 +45,11 @@ func HandleCreateRegistry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reg, err := query.CreateRegistry(db.DB, query.CreateRegistryRequest{
-		Name:             body.Name,
-		URL:              body.URL,
-		Type:             body.Type,
-		Username:         body.Username,
-		Password:         body.Password,
-		KeyringSecretKey: body.KeyringSecretKey,
+		Name:     body.Name,
+		URL:      body.URL,
+		Type:     body.Type,
+		Username: body.Username,
+		Password: body.Password,
 	})
 	if err != nil {
 		responder.QueryError(w, err, "failed to create registry")

@@ -19,13 +19,12 @@ func HandleUpdateRegistry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Name             *string `json:"name"`
-		URL              *string `json:"url"`
-		Type             *string `json:"type"`
-		Username         *string `json:"username"`
-		Password         *string `json:"password"`
-		KeyringSecretKey *string `json:"keyring_secret_key"`
-		Active           *bool   `json:"active"`
+		Name     *string `json:"name"`
+		URL      *string `json:"url"`
+		Type     *string `json:"type"`
+		Username *string `json:"username"`
+		Password *string `json:"password"`
+		Active   *bool   `json:"active"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		responder.BadBody(w, err)
@@ -33,13 +32,12 @@ func HandleUpdateRegistry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reg, err := query.UpdateRegistry(db.DB, id, query.UpdateRegistryRequest{
-		Name:             body.Name,
-		URL:              body.URL,
-		Type:             body.Type,
-		Username:         body.Username,
-		Password:         body.Password,
-		KeyringSecretKey: body.KeyringSecretKey,
-		Active:           body.Active,
+		Name:     body.Name,
+		URL:      body.URL,
+		Type:     body.Type,
+		Username: body.Username,
+		Password: body.Password,
+		Active:   body.Active,
 	})
 	if err != nil {
 		responder.QueryError(w, err, "failed to update registry")

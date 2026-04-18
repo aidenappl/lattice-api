@@ -31,8 +31,8 @@ func Init() {
 	fmt.Print("Connecting to Lattice DB...")
 
 	// Strip any existing path or query params from the base DSN so we can
-	// cleanly append the schema and our own params. Keyring may return the
-	// DSN with or without query params already attached.
+	// cleanly append the schema and our own params. The DSN may be provided
+	// with or without query params already attached.
 	base := env.CoreDBDSN
 	if idx := strings.IndexAny(base, "/?"); idx != -1 {
 		base = base[:idx]
