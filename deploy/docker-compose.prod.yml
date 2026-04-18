@@ -1,5 +1,3 @@
-version: "3.8"
-
 # Lattice Orchestrator production stack
 # Deploy: curl -fsSL https://raw.githubusercontent.com/aidenappl/lattice-api/main/deploy/setup.sh | bash
 
