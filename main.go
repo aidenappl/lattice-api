@@ -28,7 +28,7 @@ import (
 var installRunnerScript []byte
 
 // Set via -ldflags at build time: -ldflags "-X main.Version=abc1234"
-var Version = "v0.0.7"
+var Version = "v0.0.8"
 
 func main() {
 	fmt.Printf("Lattice API %s\n\n", Version)
@@ -450,7 +450,11 @@ func handleDeploymentProgress(payload map[string]any) {
 				if status == "rolled_back" {
 					stackStatus = "failed"
 				}
-				_, _ = query.UpdateStack(db.DB, dep.StackID, query.UpdateStackRequest{Status: &stackStatus})
+				if _, err := query.UpdateStack(db.DB, dep.StackID, query.UpdateStackRequest{Status: &stackStatus}); err != nil {
+					log.Printf("failed to update stack %d status to %q: %v", dep.StackID, stackStatus, err)
+				} else {
+					log.Printf("updated stack %d status to %q", dep.StackID, stackStatus)
+				}
 			}
 
 			// Update container statuses

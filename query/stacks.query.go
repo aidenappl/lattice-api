@@ -173,7 +173,11 @@ func UpdateStack(engine db.Queryable, id int, req UpdateStackRequest) (*structs.
 		hasUpdate = true
 	}
 	if req.WorkerID != nil {
-		q = q.Set("worker_id", *req.WorkerID)
+		if *req.WorkerID == 0 {
+			q = q.Set("worker_id", nil)
+		} else {
+			q = q.Set("worker_id", *req.WorkerID)
+		}
 		hasUpdate = true
 	}
 	if req.Status != nil {
