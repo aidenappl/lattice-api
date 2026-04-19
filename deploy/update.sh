@@ -68,7 +68,7 @@ echo ""
 
 # Run migrations against the running MariaDB container
 echo "Running migrations..."
-DB_CONTAINER=$(sudo docker compose ps -q mariadb 2>/dev/null)
+DB_CONTAINER=$(sudo docker compose ps -q mariadb 2>/dev/null || true)
 
 if [ -z "$DB_CONTAINER" ]; then
     echo "MariaDB not running — starting it..."
@@ -83,14 +83,17 @@ if [ -z "$DB_CONTAINER" ]; then
         fi
         sleep 2
     done
-    DB_CONTAINER=$(sudo docker compose ps -q mariadb)
+    DB_CONTAINER=$(sudo docker compose ps -q mariadb || true)
 fi
 
 DB_PASSWORD="${DB_ROOT_PASSWORD:-lattice}"
 
-# Ensure a migration-tracking table exists so we only apply each file once.
-sudo docker exec "$DB_CONTAINER" mariadb -u root -p"$DB_PASSWORD" lattice -e \
-    "CREATE TABLE IF NOT EXISTS schema_migrations (migration VARCHAR(255) NOT NULL PRIMARY KEY, applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);" 2>/dev/null
+if [ -z "$DB_CONTAINER" ]; then
+    echo "  WARNING: Could not find MariaDB container — skipping migrations."
+else
+    # Ensure a migration-tracking table exists so we only apply each file once.
+    sudo docker exec "$DB_CONTAINER" mariadb -u root -p"$DB_PASSWORD" lattice -e \
+        "CREATE TABLE IF NOT EXISTS schema_migrations (migration VARCHAR(255) NOT NULL PRIMARY KEY, applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);" 2>/dev/null || true
 
 # Backfill legacy migrations that pre-date the tracking table.
 # If schema_migrations is empty (first run with this script) and the DB
