@@ -84,8 +84,9 @@ func HandleSyncCompose(w http.ResponseWriter, r *http.Request) {
 
 		req := query.UpdateContainerRequest{}
 
-		// Health check
+		// Health check — normalize Test to ["CMD-SHELL", "command"] format
 		if svc.Healthcheck != nil && !svc.Healthcheck.Disable {
+			svc.Healthcheck.Test = normalizeHealthTest(svc.Healthcheck.Test)
 			b, _ := json.Marshal(svc.Healthcheck)
 			s := string(b)
 			req.HealthCheck = &s

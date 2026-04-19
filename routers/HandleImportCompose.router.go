@@ -184,8 +184,9 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 			req.Entrypoint = &s
 		}
 
-		// Healthcheck
+		// Healthcheck — normalize Test to ["CMD-SHELL", "command"] format
 		if svc.Healthcheck != nil && !svc.Healthcheck.Disable {
+			svc.Healthcheck.Test = normalizeHealthTest(svc.Healthcheck.Test)
 			b, _ := json.Marshal(svc.Healthcheck)
 			s := string(b)
 			req.HealthCheck = &s
@@ -306,6 +307,32 @@ func parseStringOrList(v any) []string {
 			}
 		}
 		return result
+	}
+	return nil
+}
+
+// normalizeHealthTest converts a healthcheck test value to ["CMD-SHELL", "command"] format.
+// Docker Compose allows test as a string or a list; this ensures consistent []string storage.
+func normalizeHealthTest(v any) []string {
+	if v == nil {
+		return nil
+	}
+	switch val := v.(type) {
+	case string:
+		if val == "" {
+			return nil
+		}
+		return []string{"CMD-SHELL", val}
+	case []any:
+		result := make([]string, 0, len(val))
+		for _, item := range val {
+			if s, ok := item.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result
+	case []string:
+		return val
 	}
 	return nil
 }
