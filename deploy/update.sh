@@ -5,12 +5,13 @@ set -e
 # Pulls latest images, runs migrations, and restarts services.
 #
 # Run from the orchestrator VM:
-#   curl -fsSL https://raw.githubusercontent.com/aidenappl/lattice-api/main/deploy/update.sh | bash
+#   curl -fsSL "https://raw.githubusercontent.com/aidenappl/lattice-api/main/deploy/update.sh?$(date +%s)" | bash
 #
 # Or locally:
 #   cd /opt/lattice && bash update.sh
 
 INSTALL_DIR="/opt/lattice"
+CACHE_BUST="$(date +%s)"
 MIGRATIONS_URL="https://raw.githubusercontent.com/aidenappl/lattice-api/main/migrations"
 
 # Migrations that existed before schema_migrations tracking was introduced.
@@ -54,11 +55,11 @@ echo "Downloading migrations..."
 sudo mkdir -p "$INSTALL_DIR/migrations"
 
 # Get list of migration files from GitHub API
-MIGRATION_FILES=$(curl -fsSL "https://api.github.com/repos/aidenappl/lattice-api/contents/migrations" \
+MIGRATION_FILES=$(curl -fsSL "https://api.github.com/repos/aidenappl/lattice-api/contents/migrations?${CACHE_BUST}" \
     2>/dev/null | grep '"name"' | sed 's/.*"name": "\(.*\)".*/\1/' | sort)
 
 for file in $MIGRATION_FILES; do
-    sudo curl -fsSL -o "$INSTALL_DIR/migrations/$file" "$MIGRATIONS_URL/$file" 2>/dev/null && \
+    sudo curl -fsSL -o "$INSTALL_DIR/migrations/$file" "$MIGRATIONS_URL/$file?${CACHE_BUST}" 2>/dev/null && \
         echo "  downloaded $file" || echo "  WARNING: failed to download $file"
 done
 echo ""
