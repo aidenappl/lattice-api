@@ -40,8 +40,10 @@ fi
 # Capture current versions before updating
 API_PORT_LOCAL="${API_PORT:-8000}"
 WEB_PORT_LOCAL="${WEB_PORT:-3000}"
-OLD_API_VERSION=$(curl -sf "http://localhost:${API_PORT_LOCAL}/version" 2>/dev/null | sed 's/.*"version":"\([^"]*\)".*/\1/' || echo "unknown")
-OLD_WEB_VERSION=$(curl -sf "http://localhost:${WEB_PORT_LOCAL}/api/version" 2>/dev/null | sed 's/.*"version":"\([^"]*\)".*/\1/' || echo "unknown")
+OLD_API_VERSION=$(curl -sf "http://localhost:${API_PORT_LOCAL}/version" 2>/dev/null | sed 's/.*"version":"\([^"]*\)".*/\1/' || true)
+OLD_WEB_VERSION=$(curl -sf "http://localhost:${WEB_PORT_LOCAL}/api/version" 2>/dev/null | sed 's/.*"version":"\([^"]*\)".*/\1/' || true)
+OLD_API_VERSION="${OLD_API_VERSION:-unknown}"
+OLD_WEB_VERSION="${OLD_WEB_VERSION:-unknown}"
 echo "Current versions:  API=$OLD_API_VERSION  Web=$OLD_WEB_VERSION"
 echo ""
 
@@ -119,7 +121,7 @@ fi
 APPLIED=0
 SKIPPED=0
 
-for file in $(ls "$INSTALL_DIR/migrations"/*.sql 2>/dev/null | sort); do
+for file in $(find "$INSTALL_DIR/migrations" -name '*.sql' 2>/dev/null | sort); do
     filename=$(basename "$file")
 
     # Check whether this migration has already been applied.
@@ -135,7 +137,7 @@ for file in $(ls "$INSTALL_DIR/migrations"/*.sql 2>/dev/null | sort); do
 
     echo "  Applying $filename..."
     if sudo docker exec -i "$DB_CONTAINER" mariadb -u root -p"$DB_PASSWORD" lattice < "$file" 2>&1 | \
-            grep -v "^$" | grep -vi "^warning"; then
+            grep -v "^$" | grep -vi "^warning" || true; then
         # Record the successful migration.
         sudo docker exec -i "$DB_CONTAINER" mariadb -u root -p"$DB_PASSWORD" lattice -e \
             "INSERT IGNORE INTO schema_migrations (migration) VALUES ('$filename');" 2>/dev/null
@@ -162,8 +164,10 @@ echo ""
 # Show version diff
 echo "Waiting for services to start..."
 sleep 3
-NEW_API_VERSION=$(curl -sf "http://localhost:${API_PORT_LOCAL}/version" 2>/dev/null | sed 's/.*"version":"\([^"]*\)".*/\1/' || echo "unknown")
-NEW_WEB_VERSION=$(curl -sf "http://localhost:${WEB_PORT_LOCAL}/api/version" 2>/dev/null | sed 's/.*"version":"\([^"]*\)".*/\1/' || echo "unknown")
+NEW_API_VERSION=$(curl -sf "http://localhost:${API_PORT_LOCAL}/version" 2>/dev/null | sed 's/.*"version":"\([^"]*\)".*/\1/' || true)
+NEW_WEB_VERSION=$(curl -sf "http://localhost:${WEB_PORT_LOCAL}/api/version" 2>/dev/null | sed 's/.*"version":"\([^"]*\)".*/\1/' || true)
+NEW_API_VERSION="${NEW_API_VERSION:-unknown}"
+NEW_WEB_VERSION="${NEW_WEB_VERSION:-unknown}"
 echo "Version changes:"
 if [ "$OLD_API_VERSION" = "$NEW_API_VERSION" ]; then
     echo "  API: $OLD_API_VERSION (unchanged)"
