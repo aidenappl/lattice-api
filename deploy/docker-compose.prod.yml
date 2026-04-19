@@ -53,6 +53,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${DOCKER_COMPOSE_DIR:-/opt/lattice}:/opt/lattice:ro
+      - /root/.docker:/root/.docker
     depends_on:
       mariadb:
         condition: service_healthy

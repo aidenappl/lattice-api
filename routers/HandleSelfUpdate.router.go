@@ -102,9 +102,10 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 	}, "Web update triggered successfully")
 }
 
-// registryAuthEnv writes a temporary Docker config.json with registry credentials
-// and returns a DOCKER_CONFIG env var pointing to it, plus a cleanup function.
-// If credentials are not configured it is a no-op (empty env slice, no-op cleanup).
+// registryAuthEnv writes registry credentials into /root/.docker/config.json
+// (which is bind-mounted from the host, so the host Docker daemon can read it)
+// and returns a cleanup function that restores the previous config.
+// If credentials are not configured it is a no-op.
 func registryAuthEnv() (extraEnv []string, cleanup func(), err error) {
 	cleanup = func() {}
 	if env.RegistryURL == "" || env.RegistryUsername == "" || env.RegistryPassword == "" {
@@ -114,17 +115,26 @@ func registryAuthEnv() (extraEnv []string, cleanup func(), err error) {
 	auth := base64.StdEncoding.EncodeToString([]byte(env.RegistryUsername + ":" + env.RegistryPassword))
 	configJSON := fmt.Sprintf(`{"auths":{%q:{"auth":%q}}}`, env.RegistryURL, auth)
 
-	tmpDir, err := os.MkdirTemp("", "lattice-docker-config-*")
-	if err != nil {
-		return nil, func() {}, fmt.Errorf("failed to create temp dir: %w", err)
+	configDir := "/root/.docker"
+	configPath := filepath.Join(configDir, "config.json")
+
+	if err = os.MkdirAll(configDir, 0700); err != nil {
+		return nil, func() {}, fmt.Errorf("failed to create docker config dir: %w", err)
 	}
 
-	if err = os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(configJSON), 0600); err != nil {
-		_ = os.RemoveAll(tmpDir)
+	// Back up any existing config so we can restore it.
+	existing, readErr := os.ReadFile(configPath)
+
+	if err = os.WriteFile(configPath, []byte(configJSON), 0600); err != nil {
 		return nil, func() {}, fmt.Errorf("failed to write docker config: %w", err)
 	}
 
-	extraEnv = []string{"DOCKER_CONFIG=" + tmpDir}
-	cleanup = func() { _ = os.RemoveAll(tmpDir) }
+	cleanup = func() {
+		if readErr == nil {
+			_ = os.WriteFile(configPath, existing, 0600)
+		} else {
+			_ = os.Remove(configPath)
+		}
+	}
 	return
 }
