@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -28,7 +29,7 @@ import (
 var installRunnerScript []byte
 
 // Set via -ldflags at build time: -ldflags "-X main.Version=abc1234"
-var Version = "v0.1.1"
+var Version = "v0.1.2"
 
 func main() {
 	fmt.Printf("Lattice API %s\n\n", Version)
@@ -253,6 +254,7 @@ func main() {
 	admin.HandleFunc("/stacks/{id}", routers.HandleUpdateStack).Methods(http.MethodPut)
 	admin.HandleFunc("/stacks/{id}", containerActionHandler.HandleDeleteStack).Methods(http.MethodDelete)
 	admin.HandleFunc("/stacks/{id}/compose", routers.HandleUpdateCompose).Methods(http.MethodPut)
+	admin.HandleFunc("/stacks/{id}/sync-compose", routers.HandleSyncCompose).Methods(http.MethodPost)
 	admin.HandleFunc("/stacks/{id}/deploy", deployHandler.HandleDeployStack).Methods(http.MethodPost)
 
 	// Containers
@@ -590,6 +592,15 @@ func handleContainerSync(payload map[string]any) {
 		none := "none"
 		req.HealthStatus = &none
 		changed = true
+	}
+
+	// If the worker reports a health_check config and we don't have one stored, persist it.
+	if hcRaw, ok := payload["health_check"]; ok && hcRaw != nil && c.HealthCheck == nil {
+		if hcBytes, err := json.Marshal(hcRaw); err == nil {
+			hcStr := string(hcBytes)
+			req.HealthCheck = &hcStr
+			changed = true
+		}
 	}
 
 	if !changed {

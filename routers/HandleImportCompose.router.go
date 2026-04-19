@@ -32,11 +32,12 @@ type composeService struct {
 }
 
 type composeHealth struct {
-	Test        any    `yaml:"test"`
-	Interval    string `yaml:"interval"`
-	Timeout     string `yaml:"timeout"`
-	Retries     int    `yaml:"retries"`
-	StartPeriod string `yaml:"start_period"`
+	Disable     bool   `yaml:"disable"     json:"disable,omitempty"`
+	Test        any    `yaml:"test"        json:"test,omitempty"`
+	Interval    string `yaml:"interval"    json:"interval,omitempty"`
+	Timeout     string `yaml:"timeout"     json:"timeout,omitempty"`
+	Retries     int    `yaml:"retries"     json:"retries,omitempty"`
+	StartPeriod string `yaml:"start_period" json:"start_period,omitempty"`
 }
 
 type composeDeploy struct {
@@ -181,6 +182,13 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 			b, _ := json.Marshal(ep)
 			s := string(b)
 			req.Entrypoint = &s
+		}
+
+		// Healthcheck
+		if svc.Healthcheck != nil && !svc.Healthcheck.Disable {
+			b, _ := json.Marshal(svc.Healthcheck)
+			s := string(b)
+			req.HealthCheck = &s
 		}
 
 		// Deploy config

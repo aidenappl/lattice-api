@@ -134,6 +134,12 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 			req.Entrypoint = &s
 		}
 
+		if svc.Healthcheck != nil && !svc.Healthcheck.Disable {
+			b, _ := json.Marshal(svc.Healthcheck)
+			s := string(b)
+			req.HealthCheck = &s
+		}
+
 		if svc.Deploy != nil {
 			if svc.Deploy.Replicas > 0 {
 				req.Replicas = svc.Deploy.Replicas
