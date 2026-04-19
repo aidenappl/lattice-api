@@ -45,6 +45,9 @@ var (
 	DockerComposeDir = getEnv("DOCKER_COMPOSE_DIR", "")
 	APIServiceName   = getEnv("API_SERVICE_NAME", "lattice-api")
 	WebServiceName   = getEnv("WEB_SERVICE_NAME", "lattice-web")
+	RegistryURL      = getEnv("REGISTRY_URL", "")
+	RegistryUsername = getEnv("REGISTRY_USERNAME", "")
+	RegistryPassword = getEnv("REGISTRY_PASSWORD", "")
 )
 
 func getEnv(key string, fallback string) string {

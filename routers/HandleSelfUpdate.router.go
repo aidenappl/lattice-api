@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/aidenappl/lattice-api/env"
@@ -19,6 +20,12 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 
 	composeFile := env.DockerComposeDir + "/docker-compose.yml"
 	service := env.APIServiceName
+
+	// Log in to the registry if credentials are configured.
+	if err := registryLogin(); err != nil {
+		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to authenticate with registry: %v", err))
+		return
+	}
 
 	// Pull latest image synchronously so we can report failures.
 	pullCmd := exec.Command("docker", "compose", "-f", composeFile, "pull", service)
@@ -60,6 +67,12 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 	composeFile := env.DockerComposeDir + "/docker-compose.yml"
 	service := env.WebServiceName
 
+	// Log in to the registry if credentials are configured.
+	if err := registryLogin(); err != nil {
+		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to authenticate with registry: %v", err))
+		return
+	}
+
 	// Pull latest image
 	pullCmd := exec.Command("docker", "compose", "-f", composeFile, "pull", service)
 	pullOut, err := pullCmd.CombinedOutput()
@@ -79,4 +92,21 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 	responder.New(w, map[string]any{
 		"service": service,
 	}, "Web update triggered successfully")
+}
+
+// registryLogin runs `docker login` with the configured registry credentials.
+// It is a no-op if any of the three registry env vars are unset.
+func registryLogin() error {
+	if env.RegistryURL == "" || env.RegistryUsername == "" || env.RegistryPassword == "" {
+		return nil
+	}
+	cmd := exec.Command("docker", "login", env.RegistryURL,
+		"--username", env.RegistryUsername,
+		"--password-stdin",
+	)
+	cmd.Stdin = strings.NewReader(env.RegistryPassword)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%w — %s", err, string(out))
+	}
+	return nil
 }

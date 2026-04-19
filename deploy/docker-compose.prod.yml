@@ -38,6 +38,9 @@ services:
       DOCKER_COMPOSE_DIR: "${DOCKER_COMPOSE_DIR:-/opt/lattice}"
       API_SERVICE_NAME: "${API_SERVICE_NAME:-lattice-api}"
       WEB_SERVICE_NAME: "${WEB_SERVICE_NAME:-lattice-web}"
+      REGISTRY_URL: "${REGISTRY_URL:-registry.appleby.cloud}"
+      REGISTRY_USERNAME: "${REGISTRY_USERNAME}"
+      REGISTRY_PASSWORD: "${REGISTRY_PASSWORD}"
       # Forta (optional)
       FORTA_API_DOMAIN: "${FORTA_API_DOMAIN:-}"
       FORTA_LOGIN_DOMAIN: "${FORTA_LOGIN_DOMAIN:-}"
