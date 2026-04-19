@@ -29,7 +29,7 @@ import (
 var installRunnerScript []byte
 
 // Set via -ldflags at build time: -ldflags "-X main.Version=abc1234"
-var Version = "v0.1.2"
+var Version = "v0.1.3"
 
 func main() {
 	fmt.Printf("Lattice API %s\n\n", Version)
@@ -166,6 +166,13 @@ func main() {
 				"payload":   msg.Payload,
 			})
 			go handleContainerLog(session.WorkerID, msg.Payload)
+
+		case socket.MsgWorkerActionStatus:
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "worker_action_status",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
 		}
 	}
 

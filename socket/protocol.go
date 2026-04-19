@@ -14,6 +14,7 @@ const (
 	MsgDeploymentProgress    = "deployment_progress"
 	MsgContainerLogs         = "container_logs"
 	MsgRegistration          = "registration"
+	MsgWorkerActionStatus    = "worker_action_status"
 )
 
 // Orchestrator -> Worker message types
@@ -28,9 +29,6 @@ const (
 	MsgRemove        = "remove"
 	MsgRecreate      = "recreate"
 	MsgPullImage     = "pull_image"
-	MsgExec          = "exec"
-	MsgConfigUpdate  = "config_update"
-	MsgAck           = "ack"
 	MsgConnected     = "connected"
 	MsgRebootOS      = "reboot_os"
 	MsgUpgradeRunner = "upgrade_runner"

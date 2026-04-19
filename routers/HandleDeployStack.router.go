@@ -116,7 +116,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 			spec["cpu_limit"] = *c.CPULimit
 		}
 		if c.MemoryLimit != nil {
-			spec["memory_limit"] = *c.MemoryLimit
+			spec["memory_limit"] = int64(*c.MemoryLimit) * 1024 * 1024 // convert MB to bytes for Docker
 		}
 		if c.Command != nil {
 			var cmd []string
@@ -225,6 +225,30 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		"stack_name":    stack.Name,
 		"strategy":      stack.DeploymentStrategy,
 		"containers":    containerSpecs,
+	}
+
+	// Include stack-level networks
+	if networks, err := query.ListNetworksByStack(db.DB, stack.ID); err == nil && networks != nil && len(*networks) > 0 {
+		netSpecs := make([]map[string]any, 0, len(*networks))
+		for _, n := range *networks {
+			netSpecs = append(netSpecs, map[string]any{
+				"name":   n.Name,
+				"driver": n.Driver,
+			})
+		}
+		payload["networks"] = netSpecs
+	}
+
+	// Include stack-level volumes
+	if volumes, err := query.ListVolumesByStack(db.DB, stack.ID); err == nil && volumes != nil && len(*volumes) > 0 {
+		volSpecs := make([]map[string]any, 0, len(*volumes))
+		for _, v := range *volumes {
+			volSpecs = append(volSpecs, map[string]any{
+				"name":   v.Name,
+				"driver": v.Driver,
+			})
+		}
+		payload["volumes"] = volSpecs
 	}
 
 	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.Envelope{
