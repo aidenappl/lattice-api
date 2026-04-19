@@ -91,12 +91,21 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 			if err := json.Unmarshal([]byte(*c.EnvVars), &ev); err != nil {
 				log.Printf("invalid env_vars JSON for container %s: %v", c.Name, err)
 			} else {
-				// Merge stack-level env vars (container-level overrides stack-level)
+				// Merge stack-level env vars (container-level overrides stack-level).
+				// Container env values imported from a compose file may be stored as
+				// ${VAR_NAME} references. Resolve those against the stack env vars so
+				// the worker receives the actual value rather than the literal reference.
 				merged := make(map[string]any, len(stackEnvVars)+len(ev))
 				for k, v := range stackEnvVars {
 					merged[k] = v
 				}
 				for k, v := range ev {
+					if s, ok := v.(string); ok {
+						if resolved, ok := resolveEnvRef(s, stackEnvVars); ok {
+							merged[k] = resolved
+							continue
+						}
+					}
 					merged[k] = v
 				}
 				spec["env_vars"] = merged
@@ -275,4 +284,26 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 	})
 
 	responder.NewCreated(w, deployment, "deployment created and sent to worker")
+}
+
+// resolveEnvRef checks if s is a compose-style variable reference (${VAR} or $VAR)
+// and, if so, returns the corresponding value from envVars. Returns ("", false) if
+// s is not a reference or the variable is not present in envVars.
+func resolveEnvRef(s string, envVars map[string]any) (any, bool) {
+	var name string
+	switch {
+	case strings.HasPrefix(s, "${") && strings.HasSuffix(s, "}"):
+		name = s[2 : len(s)-1]
+	case strings.HasPrefix(s, "$"):
+		name = s[1:]
+	default:
+		return nil, false
+	}
+	if name == "" {
+		return nil, false
+	}
+	if v, ok := envVars[name]; ok {
+		return v, true
+	}
+	return nil, false
 }
