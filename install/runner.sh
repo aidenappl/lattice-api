@@ -7,6 +7,7 @@ set -e
 REPO="aidenappl/lattice-runner"
 INSTALL_DIR="/opt/lattice-runner"
 BINARY_NAME="lattice-runner"
+GO_VERSION="1.24.10"
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
@@ -26,32 +27,55 @@ esac
 
 echo "  Platform: ${OS}/${ARCH}"
 
-# Check for required tools
-command -v docker >/dev/null 2>&1 || {
-    echo ""
-    echo "Docker is required but not installed."
-    echo "Install it with: curl -fsSL https://get.docker.com | sh"
-    exit 1
-}
+# Ensure common paths are available (curl|bash doesn't source profile.d)
+for p in /usr/local/go/bin /usr/lib/go/bin /snap/bin "$HOME/go/bin"; do
+    [ -d "$p" ] && export PATH="$p:$PATH"
+done
 
-echo "  Docker:   $(docker --version | awk '{print $3}' | tr -d ',')"
+# ── Ensure Docker is installed ──────────────────────────────────────────��───
 
-# Check for Go (needed to build from source)
-if command -v go >/dev/null 2>&1; then
-    GO_VERSION=$(go version | awk '{print $3}')
-    echo "  Go:       $GO_VERSION"
-    BUILD_METHOD="go"
+if command -v docker >/dev/null 2>&1; then
+    echo "  Docker:   $(docker --version | awk '{print $3}' | tr -d ',')"
 else
-    echo "  Go:       not found"
+    echo "  Docker:   not found — installing..."
     echo ""
-    echo "Go is required to build the runner."
-    echo "Install it from: https://go.dev/dl/"
+    curl -fsSL https://get.docker.com | sh
+    sudo systemctl enable --now docker
+    # Add current user to docker group so runner doesn't need sudo
+    sudo usermod -aG docker "${USER:-root}" 2>/dev/null || true
     echo ""
-    echo "Quick install:"
-    echo "  wget https://go.dev/dl/go1.24.10.linux-${ARCH}.tar.gz"
-    echo "  sudo tar -C /usr/local -xzf go1.24.10.linux-${ARCH}.tar.gz"
-    echo "  export PATH=\$PATH:/usr/local/go/bin"
-    exit 1
+    echo "  Docker installed: $(docker --version | awk '{print $3}' | tr -d ',')"
+fi
+
+# ── Ensure Go is installed ──────────────────────────────────────────────────
+
+if command -v go >/dev/null 2>&1; then
+    echo "  Go:       $(go version | awk '{print $3}')"
+else
+    echo "  Go:       not found — installing go${GO_VERSION}..."
+    echo ""
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" -o /tmp/go.tar.gz
+    sudo rm -rf /usr/local/go
+    sudo tar -C /usr/local -xzf /tmp/go.tar.gz
+    rm -f /tmp/go.tar.gz
+    export PATH="/usr/local/go/bin:$PATH"
+    echo "  Go installed: $(go version | awk '{print $3}')"
+fi
+
+# ── Ensure git is installed ─────────────────────────────────────────────────
+
+if ! command -v git >/dev/null 2>&1; then
+    echo "  Git:      not found — installing..."
+    if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update -qq && sudo apt-get install -y -qq git
+    elif command -v yum >/dev/null 2>&1; then
+        sudo yum install -y -q git
+    elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y -q git
+    else
+        echo "ERROR: Could not install git. Please install it manually."
+        exit 1
+    fi
 fi
 
 echo ""
