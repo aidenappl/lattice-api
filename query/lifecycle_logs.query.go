@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"time"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/aidenappl/lattice-api/db"
@@ -102,9 +103,14 @@ type CreateLifecycleLogRequest struct {
 }
 
 func CreateLifecycleLog(engine db.Queryable, req CreateLifecycleLogRequest) error {
+	// Use a timestamp slightly in the past so the lifecycle entry sorts
+	// before the new container's first log lines (which the runner may
+	// have already timestamped by the time the API processes the event).
+	ts := time.Now().Add(-1 * time.Second).UTC().Format("2006-01-02 15:04:05.999999")
+
 	q := sq.Insert("lifecycle_logs").
-		Columns("container_id", "container_name", "worker_id", "event", "message").
-		Values(req.ContainerID, req.ContainerName, req.WorkerID, req.Event, req.Message)
+		Columns("container_id", "container_name", "worker_id", "event", "message", "recorded_at").
+		Values(req.ContainerID, req.ContainerName, req.WorkerID, req.Event, req.Message, ts)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
