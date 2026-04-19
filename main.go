@@ -29,7 +29,7 @@ import (
 var installRunnerScript []byte
 
 // Set via -ldflags at build time: -ldflags "-X main.Version=abc1234"
-var Version = "v0.1.5"
+var Version = "v0.1.6"
 
 func main() {
 	fmt.Printf("Lattice API %s\n\n", Version)
@@ -181,7 +181,7 @@ func main() {
 			message, _ := msg.Payload["message"].(string)
 			log.Printf("worker=%d shutting down gracefully: reason=%s", session.WorkerID, reason)
 			// Write lifecycle logs synchronously BEFORE broadcasting.
-			writeWorkerLifecycleLogs(session.WorkerID, message)
+			writeWorkerLifecycleLogs(session.WorkerID, "worker_shutdown", message)
 			adminHub.BroadcastJSON(map[string]any{
 				"type":      "worker_shutdown",
 				"worker_id": session.WorkerID,
@@ -192,9 +192,9 @@ func main() {
 			goroutine, _ := msg.Payload["goroutine"].(string)
 			panicMsg, _ := msg.Payload["panic"].(string)
 			log.Printf("worker=%d CRASH in goroutine %q: %s", session.WorkerID, goroutine, panicMsg)
-			crashMsg := fmt.Sprintf("[lattice] worker crashed: %s (goroutine: %s)", panicMsg, goroutine)
+			crashMsg := fmt.Sprintf("worker crashed: %s (goroutine: %s)", panicMsg, goroutine)
 			// Write lifecycle logs synchronously BEFORE broadcasting.
-			writeWorkerLifecycleLogs(session.WorkerID, crashMsg)
+			writeWorkerLifecycleLogs(session.WorkerID, "worker_crash", crashMsg)
 			adminHub.BroadcastJSON(map[string]any{
 				"type":      "worker_crash",
 				"worker_id": session.WorkerID,
@@ -299,6 +299,7 @@ func main() {
 	admin.HandleFunc("/containers/{id}", routers.HandleUpdateContainer).Methods(http.MethodPut)
 	admin.HandleFunc("/containers/{id}", containerActionHandler.HandleDeleteContainer).Methods(http.MethodDelete)
 	admin.HandleFunc("/containers/{id}/logs", routers.HandleGetContainerLogs).Methods(http.MethodGet)
+	admin.HandleFunc("/containers/{id}/lifecycle", routers.HandleGetLifecycleLogs).Methods(http.MethodGet)
 	admin.HandleFunc("/containers/{id}/start", containerActionHandler.HandleStartContainer).Methods(http.MethodPost)
 	admin.HandleFunc("/containers/{id}/stop", containerActionHandler.HandleStopContainer).Methods(http.MethodPost)
 	admin.HandleFunc("/containers/{id}/kill", containerActionHandler.HandleKillContainer).Methods(http.MethodPost)
@@ -575,28 +576,28 @@ func handleContainerStatus(workerID int, payload map[string]any) {
 	} else {
 		log.Printf("container status: %s → %s", containerName, dbStatus)
 
-		// Write a lifecycle entry to container_logs so it persists in the log viewer.
+		// Write a lifecycle entry to lifecycle_logs so it persists in the log viewer.
 		lifecycleMessages := map[string]string{
-			"start":    "[lattice] container started",
-			"restart":  "[lattice] container restarted",
-			"stop":     "[lattice] container stopped",
-			"kill":     "[lattice] container force-killed",
-			"recreate": "[lattice] container recreated",
-			"pause":    "[lattice] container paused",
-			"unpause":  "[lattice] container unpaused",
+			"start":    "container started",
+			"restart":  "container restarted",
+			"stop":     "container stopped",
+			"kill":     "container force-killed",
+			"recreate": "container recreated",
+			"pause":    "container paused",
+			"unpause":  "container unpaused",
 		}
 		if msg, ok := lifecycleMessages[action]; ok {
 			cID := c.ID
 			cName := c.Name
 
-			logReq := query.CreateContainerLogRequest{
+			logReq := query.CreateLifecycleLogRequest{
 				WorkerID:      workerID,
 				ContainerID:   &cID,
 				ContainerName: &cName,
-				Stream:        "stdout",
+				Event:         action,
 				Message:       msg,
 			}
-			if err := query.CreateContainerLog(db.DB, logReq); err != nil {
+			if err := query.CreateLifecycleLog(db.DB, logReq); err != nil {
 				log.Printf("container status: failed to write lifecycle log for %q: %v", containerName, err)
 			}
 		}
@@ -717,7 +718,7 @@ func handleContainerLog(workerID int, payload map[string]any) {
 // writeWorkerLifecycleLogs writes a system log entry to every container
 // belonging to workerID. Used for shutdown and crash events so the log viewer
 // shows what happened to the runner.
-func writeWorkerLifecycleLogs(workerID int, message string) {
+func writeWorkerLifecycleLogs(workerID int, event string, message string) {
 	containers, err := query.ListAllContainers(db.DB, nil, &workerID)
 	if err != nil {
 		log.Printf("worker lifecycle log: failed to list containers for worker=%d: %v", workerID, err)
@@ -726,14 +727,14 @@ func writeWorkerLifecycleLogs(workerID int, message string) {
 	for _, c := range *containers {
 		cID := c.ID
 		cName := c.Name
-		logReq := query.CreateContainerLogRequest{
+		logReq := query.CreateLifecycleLogRequest{
 			WorkerID:      workerID,
 			ContainerID:   &cID,
 			ContainerName: &cName,
-			Stream:        "stdout",
+			Event:         event,
 			Message:       message,
 		}
-		if err := query.CreateContainerLog(db.DB, logReq); err != nil {
+		if err := query.CreateLifecycleLog(db.DB, logReq); err != nil {
 			log.Printf("worker lifecycle log: failed to write log for container %q: %v", cName, err)
 		}
 	}
