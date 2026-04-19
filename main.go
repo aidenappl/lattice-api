@@ -136,12 +136,14 @@ func main() {
 			handleDeploymentProgress(msg.Payload)
 
 		case socket.MsgContainerStatus:
+			// Write lifecycle logs synchronously BEFORE broadcasting so the DB
+			// row exists when the frontend receives the event and calls loadLogs().
+			handleContainerStatus(msg.Payload)
 			adminHub.BroadcastJSON(map[string]any{
 				"type":      "container_status",
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
-			go handleContainerStatus(msg.Payload)
 
 		case socket.MsgContainerHealthStatus:
 			adminHub.BroadcastJSON(map[string]any{
@@ -173,6 +175,29 @@ func main() {
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
+
+		case socket.MsgWorkerShutdown:
+			reason, _ := msg.Payload["reason"].(string)
+			message, _ := msg.Payload["message"].(string)
+			log.Printf("worker=%d shutting down gracefully: reason=%s", session.WorkerID, reason)
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "worker_shutdown",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
+			go writeWorkerLifecycleLogs(session.WorkerID, message)
+
+		case socket.MsgWorkerCrash:
+			goroutine, _ := msg.Payload["goroutine"].(string)
+			panicMsg, _ := msg.Payload["panic"].(string)
+			log.Printf("worker=%d CRASH in goroutine %q: %s", session.WorkerID, goroutine, panicMsg)
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "worker_crash",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
+			crashMsg := fmt.Sprintf("[lattice] worker crashed: %s (goroutine: %s)", panicMsg, goroutine)
+			go writeWorkerLifecycleLogs(session.WorkerID, crashMsg)
 		}
 	}
 
@@ -675,5 +700,30 @@ func handleContainerLog(workerID int, payload map[string]any) {
 
 	if err := query.CreateContainerLog(db.DB, req); err != nil {
 		log.Printf("failed to store container log for worker=%d: %v", workerID, err)
+	}
+}
+
+// writeWorkerLifecycleLogs writes a system log entry to every container
+// belonging to workerID. Used for shutdown and crash events so the log viewer
+// shows what happened to the runner.
+func writeWorkerLifecycleLogs(workerID int, message string) {
+	containers, err := query.ListAllContainers(db.DB, nil, &workerID)
+	if err != nil {
+		log.Printf("worker lifecycle log: failed to list containers for worker=%d: %v", workerID, err)
+		return
+	}
+	for _, c := range *containers {
+		cID := c.ID
+		cName := c.Name
+		logReq := query.CreateContainerLogRequest{
+			WorkerID:      workerID,
+			ContainerID:   &cID,
+			ContainerName: &cName,
+			Stream:        "stdout",
+			Message:       message,
+		}
+		if err := query.CreateContainerLog(db.DB, logReq); err != nil {
+			log.Printf("worker lifecycle log: failed to write log for container %q: %v", cName, err)
+		}
 	}
 }

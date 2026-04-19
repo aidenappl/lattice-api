@@ -15,6 +15,8 @@ const (
 	MsgContainerLogs         = "container_logs"
 	MsgRegistration          = "registration"
 	MsgWorkerActionStatus    = "worker_action_status"
+	MsgWorkerShutdown        = "worker_shutdown"
+	MsgWorkerCrash           = "worker_crash"
 )
 
 // Orchestrator -> Worker message types
