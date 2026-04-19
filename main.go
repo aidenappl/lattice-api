@@ -169,6 +169,14 @@ func main() {
 			})
 			go handleContainerLog(session.WorkerID, msg.Payload)
 
+		case socket.MsgLifecycleLog:
+			handleLifecycleLog(session.WorkerID, msg.Payload)
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "lifecycle_log",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
+
 		case socket.MsgWorkerActionStatus:
 			adminHub.BroadcastJSON(map[string]any{
 				"type":      "worker_action_status",
@@ -601,6 +609,36 @@ func handleContainerStatus(workerID int, payload map[string]any) {
 				log.Printf("container status: failed to write lifecycle log for %q: %v", containerName, err)
 			}
 		}
+	}
+}
+
+// handleLifecycleLog processes lifecycle_log messages from workers and persists
+// them to the lifecycle_logs table. These are verbose progress messages sent
+// during container actions (e.g. "pulling image…", "stopping container…").
+func handleLifecycleLog(workerID int, payload map[string]any) {
+	containerName, _ := payload["container_name"].(string)
+	event, _ := payload["event"].(string)
+	message, _ := payload["message"].(string)
+
+	if message == "" {
+		return
+	}
+
+	logReq := query.CreateLifecycleLogRequest{
+		WorkerID: workerID,
+		Event:    event,
+		Message:  message,
+	}
+
+	if containerName != "" {
+		logReq.ContainerName = &containerName
+		if c, err := query.GetContainerByName(db.DB, containerName); err == nil {
+			logReq.ContainerID = &c.ID
+		}
+	}
+
+	if err := query.CreateLifecycleLog(db.DB, logReq); err != nil {
+		log.Printf("lifecycle log: failed to write for container=%q event=%q: %v", containerName, event, err)
 	}
 }
 

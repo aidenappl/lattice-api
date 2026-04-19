@@ -17,6 +17,7 @@ const (
 	MsgWorkerActionStatus    = "worker_action_status"
 	MsgWorkerShutdown        = "worker_shutdown"
 	MsgWorkerCrash           = "worker_crash"
+	MsgLifecycleLog          = "lifecycle_log"
 )
 
 // Orchestrator -> Worker message types
