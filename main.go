@@ -21,6 +21,7 @@ import (
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/routers"
 	"github.com/aidenappl/lattice-api/socket"
+	"github.com/aidenappl/lattice-api/versions"
 	"github.com/gorilla/mux"
 	"github.com/rs/cors"
 )
@@ -28,20 +29,16 @@ import (
 //go:embed install/runner.sh
 var installRunnerScript []byte
 
-// Set via -ldflags at build time:
-//   -X main.Version=v0.1.6
-//   -X main.LatestRunnerVersion=v0.1.5
-//   -X main.LatestWebVersion=v0.0.2
-var Version = "v0.1.6"
-var LatestRunnerVersion = ""
-var LatestWebVersion = ""
+// Set via -ldflags at build time: -X main.Version=$(git rev-parse --short HEAD)
+var Version = "dev"
 
 func main() {
 	fmt.Printf("Lattice API %s\n\n", Version)
 	routers.InstallScript = installRunnerScript
 	routers.APIVersion = Version
-	routers.LatestRunnerVer = LatestRunnerVersion
-	routers.LatestWebVer = LatestWebVersion
+
+	// Start background polling for latest GitHub releases.
+	versions.Start()
 
 	// 1. Database
 	db.Init()
@@ -359,6 +356,7 @@ func main() {
 
 	// Versions & updates
 	admin.HandleFunc("/versions", routers.HandleGetVersions).Methods(http.MethodGet)
+	admin.HandleFunc("/versions/refresh", routers.HandleRefreshVersions).Methods(http.MethodPost)
 	admin.HandleFunc("/update/api", routers.HandleUpdateAPI).Methods(http.MethodPost)
 	admin.HandleFunc("/update/web", routers.HandleUpdateWeb).Methods(http.MethodPost)
 

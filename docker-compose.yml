@@ -17,6 +17,8 @@ services:
 
   lattice-api:
     build: .
+    # Production: replace 'build' with 'image' for self-update to work:
+    # image: registry.appleby.cloud/lattice-api:latest
     ports:
       - "8000:8000"
     environment:
@@ -28,8 +30,6 @@ services:
       ENVIRONMENT: "development"
       ALLOWED_ORIGINS: "http://localhost:3000"
       DOCKER_COMPOSE_DIR: "/compose"
-      API_SERVICE_NAME: "lattice-api"
-      WEB_SERVICE_NAME: "lattice-web"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - .:/compose:ro
@@ -39,6 +39,8 @@ services:
 
   lattice-web:
     build: ../lattice-web
+    # Production: replace 'build' with 'image' for self-update to work:
+    # image: registry.appleby.cloud/lattice-web:latest
     ports:
       - "3000:3000"
     environment:

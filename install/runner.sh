@@ -8,12 +8,25 @@ REPO="aidenappl/lattice-runner"
 INSTALL_DIR="/opt/lattice-runner"
 BINARY_NAME="lattice-runner"
 GO_VERSION="1.24.10"
+SERVICE_NAME="lattice-runner"
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
 echo "║      Lattice Runner Installer            ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
+
+# Detect if this is an upgrade (service already exists and running)
+IS_UPGRADE=false
+if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+    IS_UPGRADE=true
+    echo "  Mode:     upgrade (existing service detected)"
+elif [ -f "${INSTALL_DIR}/${BINARY_NAME}" ]; then
+    IS_UPGRADE=true
+    echo "  Mode:     upgrade (existing binary detected)"
+else
+    echo "  Mode:     fresh install"
+fi
 
 # Detect platform
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -32,7 +45,7 @@ for p in /usr/local/go/bin /usr/lib/go/bin /snap/bin "$HOME/go/bin"; do
     [ -d "$p" ] && export PATH="$p:$PATH"
 done
 
-# ── Ensure Docker is installed ──────────────────────────────────────────��───
+# ── Ensure Docker is installed ─────────────────────────────────────────────
 
 if command -v docker >/dev/null 2>&1; then
     echo "  Docker:   $(docker --version | awk '{print $3}' | tr -d ',')"
@@ -104,9 +117,18 @@ echo ""
 echo "Lattice Runner installed to ${INSTALL_DIR}/${BINARY_NAME}"
 echo ""
 
-# Run setup
-if [ -n "$WORKER_TOKEN" ]; then
-    # Non-interactive: token was passed as env var
+if [ "$IS_UPGRADE" = true ]; then
+    # ── Upgrade path: restart the existing service ──────────────────────────
+    echo "Restarting ${SERVICE_NAME} service..."
+    sudo systemctl restart "$SERVICE_NAME"
+    echo ""
+    echo "Upgrade complete. Runner restarted with new binary."
+    echo ""
+    echo "  sudo systemctl status ${SERVICE_NAME}"
+    echo "  sudo journalctl -u ${SERVICE_NAME} -f"
+    echo ""
+elif [ -n "$WORKER_TOKEN" ]; then
+    # ── Non-interactive fresh install: token was passed as env var ───────────
     echo "Configuring with provided token..."
 
     ORCHESTRATOR_URL="${ORCHESTRATOR_URL:-wss://lattice-api.appleby.cloud/ws/worker}"
@@ -120,7 +142,7 @@ ENVEOF
     sudo chmod 600 "${INSTALL_DIR}/.env"
 
     # Install systemd service
-    sudo tee /etc/systemd/system/lattice-runner.service > /dev/null <<SVCEOF
+    sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<SVCEOF
 [Unit]
 Description=Lattice Runner
 After=network.target docker.service
@@ -139,15 +161,15 @@ WantedBy=multi-user.target
 SVCEOF
 
     sudo systemctl daemon-reload
-    sudo systemctl enable lattice-runner
-    sudo systemctl start lattice-runner
+    sudo systemctl enable "$SERVICE_NAME"
+    sudo systemctl start "$SERVICE_NAME"
 
     echo "Lattice Runner installed and started."
     echo ""
-    echo "  sudo systemctl status lattice-runner"
-    echo "  sudo journalctl -u lattice-runner -f"
+    echo "  sudo systemctl status ${SERVICE_NAME}"
+    echo "  sudo journalctl -u ${SERVICE_NAME} -f"
     echo ""
 else
-    # Interactive: run setup wizard
+    # ── Interactive fresh install: run setup wizard ─────────────────────────
     sudo lattice-runner setup
 fi

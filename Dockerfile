@@ -9,12 +9,9 @@ RUN go mod download
 
 COPY . .
 
-ARG LATEST_RUNNER_VERSION=""
-ARG LATEST_WEB_VERSION=""
-
 RUN VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown") && \
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-  -ldflags="-w -s -X main.Version=${VERSION} -X main.LatestRunnerVersion=${LATEST_RUNNER_VERSION} -X main.LatestWebVersion=${LATEST_WEB_VERSION}" \
+  -ldflags="-w -s -X main.Version=${VERSION}" \
   -o /lattice-api .
 
 # ---
@@ -22,11 +19,6 @@ RUN VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown") && \
 FROM alpine:3.19
 
 RUN apk add --no-cache ca-certificates curl docker-cli docker-cli-compose
-
-# Create user with docker group access for self-update capability
-RUN addgroup -S lattice && adduser -S lattice -G lattice -u 1001 && \
-    addgroup lattice docker 2>/dev/null || true
-USER 1001:1001
 
 COPY --from=builder /lattice-api /usr/local/bin/lattice-api
 

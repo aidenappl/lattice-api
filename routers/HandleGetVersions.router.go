@@ -6,12 +6,11 @@ import (
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
+	"github.com/aidenappl/lattice-api/versions"
 )
 
-// Set from main at startup via ldflags.
+// APIVersion is set from main at startup (via ldflags).
 var APIVersion string
-var LatestRunnerVer string
-var LatestWebVer string
 
 func HandleGetVersions(w http.ResponseWriter, r *http.Request) {
 	result, err := query.ListWorkers(db.DB, query.ListWorkersRequest{Limit: 500})
@@ -28,23 +27,16 @@ func HandleGetVersions(w http.ResponseWriter, r *http.Request) {
 		Outdated      bool    `json:"outdated"`
 	}
 
-	// Fall back to API version when ldflags weren't set.
-	latest := LatestRunnerVer
-	if latest == "" {
-		latest = APIVersion
-	}
-
-	webLatest := LatestWebVer
-	if webLatest == "" {
-		webLatest = APIVersion
-	}
+	latestRunner := versions.LatestRunner()
+	latestWeb := versions.LatestWeb()
+	latestAPI := versions.LatestAPI()
 
 	workers := *result
 	wv := make([]workerVersion, 0, len(workers))
 	outdatedCount := 0
 	for _, wk := range workers {
 		outdated := false
-		if wk.RunnerVersion != nil && *wk.RunnerVersion != latest {
+		if wk.RunnerVersion != nil && latestRunner != "" && *wk.RunnerVersion != latestRunner {
 			outdated = true
 			outdatedCount++
 		}
@@ -60,14 +52,26 @@ func HandleGetVersions(w http.ResponseWriter, r *http.Request) {
 	responder.New(w, map[string]any{
 		"api": map[string]any{
 			"current": APIVersion,
+			"latest":  latestAPI,
 		},
 		"web": map[string]any{
-			"latest": webLatest,
+			"latest": latestWeb,
 		},
 		"runner": map[string]any{
-			"latest":         latest,
+			"latest":         latestRunner,
 			"workers":        wv,
 			"outdated_count": outdatedCount,
 		},
+		"last_checked": versions.LastChecked(),
 	})
+}
+
+func HandleRefreshVersions(w http.ResponseWriter, r *http.Request) {
+	versions.Refresh()
+	responder.New(w, map[string]any{
+		"api":          versions.LatestAPI(),
+		"web":          versions.LatestWeb(),
+		"runner":       versions.LatestRunner(),
+		"last_checked": versions.LastChecked(),
+	}, "Version cache refreshed")
 }
