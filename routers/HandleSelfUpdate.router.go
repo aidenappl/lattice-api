@@ -39,7 +39,7 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Respond immediately — the recreate will kill this container.
+	// Respond immediately — stopping self will kill this process.
 	responder.New(w, map[string]any{
 		"service": service,
 		"status":  "pull complete, restarting",
@@ -50,16 +50,16 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 		f.Flush()
 	}
 
-	// Give the HTTP response time to reach the client, then recreate.
+	// Stop this container — Docker's restart:always policy will start a fresh
+	// container using the image we just pulled. The goroutine is intentionally
+	// simple: it must complete before the container exits, so no compose up.
 	go func() {
-		cmd := exec.Command("docker", "compose", "-f", composeFile, "up", "-d", "--force-recreate", service)
-		cmd.Env = append(os.Environ(), extraEnv...)
 		time.Sleep(2 * time.Second)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			log.Printf("API self-update recreate failed: %v — %s", err, string(out))
+		// HOSTNAME is set by Docker to the container's short ID.
+		cmd := exec.Command("docker", "stop", os.Getenv("HOSTNAME"))
+		if out, err := cmd.CombinedOutput(); err != nil {
+			log.Printf("API self-update stop failed: %v — %s", err, string(out))
 		}
-		// If successful, this process is killed by Docker — we never reach here.
 	}()
 }
 

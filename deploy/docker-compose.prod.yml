@@ -21,7 +21,7 @@ services:
 
   lattice-api:
     image: ${REGISTRY_URL:-registry.appleby.cloud}/lattice-api:latest
-    restart: unless-stopped
+    restart: always
     ports:
       - "${API_PORT:-8000}:8000"
     environment:
