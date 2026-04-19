@@ -686,8 +686,8 @@ func handleContainerSync(payload map[string]any) {
 		changed = true
 	}
 
-	// If the container is no longer running, clear any stale health status.
-	if latticeStatus != "running" && c.HealthStatus != "none" {
+	// If the container is no longer running (and not just paused), clear any stale health status.
+	if latticeStatus != "running" && latticeStatus != "paused" && c.HealthStatus != "none" {
 		none := "none"
 		req.HealthStatus = &none
 		changed = true
