@@ -95,59 +95,55 @@ else
     sudo docker exec "$DB_CONTAINER" mariadb -u root -p"$DB_PASSWORD" lattice -e \
         "CREATE TABLE IF NOT EXISTS schema_migrations (migration VARCHAR(255) NOT NULL PRIMARY KEY, applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);" 2>/dev/null || true
 
-# Backfill legacy migrations that pre-date the tracking table.
-# If schema_migrations is empty (first run with this script) and the DB
-# already has the legacy schema applied, mark them as done so they are skipped.
-TRACKING_ROWS=$(sudo docker exec "$DB_CONTAINER" \
-    mariadb -u root -p"$DB_PASSWORD" lattice -sNe \
-    "SELECT COUNT(*) FROM schema_migrations;" 2>/dev/null || echo "0")
-
-if [ "$TRACKING_ROWS" = "0" ]; then
-    # Check whether the DB already has the base schema (users table exists).
-    has_schema=$(sudo docker exec "$DB_CONTAINER" \
+    # Backfill legacy migrations that pre-date the tracking table.
+    TRACKING_ROWS=$(sudo docker exec "$DB_CONTAINER" \
         mariadb -u root -p"$DB_PASSWORD" lattice -sNe \
-        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='lattice' AND table_name='users';" 2>/dev/null || echo "0")
+        "SELECT COUNT(*) FROM schema_migrations;" 2>/dev/null || echo "0")
 
-    if [ "$has_schema" != "0" ]; then
-        echo "  Backfilling legacy migration records (existing DB detected)..."
-        for legacy in $LEGACY_MIGRATIONS; do
+    if [ "$TRACKING_ROWS" = "0" ]; then
+        has_schema=$(sudo docker exec "$DB_CONTAINER" \
+            mariadb -u root -p"$DB_PASSWORD" lattice -sNe \
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='lattice' AND table_name='users';" 2>/dev/null || echo "0")
+
+        if [ "$has_schema" != "0" ]; then
+            echo "  Backfilling legacy migration records (existing DB detected)..."
+            for legacy in $LEGACY_MIGRATIONS; do
+                sudo docker exec "$DB_CONTAINER" mariadb -u root -p"$DB_PASSWORD" lattice -e \
+                    "INSERT IGNORE INTO schema_migrations (migration) VALUES ('$legacy');" 2>/dev/null
+            done
+        fi
+    fi
+
+    APPLIED=0
+    SKIPPED=0
+
+    for file in $(find "$INSTALL_DIR/migrations" -name '*.sql' 2>/dev/null | sort); do
+        filename=$(basename "$file")
+
+        already_applied=$(sudo docker exec "$DB_CONTAINER" \
+            mariadb -u root -p"$DB_PASSWORD" lattice -sNe \
+            "SELECT COUNT(*) FROM schema_migrations WHERE migration='$filename';" 2>/dev/null)
+
+        if [ "$already_applied" = "1" ]; then
+            echo "  Skipping $filename (already applied)"
+            SKIPPED=$((SKIPPED + 1))
+            continue
+        fi
+
+        echo "  Applying $filename..."
+        if sudo docker exec "$DB_CONTAINER" mariadb -u root -p"$DB_PASSWORD" lattice -e "$(cat "$file")" 2>&1 | \
+                grep -v "^$" | grep -vi "^warning" || true; then
             sudo docker exec "$DB_CONTAINER" mariadb -u root -p"$DB_PASSWORD" lattice -e \
-                "INSERT IGNORE INTO schema_migrations (migration) VALUES ('$legacy');" 2>/dev/null
-        done
-    fi
+                "INSERT IGNORE INTO schema_migrations (migration) VALUES ('$filename');" 2>/dev/null
+            APPLIED=$((APPLIED + 1))
+        else
+            echo "  ERROR: $filename failed — stopping migration run."
+            exit 1
+        fi
+    done
+
+    echo "  Migrations complete: $APPLIED applied, $SKIPPED skipped."
 fi
-
-APPLIED=0
-SKIPPED=0
-
-for file in $(find "$INSTALL_DIR/migrations" -name '*.sql' 2>/dev/null | sort); do
-    filename=$(basename "$file")
-
-    # Check whether this migration has already been applied.
-    already_applied=$(sudo docker exec "$DB_CONTAINER" \
-        mariadb -u root -p"$DB_PASSWORD" lattice -sNe \
-        "SELECT COUNT(*) FROM schema_migrations WHERE migration='$filename';" 2>/dev/null)
-
-    if [ "$already_applied" = "1" ]; then
-        echo "  Skipping $filename (already applied)"
-        SKIPPED=$((SKIPPED + 1))
-        continue
-    fi
-
-    echo "  Applying $filename..."
-    if sudo docker exec "$DB_CONTAINER" mariadb -u root -p"$DB_PASSWORD" lattice -e "$(cat "$file")" 2>&1 | \
-            grep -v "^$" | grep -vi "^warning" || true; then
-        # Record the successful migration.
-        sudo docker exec "$DB_CONTAINER" mariadb -u root -p"$DB_PASSWORD" lattice -e \
-            "INSERT IGNORE INTO schema_migrations (migration) VALUES ('$filename');" 2>/dev/null
-        APPLIED=$((APPLIED + 1))
-    else
-        echo "  ERROR: $filename failed — stopping migration run."
-        exit 1
-    fi
-done
-
-echo "  Migrations complete: $APPLIED applied, $SKIPPED skipped."
 echo ""
 
 # Restart app services with new images (mariadb only restarts if its config changed)
