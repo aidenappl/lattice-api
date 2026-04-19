@@ -36,6 +36,14 @@ if [ -f "$INSTALL_DIR/.env" ]; then
     set +a
 fi
 
+# Capture current versions before updating
+API_PORT_LOCAL="${API_PORT:-8000}"
+WEB_PORT_LOCAL="${WEB_PORT:-3000}"
+OLD_API_VERSION=$(curl -sf "http://localhost:${API_PORT_LOCAL}/version" 2>/dev/null | sed 's/.*"version":"\([^"]*\)".*/\1/' || echo "unknown")
+OLD_WEB_VERSION=$(curl -sf "http://localhost:${WEB_PORT_LOCAL}/api/version" 2>/dev/null | sed 's/.*"version":"\([^"]*\)".*/\1/' || echo "unknown")
+echo "Current versions:  API=$OLD_API_VERSION  Web=$OLD_WEB_VERSION"
+echo ""
+
 # Pull latest app images (skip mariadb — only re-pull if image tag changes in compose)
 echo "Pulling latest images..."
 sudo docker compose --env-file .env pull lattice-api lattice-web
@@ -148,6 +156,24 @@ echo ""
 # Show status
 echo "Status:"
 sudo docker compose ps
+echo ""
+
+# Show version diff
+echo "Waiting for services to start..."
+sleep 3
+NEW_API_VERSION=$(curl -sf "http://localhost:${API_PORT_LOCAL}/version" 2>/dev/null | sed 's/.*"version":"\([^"]*\)".*/\1/' || echo "unknown")
+NEW_WEB_VERSION=$(curl -sf "http://localhost:${WEB_PORT_LOCAL}/api/version" 2>/dev/null | sed 's/.*"version":"\([^"]*\)".*/\1/' || echo "unknown")
+echo "Version changes:"
+if [ "$OLD_API_VERSION" = "$NEW_API_VERSION" ]; then
+    echo "  API: $OLD_API_VERSION (unchanged)"
+else
+    echo "  API: $OLD_API_VERSION → $NEW_API_VERSION"
+fi
+if [ "$OLD_WEB_VERSION" = "$NEW_WEB_VERSION" ]; then
+    echo "  Web: $OLD_WEB_VERSION (unchanged)"
+else
+    echo "  Web: $OLD_WEB_VERSION → $NEW_WEB_VERSION"
+fi
 echo ""
 echo "Update complete."
 echo ""
