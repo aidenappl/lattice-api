@@ -34,6 +34,10 @@ services:
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-https://lattice.appleby.cloud}"
       TLS_CERT: ""
       TLS_KEY: ""
+      # Self-update: points to the host directory containing this compose file
+      DOCKER_COMPOSE_DIR: "${DOCKER_COMPOSE_DIR:-/opt/lattice}"
+      API_SERVICE_NAME: "${API_SERVICE_NAME:-lattice-api}"
+      WEB_SERVICE_NAME: "${WEB_SERVICE_NAME:-lattice-web}"
       # Forta (optional)
       FORTA_API_DOMAIN: "${FORTA_API_DOMAIN:-}"
       FORTA_LOGIN_DOMAIN: "${FORTA_LOGIN_DOMAIN:-}"
@@ -43,6 +47,9 @@ services:
       FORTA_CALLBACK_URL: "${FORTA_CALLBACK_URL:-}"
       FORTA_JWT_SIGNING_KEY: "${FORTA_JWT_SIGNING_KEY:-}"
       FORTA_COOKIE_DOMAIN: "${FORTA_COOKIE_DOMAIN:-}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${DOCKER_COMPOSE_DIR:-/opt/lattice}:/opt/lattice:ro
     depends_on:
       mariadb:
         condition: service_healthy
