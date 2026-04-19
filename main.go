@@ -29,7 +29,8 @@ import (
 //go:embed install/runner.sh
 var installRunnerScript []byte
 
-// Set via -ldflags at build time: -X main.Version=$(git rev-parse --short HEAD)
+// Set via -ldflags at build time: -X main.Version=<value>
+// In CI this is set to the git tag (release builds) or short SHA (dev builds).
 var Version = "dev"
 
 func main() {
