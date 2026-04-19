@@ -90,20 +90,22 @@ func ListContainersByStack(engine db.Queryable, stackID int) (*[]structs.Contain
 	return &containers, rows.Err()
 }
 
-// ListAllContainers returns all active containers, optionally filtered by stackID or workerID
+// ListAllContainers returns all active containers from active stacks, optionally filtered by stackID or workerID
 // (workerID is resolved through the stack→worker relationship).
 func ListAllContainers(engine db.Queryable, stackID *int, workerID *int) (*[]structs.Container, error) {
 	q := sq.Select(containerColumns...).
 		From("containers").
+		Join("stacks ON stacks.id = containers.stack_id").
 		Where(sq.Eq{"containers.active": true}).
+		Where(sq.Eq{"stacks.active": true}).
 		OrderBy("containers.stack_id ASC, containers.id ASC")
 
 	if stackID != nil {
 		q = q.Where(sq.Eq{"containers.stack_id": *stackID})
 	}
 	if workerID != nil {
-		q = q.Join("stacks ON stacks.id = containers.stack_id").
-			Where(sq.Eq{"stacks.worker_id": *workerID})
+		// stacks is already joined above; just filter by worker_id
+		q = q.Where(sq.Eq{"stacks.worker_id": *workerID})
 	}
 
 	qStr, args, err := q.ToSql()

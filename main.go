@@ -28,7 +28,7 @@ import (
 var installRunnerScript []byte
 
 // Set via -ldflags at build time: -ldflags "-X main.Version=abc1234"
-var Version = "v0.1.0"
+var Version = "v0.1.1"
 
 func main() {
 	fmt.Printf("Lattice API %s\n\n", Version)
@@ -151,6 +151,11 @@ func main() {
 			go handleContainerHealthStatus(msg.Payload)
 
 		case socket.MsgContainerSync:
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "container_sync",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
 			go handleContainerSync(msg.Payload)
 
 		case socket.MsgContainerLogs:
@@ -506,10 +511,12 @@ func handleContainerStatus(payload map[string]any) {
 	// Map action to container DB status
 	var dbStatus string
 	switch action {
-	case "stop", "remove":
+	case "stop", "remove", "kill":
 		dbStatus = "stopped"
-	case "restart", "recreate":
+	case "start", "restart", "recreate", "unpause":
 		dbStatus = "running"
+	case "pause":
+		dbStatus = "paused"
 	default:
 		return
 	}
@@ -521,8 +528,8 @@ func handleContainerStatus(payload map[string]any) {
 	}
 
 	req := query.UpdateContainerRequest{Status: &dbStatus}
-	// On recreate/restart, reset health_status to "starting" if the container has a healthcheck.
-	if (action == "recreate" || action == "restart") && c.HealthCheck != nil {
+	// On start/recreate/restart, reset health_status to "starting" if the container has a healthcheck.
+	if (action == "start" || action == "recreate" || action == "restart") && c.HealthCheck != nil {
 		hs := "starting"
 		req.HealthStatus = &hs
 	}
@@ -570,11 +577,26 @@ func handleContainerSync(payload map[string]any) {
 		return
 	}
 
-	if c.Status == latticeStatus {
+	req := query.UpdateContainerRequest{}
+	changed := false
+
+	if c.Status != latticeStatus {
+		req.Status = &latticeStatus
+		changed = true
+	}
+
+	// If the container is no longer running, clear any stale health status.
+	if latticeStatus != "running" && c.HealthStatus != "none" {
+		none := "none"
+		req.HealthStatus = &none
+		changed = true
+	}
+
+	if !changed {
 		return
 	}
 
-	if _, err := query.UpdateContainer(db.DB, c.ID, query.UpdateContainerRequest{Status: &latticeStatus}); err != nil {
+	if _, err := query.UpdateContainer(db.DB, c.ID, req); err != nil {
 		log.Printf("container sync: failed to update %q to %s: %v", containerName, latticeStatus, err)
 	} else {
 		log.Printf("container sync: %s → %s (was %s)", containerName, latticeStatus, c.Status)
