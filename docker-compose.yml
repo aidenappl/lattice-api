@@ -27,6 +27,12 @@ services:
       PORT: "8000"
       ENVIRONMENT: "development"
       ALLOWED_ORIGINS: "http://localhost:3000"
+      DOCKER_COMPOSE_DIR: "/compose"
+      API_SERVICE_NAME: "lattice-api"
+      WEB_SERVICE_NAME: "lattice-web"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/compose:ro
     depends_on:
       mariadb:
         condition: service_healthy

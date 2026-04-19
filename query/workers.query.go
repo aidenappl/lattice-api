@@ -212,6 +212,14 @@ func UpdateWorkerHeartbeat(engine db.Queryable, workerID int, status string) err
 	return err
 }
 
+func UpdateWorkerRunnerVersion(engine db.Queryable, workerID int, runnerVersion string) error {
+	_, err := engine.Exec(
+		"UPDATE workers SET runner_version = ? WHERE id = ?",
+		runnerVersion, workerID,
+	)
+	return err
+}
+
 func UpdateWorkerInfo(engine db.Queryable, workerID int, os, arch, dockerVersion, ipAddress, runnerVersion string) error {
 	_, err := engine.Exec(
 		"UPDATE workers SET os = ?, arch = ?, docker_version = ?, ip_address = ?, runner_version = ? WHERE id = ?",

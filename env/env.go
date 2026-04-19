@@ -39,6 +39,12 @@ var (
 
 	// CORS
 	AllowedOrigins = getEnv("ALLOWED_ORIGINS", "")
+
+	// Docker update configuration (for self-update capability).
+	// Set DOCKER_COMPOSE_DIR to the host path where docker-compose.yml lives.
+	DockerComposeDir = getEnv("DOCKER_COMPOSE_DIR", "")
+	APIServiceName   = getEnv("API_SERVICE_NAME", "lattice-api")
+	WebServiceName   = getEnv("WEB_SERVICE_NAME", "lattice-web")
 )
 
 func getEnv(key string, fallback string) string {

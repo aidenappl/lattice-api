@@ -28,12 +28,20 @@ import (
 //go:embed install/runner.sh
 var installRunnerScript []byte
 
-// Set via -ldflags at build time: -ldflags "-X main.Version=abc1234"
+// Set via -ldflags at build time:
+//   -X main.Version=v0.1.6
+//   -X main.LatestRunnerVersion=v0.1.5
+//   -X main.LatestWebVersion=v0.0.2
 var Version = "v0.1.6"
+var LatestRunnerVersion = ""
+var LatestWebVersion = ""
 
 func main() {
 	fmt.Printf("Lattice API %s\n\n", Version)
 	routers.InstallScript = installRunnerScript
+	routers.APIVersion = Version
+	routers.LatestRunnerVer = LatestRunnerVersion
+	routers.LatestWebVer = LatestWebVersion
 
 	// 1. Database
 	db.Init()
@@ -112,6 +120,10 @@ func main() {
 		switch msg.Type {
 		case socket.MsgHeartbeat:
 			_ = query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "online")
+			// Persist runner_version if included so it stays current after upgrades.
+			if rv, ok := msg.Payload["runner_version"].(string); ok && rv != "" {
+				_ = query.UpdateWorkerRunnerVersion(db.DB, session.WorkerID, rv)
+			}
 			handleHeartbeatMetrics(session.WorkerID, msg.Payload)
 			adminHub.BroadcastJSON(map[string]any{
 				"type":      "worker_heartbeat",
@@ -344,6 +356,11 @@ func main() {
 
 	// Overview (dashboard)
 	admin.HandleFunc("/overview", routers.HandleGetOverview).Methods(http.MethodGet)
+
+	// Versions & updates
+	admin.HandleFunc("/versions", routers.HandleGetVersions).Methods(http.MethodGet)
+	admin.HandleFunc("/update/api", routers.HandleUpdateAPI).Methods(http.MethodPost)
+	admin.HandleFunc("/update/web", routers.HandleUpdateWeb).Methods(http.MethodPost)
 
 	// WebSocket endpoints
 	r.Handle("/ws/worker", workerHandler).Methods(http.MethodGet)
