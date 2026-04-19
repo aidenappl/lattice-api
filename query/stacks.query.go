@@ -223,6 +223,11 @@ func UpdateStack(engine db.Queryable, id int, req UpdateStackRequest) (*structs.
 }
 
 func DeleteStack(engine db.Queryable, id int) error {
+	// Soft-delete the stack's containers first to prevent orphaned active containers
+	// with the same name from interfering with future stacks.
+	if _, err := engine.Exec("UPDATE containers SET active = 0 WHERE stack_id = ?", id); err != nil {
+		return fmt.Errorf("failed to deactivate containers for stack %d: %w", id, err)
+	}
 	_, err := engine.Exec("UPDATE stacks SET active = 0 WHERE id = ?", id)
 	return err
 }
