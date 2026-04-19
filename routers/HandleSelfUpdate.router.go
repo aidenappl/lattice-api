@@ -52,7 +52,7 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 
 	// Give the HTTP response time to reach the client, then recreate.
 	go func() {
-		cmd := exec.Command("docker", "compose", "-f", composeFile, "up", "-d", service)
+		cmd := exec.Command("docker", "compose", "-f", composeFile, "up", "-d", "--force-recreate", service)
 		cmd.Env = append(os.Environ(), extraEnv...)
 		time.Sleep(2 * time.Second)
 		out, err := cmd.CombinedOutput()
@@ -89,7 +89,7 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Recreate the web container — API stays running so we can respond.
-	upCmd := exec.Command("docker", "compose", "-f", composeFile, "up", "-d", service)
+	upCmd := exec.Command("docker", "compose", "-f", composeFile, "up", "-d", "--force-recreate", service)
 	upCmd.Env = append(os.Environ(), extraEnv...)
 	upOut, err := upCmd.CombinedOutput()
 	if err != nil {
