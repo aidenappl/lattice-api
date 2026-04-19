@@ -547,6 +547,32 @@ func handleContainerStatus(payload map[string]any) {
 		log.Printf("container status: failed to update %q to %s: %v", containerName, dbStatus, err)
 	} else {
 		log.Printf("container status: %s → %s", containerName, dbStatus)
+
+		// Write a lifecycle entry to container_logs so it persists in the log viewer.
+		lifecycleMessages := map[string]string{
+			"start":    "[lattice] container started",
+			"restart":  "[lattice] container restarted",
+			"stop":     "[lattice] container stopped",
+			"kill":     "[lattice] container force-killed",
+			"recreate": "[lattice] container recreated",
+			"pause":    "[lattice] container paused",
+			"unpause":  "[lattice] container unpaused",
+		}
+		if msg, ok := lifecycleMessages[action]; ok {
+			cID := c.ID
+			cName := c.Name
+			wID := 0 // lifecycle events are not tied to a specific worker log line
+			logReq := query.CreateContainerLogRequest{
+				WorkerID:      wID,
+				ContainerID:   &cID,
+				ContainerName: &cName,
+				Stream:        "stdout",
+				Message:       msg,
+			}
+			if err := query.CreateContainerLog(db.DB, logReq); err != nil {
+				log.Printf("container status: failed to write lifecycle log for %q: %v", containerName, err)
+			}
+		}
 	}
 }
 
