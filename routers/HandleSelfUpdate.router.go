@@ -1,11 +1,13 @@
 package routers
 
 import (
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
-	"strings"
+	"path/filepath"
 	"time"
 
 	"github.com/aidenappl/lattice-api/env"
@@ -21,14 +23,16 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 	composeFile := env.DockerComposeDir + "/docker-compose.yml"
 	service := env.APIServiceName
 
-	// Log in to the registry if credentials are configured.
-	if err := registryLogin(); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to authenticate with registry: %v", err))
+	extraEnv, cleanup, err := registryAuthEnv()
+	if err != nil {
+		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to prepare registry credentials: %v", err))
 		return
 	}
+	defer cleanup()
 
 	// Pull latest image synchronously so we can report failures.
 	pullCmd := exec.Command("docker", "compose", "-f", composeFile, "pull", service)
+	pullCmd.Env = append(os.Environ(), extraEnv...)
 	pullOut, err := pullCmd.CombinedOutput()
 	if err != nil {
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to pull API image: %v — %s", err, string(pullOut)))
@@ -48,8 +52,9 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 
 	// Give the HTTP response time to reach the client, then recreate.
 	go func() {
-		time.Sleep(2 * time.Second)
 		cmd := exec.Command("docker", "compose", "-f", composeFile, "up", "-d", service)
+		cmd.Env = append(os.Environ(), extraEnv...)
+		time.Sleep(2 * time.Second)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			log.Printf("API self-update recreate failed: %v — %s", err, string(out))
@@ -67,14 +72,16 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 	composeFile := env.DockerComposeDir + "/docker-compose.yml"
 	service := env.WebServiceName
 
-	// Log in to the registry if credentials are configured.
-	if err := registryLogin(); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to authenticate with registry: %v", err))
+	extraEnv, cleanup, err := registryAuthEnv()
+	if err != nil {
+		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to prepare registry credentials: %v", err))
 		return
 	}
+	defer cleanup()
 
 	// Pull latest image
 	pullCmd := exec.Command("docker", "compose", "-f", composeFile, "pull", service)
+	pullCmd.Env = append(os.Environ(), extraEnv...)
 	pullOut, err := pullCmd.CombinedOutput()
 	if err != nil {
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to pull Web image: %v — %s", err, string(pullOut)))
@@ -83,6 +90,7 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 
 	// Recreate the web container — API stays running so we can respond.
 	upCmd := exec.Command("docker", "compose", "-f", composeFile, "up", "-d", service)
+	upCmd.Env = append(os.Environ(), extraEnv...)
 	upOut, err := upCmd.CombinedOutput()
 	if err != nil {
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to recreate Web container: %v — %s", err, string(upOut)))
@@ -94,19 +102,29 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 	}, "Web update triggered successfully")
 }
 
-// registryLogin runs `docker login` with the configured registry credentials.
-// It is a no-op if any of the three registry env vars are unset.
-func registryLogin() error {
+// registryAuthEnv writes a temporary Docker config.json with registry credentials
+// and returns a DOCKER_CONFIG env var pointing to it, plus a cleanup function.
+// If credentials are not configured it is a no-op (empty env slice, no-op cleanup).
+func registryAuthEnv() (extraEnv []string, cleanup func(), err error) {
+	cleanup = func() {}
 	if env.RegistryURL == "" || env.RegistryUsername == "" || env.RegistryPassword == "" {
-		return nil
+		return
 	}
-	cmd := exec.Command("docker", "login", env.RegistryURL,
-		"--username", env.RegistryUsername,
-		"--password-stdin",
-	)
-	cmd.Stdin = strings.NewReader(env.RegistryPassword)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%w — %s", err, string(out))
+
+	auth := base64.StdEncoding.EncodeToString([]byte(env.RegistryUsername + ":" + env.RegistryPassword))
+	configJSON := fmt.Sprintf(`{"auths":{%q:{"auth":%q}}}`, env.RegistryURL, auth)
+
+	tmpDir, err := os.MkdirTemp("", "lattice-docker-config-*")
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	return nil
+
+	if err = os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(configJSON), 0600); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return nil, func() {}, fmt.Errorf("failed to write docker config: %w", err)
+	}
+
+	extraEnv = []string{"DOCKER_CONFIG=" + tmpDir}
+	cleanup = func() { _ = os.RemoveAll(tmpDir) }
+	return
 }
