@@ -33,12 +33,11 @@ func scanLog(row scanner) (*structs.ContainerLog, error) {
 }
 
 type ListLogsRequest struct {
-	Limit         int
-	Offset        int
-	WorkerID      *int
-	ContainerID   *int
-	ContainerName *string
-	Stream        *string
+	Limit       int
+	Offset      int
+	WorkerID    *int
+	ContainerID *int
+	Stream      *string
 }
 
 func ListContainerLogs(engine db.Queryable, req ListLogsRequest) (*[]structs.ContainerLog, error) {
@@ -48,14 +47,7 @@ func ListContainerLogs(engine db.Queryable, req ListLogsRequest) (*[]structs.Con
 		q = q.Where(sq.Eq{"container_logs.worker_id": *req.WorkerID})
 	}
 	if req.ContainerID != nil {
-		if req.ContainerName != nil {
-			q = q.Where(sq.Or{
-				sq.Eq{"container_logs.container_id": *req.ContainerID},
-				sq.Eq{"container_logs.container_name": *req.ContainerName},
-			})
-		} else {
-			q = q.Where(sq.Eq{"container_logs.container_id": *req.ContainerID})
-		}
+		q = q.Where(sq.Eq{"container_logs.container_id": *req.ContainerID})
 	}
 	if req.Stream != nil {
 		q = q.Where(sq.Eq{"container_logs.stream": *req.Stream})
