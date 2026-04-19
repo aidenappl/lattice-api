@@ -29,7 +29,7 @@ import (
 var installRunnerScript []byte
 
 // Set via -ldflags at build time: -ldflags "-X main.Version=abc1234"
-var Version = "v0.1.4"
+var Version = "v0.1.5"
 
 func main() {
 	fmt.Printf("Lattice API %s\n\n", Version)
@@ -138,7 +138,7 @@ func main() {
 		case socket.MsgContainerStatus:
 			// Write lifecycle logs synchronously BEFORE broadcasting so the DB
 			// row exists when the frontend receives the event and calls loadLogs().
-			handleContainerStatus(msg.Payload)
+			handleContainerStatus(session.WorkerID, msg.Payload)
 			adminHub.BroadcastJSON(map[string]any{
 				"type":      "container_status",
 				"worker_id": session.WorkerID,
@@ -180,24 +180,26 @@ func main() {
 			reason, _ := msg.Payload["reason"].(string)
 			message, _ := msg.Payload["message"].(string)
 			log.Printf("worker=%d shutting down gracefully: reason=%s", session.WorkerID, reason)
+			// Write lifecycle logs synchronously BEFORE broadcasting.
+			writeWorkerLifecycleLogs(session.WorkerID, message)
 			adminHub.BroadcastJSON(map[string]any{
 				"type":      "worker_shutdown",
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
-			go writeWorkerLifecycleLogs(session.WorkerID, message)
 
 		case socket.MsgWorkerCrash:
 			goroutine, _ := msg.Payload["goroutine"].(string)
 			panicMsg, _ := msg.Payload["panic"].(string)
 			log.Printf("worker=%d CRASH in goroutine %q: %s", session.WorkerID, goroutine, panicMsg)
+			crashMsg := fmt.Sprintf("[lattice] worker crashed: %s (goroutine: %s)", panicMsg, goroutine)
+			// Write lifecycle logs synchronously BEFORE broadcasting.
+			writeWorkerLifecycleLogs(session.WorkerID, crashMsg)
 			adminHub.BroadcastJSON(map[string]any{
 				"type":      "worker_crash",
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
-			crashMsg := fmt.Sprintf("[lattice] worker crashed: %s (goroutine: %s)", panicMsg, goroutine)
-			go writeWorkerLifecycleLogs(session.WorkerID, crashMsg)
 		}
 	}
 
@@ -533,7 +535,7 @@ func handleDeploymentProgress(payload map[string]any) {
 	}
 }
 
-func handleContainerStatus(payload map[string]any) {
+func handleContainerStatus(workerID int, payload map[string]any) {
 	containerName, _ := payload["container_name"].(string)
 	action, _ := payload["action"].(string)
 	status, _ := payload["status"].(string)
@@ -586,9 +588,9 @@ func handleContainerStatus(payload map[string]any) {
 		if msg, ok := lifecycleMessages[action]; ok {
 			cID := c.ID
 			cName := c.Name
-			wID := 0 // lifecycle events are not tied to a specific worker log line
+
 			logReq := query.CreateContainerLogRequest{
-				WorkerID:      wID,
+				WorkerID:      workerID,
 				ContainerID:   &cID,
 				ContainerName: &cName,
 				Stream:        "stdout",
@@ -695,6 +697,15 @@ func handleContainerLog(workerID int, payload map[string]any) {
 			req.ContainerID = &c.ID
 		} else {
 			log.Printf("container log: could not resolve container name %q to ID: %v", name, err)
+		}
+	}
+
+	// Use the Docker-recorded timestamp when provided by the runner so that
+	// reconnect replays of the same line land on the same recorded_at value
+	// and are silently dropped by the unique index in the DB.
+	if ts, ok := payload["recorded_at"].(string); ok && ts != "" {
+		if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+			req.RecordedAt = &t
 		}
 	}
 
