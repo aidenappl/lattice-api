@@ -3,8 +3,8 @@ name: Build and Deploy to Registry
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  release:
+    types: [published]
   workflow_dispatch:
 
 jobs:
@@ -49,14 +49,13 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Update deployment status
-        if: github.ref == 'refs/heads/main'
+      - name: Summary
+        if: github.event_name != 'pull_request'
         run: |
-          echo "Deployment completed successfully!"
           echo "Image pushed to: ${{ env.REGISTRY_URL }}/${{ github.event.repository.name }}:latest"
