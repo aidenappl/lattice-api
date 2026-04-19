@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/query"
@@ -87,6 +88,24 @@ func (h *ContainerActionHandler) HandleRecreateContainer(w http.ResponseWriter, 
 			payload["auth"] = map[string]any{
 				"username": *registry.Username,
 				"password": *registry.Password,
+			}
+		}
+	} else {
+		// Auto-match registry by image hostname (same logic as deploy)
+		allRegistries, _ := query.ListRegistries(db.DB)
+		if allRegistries != nil {
+			for _, reg := range *allRegistries {
+				regHost := strings.TrimPrefix(strings.TrimPrefix(reg.URL, "https://"), "http://")
+				regHost = strings.TrimSuffix(regHost, "/")
+				if strings.HasPrefix(container.Image, regHost+"/") || container.Image == regHost {
+					if reg.Username != nil && reg.Password != nil {
+						payload["auth"] = map[string]any{
+							"username": *reg.Username,
+							"password": *reg.Password,
+						}
+					}
+					break
+				}
 			}
 		}
 	}
