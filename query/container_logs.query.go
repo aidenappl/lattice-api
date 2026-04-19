@@ -33,11 +33,12 @@ func scanLog(row scanner) (*structs.ContainerLog, error) {
 }
 
 type ListLogsRequest struct {
-	Limit       int
-	Offset      int
-	WorkerID    *int
-	ContainerID *int
-	Stream      *string
+	Limit         int
+	Offset        int
+	WorkerID      *int
+	ContainerID   *int
+	ContainerName *string // fallback: also match logs where container_id IS NULL but name matches
+	Stream        *string
 }
 
 func ListContainerLogs(engine db.Queryable, req ListLogsRequest) (*[]structs.ContainerLog, error) {
@@ -47,7 +48,19 @@ func ListContainerLogs(engine db.Queryable, req ListLogsRequest) (*[]structs.Con
 		q = q.Where(sq.Eq{"container_logs.worker_id": *req.WorkerID})
 	}
 	if req.ContainerID != nil {
-		q = q.Where(sq.Eq{"container_logs.container_id": *req.ContainerID})
+		if req.ContainerName != nil {
+			// Match by container_id OR (container_id IS NULL AND container_name matches)
+			// This catches logs stored before the container name could be resolved to an ID
+			q = q.Where(sq.Or{
+				sq.Eq{"container_logs.container_id": *req.ContainerID},
+				sq.And{
+					sq.Expr("container_logs.container_id IS NULL"),
+					sq.Eq{"container_logs.container_name": *req.ContainerName},
+				},
+			})
+		} else {
+			q = q.Where(sq.Eq{"container_logs.container_id": *req.ContainerID})
+		}
 	}
 	if req.Stream != nil {
 		q = q.Where(sq.Eq{"container_logs.stream": *req.Stream})

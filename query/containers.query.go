@@ -310,6 +310,7 @@ func GetContainerByName(engine db.Queryable, name string) (*structs.Container, e
 	q := sq.Select(containerColumns...).From("containers").
 		Where(sq.Eq{"containers.name": name}).
 		Where(sq.Eq{"containers.active": true}).
+		OrderBy("containers.id DESC").
 		Limit(1)
 
 	qStr, args, err := q.ToSql()

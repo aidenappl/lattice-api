@@ -17,6 +17,10 @@ func HandleGetContainerLogs(w http.ResponseWriter, r *http.Request) {
 	if v, ok := vars["id"]; ok {
 		if n, err := strconv.Atoi(v); err == nil {
 			req.ContainerID = &n
+			// Look up container name for fallback matching (catches logs with NULL container_id)
+			if c, err := query.GetContainerByID(db.DB, n); err == nil {
+				req.ContainerName = &c.Name
+			}
 		}
 	}
 
