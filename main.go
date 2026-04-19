@@ -331,7 +331,7 @@ func main() {
 	admin.HandleFunc("/deployments/{id}", routers.HandleGetDeployment).Methods(http.MethodGet)
 	admin.HandleFunc("/deployments/{id}/logs", routers.HandleGetDeploymentLogs).Methods(http.MethodGet)
 	admin.HandleFunc("/deployments/{id}/approve", routers.HandleApproveDeployment).Methods(http.MethodPost)
-	admin.HandleFunc("/deployments/{id}/rollback", routers.HandleRollbackDeployment).Methods(http.MethodPost)
+	admin.HandleFunc("/deployments/{id}/rollback", deployHandler.HandleRollbackDeployment).Methods(http.MethodPost)
 
 	// Registries
 	admin.HandleFunc("/registries", routers.HandleGetRegistries).Methods(http.MethodGet)

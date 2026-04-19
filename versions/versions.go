@@ -10,26 +10,27 @@ import (
 )
 
 const (
-	pollInterval = 30 * time.Minute
-	httpTimeout  = 10 * time.Second
+	pollInterval  = 30 * time.Minute
+	httpTimeout   = 10 * time.Second
+	defaultBranch = "main"
 )
 
-// Repos to check for latest releases.
+// Repos to check for latest commits.
 var repos = []string{
 	"aidenappl/lattice-api",
 	"aidenappl/lattice-web",
 	"aidenappl/lattice-runner",
 }
 
-// githubRelease is the subset of the GitHub releases API response we care about.
-type githubRelease struct {
-	TagName string `json:"tag_name"`
+// githubCommit is the subset of the GitHub commits API response we care about.
+type githubCommit struct {
+	SHA string `json:"sha"`
 }
 
-// Cache holds the latest release tag for each repo.
+// Cache holds the latest commit short SHA for each repo.
 type Cache struct {
 	mu      sync.RWMutex
-	latest  map[string]string // repo -> tag_name
+	latest  map[string]string // repo -> short SHA
 	checked time.Time
 }
 
@@ -37,7 +38,7 @@ var cache = &Cache{
 	latest: make(map[string]string),
 }
 
-// Start begins background polling for latest GitHub releases.
+// Start begins background polling for latest GitHub commits.
 func Start() {
 	// Initial fetch (non-blocking — runs in background).
 	go func() {
@@ -49,16 +50,16 @@ func Start() {
 	}()
 }
 
-// Refresh fetches the latest release for all repos and updates the cache.
+// Refresh fetches the latest commit short SHA for all repos and updates the cache.
 func Refresh() {
 	for _, repo := range repos {
-		tag, err := fetchLatestRelease(repo)
+		sha, err := fetchLatestCommitSHA(repo)
 		if err != nil {
-			log.Printf("versions: failed to fetch latest release for %s: %v", repo, err)
+			log.Printf("versions: failed to fetch latest commit for %s: %v", repo, err)
 			continue
 		}
 		cache.mu.Lock()
-		cache.latest[repo] = tag
+		cache.latest[repo] = sha
 		cache.mu.Unlock()
 	}
 	cache.mu.Lock()
@@ -71,7 +72,7 @@ func Refresh() {
 	)
 }
 
-// Get returns the cached latest release tag for a repo, or "" if unknown.
+// Get returns the cached latest short SHA for a repo, or "" if unknown.
 func Get(repo string) string {
 	cache.mu.RLock()
 	defer cache.mu.RUnlock()
@@ -85,17 +86,20 @@ func LastChecked() time.Time {
 	return cache.checked
 }
 
-// LatestAPI returns the latest release tag for lattice-api.
+// LatestAPI returns the latest short SHA for lattice-api.
 func LatestAPI() string { return Get("aidenappl/lattice-api") }
 
-// LatestWeb returns the latest release tag for lattice-web.
+// LatestWeb returns the latest short SHA for lattice-web.
 func LatestWeb() string { return Get("aidenappl/lattice-web") }
 
-// LatestRunner returns the latest release tag for lattice-runner.
+// LatestRunner returns the latest short SHA for lattice-runner.
 func LatestRunner() string { return Get("aidenappl/lattice-runner") }
 
-func fetchLatestRelease(repo string) (string, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
+// fetchLatestCommitSHA returns the short (7-char) SHA of the most recent commit
+// on the default branch of the given repo. This matches the format used in the
+// APIVersion / runner_version fields baked in via ldflags at build time.
+func fetchLatestCommitSHA(repo string) (string, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/commits?per_page=1&sha=%s", repo, defaultBranch)
 	client := &http.Client{Timeout: httpTimeout}
 
 	req, err := http.NewRequest("GET", url, nil)
@@ -112,20 +116,25 @@ func fetchLatestRelease(repo string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 404 {
-		return "", fmt.Errorf("no releases found for %s", repo)
+		return "", fmt.Errorf("repo not found or no commits: %s", repo)
 	}
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("GitHub API returned %d for %s", resp.StatusCode, repo)
 	}
 
-	var release githubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+	var commits []githubCommit
+	if err := json.NewDecoder(resp.Body).Decode(&commits); err != nil {
 		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	if release.TagName == "" {
-		return "", fmt.Errorf("empty tag_name in release for %s", repo)
+	if len(commits) == 0 || commits[0].SHA == "" {
+		return "", fmt.Errorf("no commits found for %s", repo)
 	}
 
-	return release.TagName, nil
+	// Truncate to 7 chars to match `git rev-parse --short HEAD`.
+	sha := commits[0].SHA
+	if len(sha) > 7 {
+		sha = sha[:7]
+	}
+	return sha, nil
 }

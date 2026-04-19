@@ -203,3 +203,29 @@ func ListDeploymentLogs(engine db.Queryable, deploymentID int) (*[]structs.Deplo
 	}
 	return &logs, rows.Err()
 }
+
+// GetPreviousDeployment returns the most recent successfully-deployed deployment
+// for the given stack that was recorded before (id < beforeID). This is used to
+// find the target image/tag set when rolling back a failed deployment.
+func GetPreviousDeployment(engine db.Queryable, stackID int, beforeID int) (*structs.Deployment, error) {
+	q := sq.Select(deploymentColumns...).
+		From("deployments").
+		Where(sq.Eq{"deployments.stack_id": stackID}).
+		Where(sq.Eq{"deployments.status": "deployed"}).
+		Where(sq.Lt{"deployments.id": beforeID}).
+		OrderBy("deployments.id DESC").
+		Limit(1)
+
+	qStr, args, err := q.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build sql query: %w", err)
+	}
+
+	row := engine.QueryRow(qStr, args...)
+	d, err := scanDeployment(row)
+	if err != nil {
+		return nil, fmt.Errorf("no previous successful deployment found: %w", err)
+	}
+
+	return d, nil
+}
