@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -312,6 +313,19 @@ func resolveEnvRef(s string, envVars map[string]any) (any, bool) {
 	return nil, false
 }
 
+var envRefPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
+
+// interpolateEnvRefs replaces ${VAR} and $VAR occurrences inside s using
+// stack-level env vars. Unknown variables are left unchanged.
+func interpolateEnvRefs(s string, envVars map[string]any) string {
+	return envRefPattern.ReplaceAllStringFunc(s, func(match string) string {
+		if resolved, ok := resolveEnvRef(match, envVars); ok {
+			return fmt.Sprint(resolved)
+		}
+		return match
+	})
+}
+
 // resolveVarsInValue recursively resolves environment variable references in any value.
 // Handles strings (${VAR} syntax), maps, and slices.
 func resolveVarsInValue(val any, envVars map[string]any) any {
@@ -321,7 +335,9 @@ func resolveVarsInValue(val any, envVars map[string]any) any {
 		if resolved, ok := resolveEnvRef(v, envVars); ok {
 			return resolved
 		}
-		return v
+		// Resolve embedded references in larger strings, e.g.
+		// "http://localhost:${PORT}/healthcheck".
+		return interpolateEnvRefs(v, envVars)
 	case map[string]any:
 		// Recursively resolve all values in the map
 		result := make(map[string]any, len(v))
