@@ -39,31 +39,41 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Respond immediately — stopping self will kill this process.
+	// Respond immediately before we trigger the recreate.
 	responder.New(w, map[string]any{
 		"service": service,
 		"status":  "pull complete, restarting",
 	}, "API update in progress — container will restart momentarily")
 
-	// Flush the response before we die.
+	// Flush the response before the container is replaced.
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
 
-	// Kill this container (SIGKILL, not docker stop).
+	// Recreate the API container with the newly-pulled image.
 	//
-	// docker stop marks the container's desired state as "stopped", which
-	// causes restart:always to pause — requiring a manual compose up.
+	// We cannot run `docker compose up --force-recreate` directly: that command
+	// runs inside this container, and Docker kills all processes in the container
+	// (including this goroutine) as part of the stop step — so the create/start
+	// steps never execute.
 	//
-	// docker kill does NOT change desired state, so restart:always fires
-	// immediately. Docker re-resolves the image tag from the local store,
-	// picking up the image we just pulled above.
+	// Instead we spin up a short-lived sibling container that runs the compose
+	// command. It shares the Docker socket and compose directory but lives in a
+	// separate process namespace, so it survives this container's death.
 	go func() {
 		time.Sleep(2 * time.Second)
-		// HOSTNAME is set by Docker to the container's short ID.
-		cmd := exec.Command("docker", "kill", os.Getenv("HOSTNAME"))
-		if out, err := cmd.CombinedOutput(); err != nil {
-			log.Printf("API self-update kill failed: %v — %s", err, string(out))
+		upCmd := exec.Command(
+			"docker", "run", "--rm", "-d",
+			"-v", "/var/run/docker.sock:/var/run/docker.sock",
+			"-v", env.DockerComposeDir+":"+env.DockerComposeDir,
+			"--workdir", env.DockerComposeDir,
+			"docker:cli",
+			"docker", "compose", "-f", composeFile,
+			"up", "-d", "--force-recreate", service,
+		)
+		upCmd.Env = append(os.Environ(), extraEnv...)
+		if out, err := upCmd.CombinedOutput(); err != nil {
+			log.Printf("API self-update recreate failed: %v — %s", err, string(out))
 		}
 	}()
 }

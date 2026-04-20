@@ -104,6 +104,10 @@ echo "Pulling images..."
 cd "$INSTALL_DIR"
 sudo docker compose --env-file .env pull
 
+# Pull the docker:cli helper image used by the API self-update mechanism
+echo "Pulling docker:cli..."
+docker pull docker:cli
+
 # Start MariaDB first and wait for it to be healthy
 echo ""
 echo "Starting MariaDB..."
