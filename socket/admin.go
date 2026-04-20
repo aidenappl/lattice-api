@@ -95,8 +95,9 @@ func (h *AdminHub) BroadcastJSON(v any) {
 
 // AdminHandler handles WebSocket connections from admin frontend clients.
 type AdminHandler struct {
-	Hub      *AdminHub
-	Upgrader websocket.Upgrader
+	Hub       *AdminHub
+	Upgrader  websocket.Upgrader
+	OnMessage func(session *AdminSession, msg IncomingMessage)
 }
 
 func NewAdminHandler(hub *AdminHub) *AdminHandler {
@@ -194,9 +195,18 @@ func (h *AdminHandler) readPump(ctx context.Context, session *AdminSession) {
 		default:
 		}
 
-		_, _, err := session.Conn.ReadMessage()
+		_, payload, err := session.Conn.ReadMessage()
 		if err != nil {
 			return
+		}
+
+		if h.OnMessage != nil {
+			var msg IncomingMessage
+			msg.Raw = json.RawMessage(payload)
+			if err := json.Unmarshal(payload, &msg); err != nil {
+				continue
+			}
+			h.OnMessage(session, msg)
 		}
 	}
 }

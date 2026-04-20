@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"time"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/aidenappl/lattice-api/db"
@@ -84,6 +85,7 @@ func GetLatestMetrics(engine db.Queryable, workerID int) (*structs.WorkerMetrics
 type ListMetricsRequest struct {
 	WorkerID int
 	Limit    int
+	Since    *time.Time
 }
 
 func ListMetrics(engine db.Queryable, req ListMetricsRequest) (*[]structs.WorkerMetrics, error) {
@@ -92,6 +94,9 @@ func ListMetrics(engine db.Queryable, req ListMetricsRequest) (*[]structs.Worker
 		Where(sq.Eq{"worker_metrics.worker_id": req.WorkerID}).
 		OrderBy("worker_metrics.recorded_at DESC")
 
+	if req.Since != nil {
+		q = q.Where(sq.GtOrEq{"worker_metrics.recorded_at": *req.Since})
+	}
 	if req.Limit == 0 || req.Limit > db.MAX_LIMIT {
 		req.Limit = db.DEFAULT_LIMIT
 	}

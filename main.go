@@ -218,10 +218,48 @@ func main() {
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
+
+		case socket.MsgListVolumesResponse:
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "list_volumes_response",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
+
+		case socket.MsgListNetworksResponse:
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "list_networks_response",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
+
+		case socket.MsgExecOutput:
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "exec_output",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
 		}
 	}
 
 	adminHandler := socket.NewAdminHandler(adminHub)
+
+	// Handle admin client messages (exec forwarding)
+	adminHandler.OnMessage = func(session *socket.AdminSession, msg socket.IncomingMessage) {
+		switch msg.Type {
+		case socket.MsgExecStart, socket.MsgExecInput, socket.MsgExecResize, socket.MsgExecClose:
+			workerIDFloat, _ := msg.Payload["worker_id"].(float64)
+			workerID := int(workerIDFloat)
+			if workerID == 0 {
+				return
+			}
+			_ = workerHub.SendJSONToWorker(workerID, socket.Envelope{
+				Type:      msg.Type,
+				CommandID: msg.CommandID,
+				Payload:   msg.Payload,
+			})
+		}
+	}
 
 	// Deploy handler (needs hub references)
 	deployHandler := &routers.DeployHandler{
@@ -236,6 +274,16 @@ func main() {
 
 	// Worker action handler (needs hub references)
 	workerActionHandler := &routers.WorkerActionHandler{
+		WorkerHub: workerHub,
+	}
+
+	// Volume handler (needs hub references)
+	volumeHandler := &routers.VolumeHandler{
+		WorkerHub: workerHub,
+	}
+
+	// Network handler (needs hub references)
+	networkHandler := &routers.NetworkHandler{
 		WorkerHub: workerHub,
 	}
 
@@ -296,6 +344,12 @@ func main() {
 	admin.HandleFunc("/workers/{id}/upgrade", middleware.RequireAdmin(workerActionHandler.HandleUpgradeRunner)).Methods(http.MethodPost)
 	admin.HandleFunc("/workers/{id}/stop-all", middleware.RequireEditor(workerActionHandler.HandleStopAllContainers)).Methods(http.MethodPost)
 	admin.HandleFunc("/workers/{id}/start-all", middleware.RequireEditor(workerActionHandler.HandleStartAllContainers)).Methods(http.MethodPost)
+	admin.HandleFunc("/workers/{id}/volumes", volumeHandler.HandleListVolumes).Methods(http.MethodGet)
+	admin.HandleFunc("/workers/{id}/volumes", middleware.RequireEditor(volumeHandler.HandleCreateVolume)).Methods(http.MethodPost)
+	admin.HandleFunc("/workers/{id}/volumes/{name}", middleware.RequireEditor(volumeHandler.HandleDeleteVolume)).Methods(http.MethodDelete)
+	admin.HandleFunc("/workers/{id}/networks", networkHandler.HandleListNetworks).Methods(http.MethodGet)
+	admin.HandleFunc("/workers/{id}/networks", middleware.RequireEditor(networkHandler.HandleCreateNetwork)).Methods(http.MethodPost)
+	admin.HandleFunc("/workers/{id}/networks/{name}", middleware.RequireEditor(networkHandler.HandleDeleteNetwork)).Methods(http.MethodDelete)
 	admin.HandleFunc("/worker-tokens/{id}", middleware.RequireEditor(routers.HandleDeleteWorkerToken)).Methods(http.MethodDelete)
 
 	// Stacks

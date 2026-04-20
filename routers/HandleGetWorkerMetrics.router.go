@@ -3,6 +3,7 @@ package routers
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/query"
@@ -24,10 +25,26 @@ func HandleGetWorkerMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	metrics, err := query.ListMetrics(db.DB, query.ListMetricsRequest{
+	req := query.ListMetricsRequest{
 		WorkerID: workerID,
 		Limit:    limit,
-	})
+	}
+
+	if rangeStr := r.URL.Query().Get("range"); rangeStr != "" {
+		rangeDurations := map[string]time.Duration{
+			"1h":  time.Hour,
+			"6h":  6 * time.Hour,
+			"24h": 24 * time.Hour,
+			"7d":  7 * 24 * time.Hour,
+		}
+		if d, ok := rangeDurations[rangeStr]; ok {
+			since := time.Now().Add(-d)
+			req.Since = &since
+			req.Limit = 500 // allow more data points for time range queries
+		}
+	}
+
+	metrics, err := query.ListMetrics(db.DB, req)
 	if err != nil {
 		responder.QueryError(w, err, "failed to list worker metrics")
 		return

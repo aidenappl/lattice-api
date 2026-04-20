@@ -37,6 +37,27 @@ const (
 	MsgUpgradeRunner = "upgrade_runner"
 	MsgStopAll       = "stop_all"
 	MsgStartAll      = "start_all"
+	MsgListVolumes   = "list_volumes"
+	MsgCreateVolume  = "create_volume"
+	MsgRemoveVolume  = "remove_volume"
+	MsgListNetworks  = "list_networks"
+	MsgCreateNetwork = "create_network"
+	MsgRemoveNetwork = "remove_network"
+)
+
+// Worker -> Orchestrator response types for volume/network queries
+const (
+	MsgListVolumesResponse  = "list_volumes_response"
+	MsgListNetworksResponse = "list_networks_response"
+)
+
+// Exec message types
+const (
+	MsgExecStart  = "exec_start"
+	MsgExecInput  = "exec_input"
+	MsgExecResize = "exec_resize"
+	MsgExecClose  = "exec_close"
+	MsgExecOutput = "exec_output"
 )
 
 // Envelope is the standard message sent orchestrator -> worker.
