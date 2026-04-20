@@ -102,10 +102,13 @@ fi
 echo "  Version:  ${LATEST_TAG}"
 
 # Clone and build
-TMPDIR=$(mktemp -d)
+BUILD_DIR=$(mktemp -d)
+export GOPATH="${BUILD_DIR}/gopath"
+export GOMODCACHE="${BUILD_DIR}/gomodcache"
+mkdir -p "$GOPATH" "$GOMODCACHE"
 echo "Building lattice-runner..."
-git clone --depth=1 --branch "${LATEST_TAG}" "https://github.com/${REPO}.git" "$TMPDIR/lattice-runner" 2>/dev/null
-cd "$TMPDIR/lattice-runner"
+git clone --depth=1 --branch "${LATEST_TAG}" "https://github.com/${REPO}.git" "$BUILD_DIR/lattice-runner" 2>/dev/null
+cd "$BUILD_DIR/lattice-runner"
 CGO_ENABLED=0 go build -ldflags="-w -s -X main.Version=${LATEST_TAG}" -o "${BINARY_NAME}" .
 
 # Install binary
@@ -120,7 +123,7 @@ sudo mv -f "${INSTALL_DIR}/${BINARY_NAME}.new" "${INSTALL_DIR}/${BINARY_NAME}"
 sudo ln -sf "${INSTALL_DIR}/${BINARY_NAME}" /usr/local/bin/lattice-runner
 
 # Cleanup
-rm -rf "$TMPDIR"
+rm -rf "$BUILD_DIR"
 
 echo ""
 echo "Lattice Runner installed to ${INSTALL_DIR}/${BINARY_NAME}"
