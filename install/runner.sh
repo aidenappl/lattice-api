@@ -7,7 +7,7 @@ set -e
 REPO="aidenappl/lattice-runner"
 INSTALL_DIR="/opt/lattice-runner"
 BINARY_NAME="lattice-runner"
-GO_VERSION="1.24.10"
+GO_VERSION="1.25.0"
 SERVICE_NAME="lattice-runner"
 
 echo ""
@@ -126,10 +126,13 @@ echo ""
 
 if [ "$IS_UPGRADE" = true ]; then
     # ── Upgrade path: restart the existing service ──────────────────────────
-    echo "Restarting ${SERVICE_NAME} service..."
-    sudo systemctl restart "$SERVICE_NAME"
+    # Delay the restart by 3 seconds so that the process that invoked this
+    # script (lattice-runner itself) has time to read exit-code 0 and send
+    # the success worker_action_status message before systemd kills it.
+    echo "Scheduling ${SERVICE_NAME} restart in 3 seconds..."
+    (sleep 3 && sudo systemctl restart "$SERVICE_NAME") &
     echo ""
-    echo "Upgrade complete. Runner restarted with new binary."
+    echo "Upgrade complete. Runner will restart shortly."
     echo ""
     echo "  sudo systemctl status ${SERVICE_NAME}"
     echo "  sudo journalctl -u ${SERVICE_NAME} -f"

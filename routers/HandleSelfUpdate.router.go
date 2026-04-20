@@ -50,15 +50,20 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 		f.Flush()
 	}
 
-	// Stop this container — Docker's restart:always policy will start a fresh
-	// container using the image we just pulled. The goroutine is intentionally
-	// simple: it must complete before the container exits, so no compose up.
+	// Kill this container (SIGKILL, not docker stop).
+	//
+	// docker stop marks the container's desired state as "stopped", which
+	// causes restart:always to pause — requiring a manual compose up.
+	//
+	// docker kill does NOT change desired state, so restart:always fires
+	// immediately. Docker re-resolves the image tag from the local store,
+	// picking up the image we just pulled above.
 	go func() {
 		time.Sleep(2 * time.Second)
 		// HOSTNAME is set by Docker to the container's short ID.
-		cmd := exec.Command("docker", "stop", os.Getenv("HOSTNAME"))
+		cmd := exec.Command("docker", "kill", os.Getenv("HOSTNAME"))
 		if out, err := cmd.CombinedOutput(); err != nil {
-			log.Printf("API self-update stop failed: %v — %s", err, string(out))
+			log.Printf("API self-update kill failed: %v — %s", err, string(out))
 		}
 	}()
 }
