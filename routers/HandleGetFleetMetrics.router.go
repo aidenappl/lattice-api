@@ -17,19 +17,19 @@ func HandleGetFleetMetrics(w http.ResponseWriter, r *http.Request) {
 	switch rangeStr {
 	case "1h":
 		since = time.Now().Add(-1 * time.Hour)
-		points = 12
+		points = 60
 	case "6h":
 		since = time.Now().Add(-6 * time.Hour)
-		points = 18
+		points = 72
 	case "24h", "":
 		since = time.Now().Add(-24 * time.Hour)
-		points = 24
+		points = 96
 	case "7d":
 		since = time.Now().Add(-7 * 24 * time.Hour)
-		points = 28
+		points = 168
 	default:
 		since = time.Now().Add(-24 * time.Hour)
-		points = 24
+		points = 96
 	}
 
 	history, err := query.GetFleetMetricsHistory(db.DB, since, points)
