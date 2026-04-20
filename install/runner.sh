@@ -111,8 +111,10 @@ CGO_ENABLED=0 go build -ldflags="-w -s -X main.Version=${LATEST_TAG}" -o "${BINA
 # Install binary
 echo "Installing to ${INSTALL_DIR}..."
 sudo mkdir -p "$INSTALL_DIR"
-sudo cp "${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
-sudo chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+# Copy to a temp path then rename atomically — avoids "Text file busy" when upgrading a running binary
+sudo cp "${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}.new"
+sudo chmod +x "${INSTALL_DIR}/${BINARY_NAME}.new"
+sudo mv -f "${INSTALL_DIR}/${BINARY_NAME}.new" "${INSTALL_DIR}/${BINARY_NAME}"
 
 # Symlink to PATH
 sudo ln -sf "${INSTALL_DIR}/${BINARY_NAME}" /usr/local/bin/lattice-runner
