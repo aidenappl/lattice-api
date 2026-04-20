@@ -83,7 +83,9 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 			if err := json.Unmarshal([]byte(*c.PortMappings), &pm); err != nil {
 				log.Printf("invalid port_mappings JSON for container %s: %v", c.Name, err)
 			} else {
-				spec["port_mappings"] = pm
+				// Resolve environment variable references in port mappings
+				resolved := resolveVarsInValue(pm, stackEnvVars)
+				spec["port_mappings"] = resolved
 			}
 		}
 		if c.EnvVars != nil {
@@ -111,7 +113,9 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 			if err := json.Unmarshal([]byte(*c.Volumes), &vol); err != nil {
 				log.Printf("invalid volumes JSON for container %s: %v", c.Name, err)
 			} else {
-				spec["volumes"] = vol
+				// Resolve environment variable references in volumes
+				resolved := resolveVarsInValue(vol, stackEnvVars)
+				spec["volumes"] = resolved
 			}
 		}
 		if c.CPULimit != nil {
@@ -304,4 +308,34 @@ func resolveEnvRef(s string, envVars map[string]any) (any, bool) {
 		return v, true
 	}
 	return nil, false
+}
+
+// resolveVarsInValue recursively resolves environment variable references in any value.
+// Handles strings (${VAR} syntax), maps, and slices.
+func resolveVarsInValue(val any, envVars map[string]any) any {
+	switch v := val.(type) {
+	case string:
+		// Try to resolve as an environment variable reference
+		if resolved, ok := resolveEnvRef(v, envVars); ok {
+			return resolved
+		}
+		return v
+	case map[string]any:
+		// Recursively resolve all values in the map
+		result := make(map[string]any, len(v))
+		for k, value := range v {
+			result[k] = resolveVarsInValue(value, envVars)
+		}
+		return result
+	case []any:
+		// Recursively resolve all elements in the slice
+		result := make([]any, len(v))
+		for i, value := range v {
+			result[i] = resolveVarsInValue(value, envVars)
+		}
+		return result
+	default:
+		// For other types (int, float, bool, nil), return as-is
+		return val
+	}
 }

@@ -98,7 +98,9 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 			if err := json.Unmarshal([]byte(*c.PortMappings), &pm); err != nil {
 				log.Printf("rollback: invalid port_mappings JSON for container %s: %v", c.Name, err)
 			} else {
-				spec["port_mappings"] = pm
+				// Resolve environment variable references in port mappings
+				resolved := resolveVarsInValue(pm, stackEnvVars)
+				spec["port_mappings"] = resolved
 			}
 		}
 
@@ -128,7 +130,9 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 			if err := json.Unmarshal([]byte(*c.Volumes), &vol); err != nil {
 				log.Printf("rollback: invalid volumes JSON for container %s: %v", c.Name, err)
 			} else {
-				spec["volumes"] = vol
+				// Resolve environment variable references in volumes
+				resolved := resolveVarsInValue(vol, stackEnvVars)
+				spec["volumes"] = resolved
 			}
 		}
 
