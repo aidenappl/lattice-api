@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -173,4 +174,47 @@ func CreateMetrics(engine db.Queryable, req CreateMetricsRequest) error {
 
 	_, err = engine.Exec(qStr, args...)
 	return err
+}
+
+// GetLatestMetricsForAllWorkers returns the most recent metrics row for each worker
+// that has a heartbeat within the last 2 minutes (i.e., online workers).
+func GetLatestMetricsForAllWorkers(engine db.Queryable) ([]structs.WorkerMetrics, error) {
+	rawSQL := `
+		SELECT ` + joinColumns(metricsColumns) + `
+		FROM worker_metrics
+		INNER JOIN (
+			SELECT worker_id, MAX(recorded_at) AS max_recorded
+			FROM worker_metrics
+			WHERE recorded_at >= ?
+			GROUP BY worker_id
+		) latest ON worker_metrics.worker_id = latest.worker_id
+		           AND worker_metrics.recorded_at = latest.max_recorded
+	`
+	cutoff := time.Now().Add(-2 * time.Minute)
+	rows, err := engine.Query(rawSQL, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query fleet metrics: %w", err)
+	}
+	defer rows.Close()
+
+	var metrics []structs.WorkerMetrics
+	for rows.Next() {
+		m, err := scanMetrics(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan fleet metrics: %w", err)
+		}
+		metrics = append(metrics, *m)
+	}
+	return metrics, rows.Err()
+}
+
+func joinColumns(cols []string) string {
+	var b strings.Builder
+	for i, c := range cols {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(c)
+	}
+	return b.String()
 }
