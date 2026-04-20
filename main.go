@@ -148,6 +148,25 @@ func main() {
 			})
 			handleDeploymentProgress(msg.Payload)
 
+		case socket.MsgDeploymentStatus:
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "deployment_status",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
+			if depID, ok := msg.Payload["deployment_id"].(float64); ok {
+				message, _ := msg.Payload["message"].(string)
+				if message != "" {
+					stage := "status_check"
+					_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+						DeploymentID: int(depID),
+						Level:        "info",
+						Stage:        &stage,
+						Message:      fmt.Sprintf("Runner status check: %s", message),
+					})
+				}
+			}
+
 		case socket.MsgContainerStatus:
 			// Write lifecycle logs synchronously BEFORE broadcasting so the DB
 			// row exists when the frontend receives the event and calls loadLogs().

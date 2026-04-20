@@ -107,10 +107,9 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 			if err := json.Unmarshal([]byte(*c.EnvVars), &ev); err != nil {
 				log.Printf("rollback: invalid env_vars JSON for container %s: %v", c.Name, err)
 			} else {
-				merged := make(map[string]any, len(stackEnvVars)+len(ev))
-				for k, v := range stackEnvVars {
-					merged[k] = v
-				}
+				// Preserve compose semantics: only include env keys explicitly defined
+				// for the service, but resolve ${VAR} references from stack-level env.
+				merged := make(map[string]any, len(ev))
 				for k, v := range ev {
 					if s, ok := v.(string); ok {
 						if resolved, ok := resolveEnvRef(s, stackEnvVars); ok {
@@ -122,8 +121,6 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 				}
 				spec["env_vars"] = merged
 			}
-		} else if len(stackEnvVars) > 0 {
-			spec["env_vars"] = stackEnvVars
 		}
 
 		if c.Volumes != nil {
@@ -252,6 +249,8 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		"containers":    containerSpecs,
 		"rollback":      true,
 		"rollback_of":   targetID,
+		"attempt":       1,
+		"max_retries":   deployMaxRetryCount,
 	}
 
 	if networks, err := query.ListNetworksByStack(db.DB, stack.ID); err == nil && networks != nil && len(*networks) > 0 {
@@ -301,6 +300,8 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		Level:        "info",
 		Message:      fmt.Sprintf("Rollback command sent to worker %d via WebSocket", *stack.WorkerID),
 	})
+
+	h.startDeploymentMonitor(rollbackDeployment.ID, stack.ID, *stack.WorkerID, payload)
 
 	logAudit(r, "rollback", "deployment", intPtr(targetID), nil)
 	responder.NewCreated(w, rollbackDeployment, "rollback deployment created and sent to worker")

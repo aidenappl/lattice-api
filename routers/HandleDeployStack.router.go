@@ -91,14 +91,9 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 			if err := json.Unmarshal([]byte(*c.EnvVars), &ev); err != nil {
 				log.Printf("invalid env_vars JSON for container %s: %v", c.Name, err)
 			} else {
-				// Merge stack-level env vars (container-level overrides stack-level).
-				// Container env values imported from a compose file may be stored as
-				// ${VAR_NAME} references. Resolve those against the stack env vars so
-				// the worker receives the actual value rather than the literal reference.
-				merged := make(map[string]any, len(stackEnvVars)+len(ev))
-				for k, v := range stackEnvVars {
-					merged[k] = v
-				}
+				// Preserve compose semantics: only include env keys explicitly defined
+				// for the service, but resolve ${VAR} references from stack-level env.
+				merged := make(map[string]any, len(ev))
 				for k, v := range ev {
 					if s, ok := v.(string); ok {
 						if resolved, ok := resolveEnvRef(s, stackEnvVars); ok {
@@ -110,8 +105,6 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 				}
 				spec["env_vars"] = merged
 			}
-		} else if len(stackEnvVars) > 0 {
-			spec["env_vars"] = stackEnvVars
 		}
 		if c.Volumes != nil {
 			var vol map[string]any
@@ -234,6 +227,8 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		"stack_name":    stack.Name,
 		"strategy":      stack.DeploymentStrategy,
 		"containers":    containerSpecs,
+		"attempt":       1,
+		"max_retries":   deployMaxRetryCount,
 	}
 
 	// Include stack-level networks
@@ -282,6 +277,8 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		Level:        "info",
 		Message:      fmt.Sprintf("Deploy command sent to worker %d via WebSocket", *stack.WorkerID),
 	})
+
+	h.startDeploymentMonitor(deployment.ID, stack.ID, *stack.WorkerID, payload)
 
 	logAudit(r, "deploy", "stack", intPtr(stackID), strPtr(stack.Name))
 	responder.NewCreated(w, deployment, "deployment created and sent to worker")
