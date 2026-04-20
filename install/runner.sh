@@ -137,6 +137,24 @@ if [ "$IS_UPGRADE" = true ]; then
     # install was interrupted or the binary was placed manually).
     if [ ! -f "/etc/systemd/system/${SERVICE_NAME}.service" ]; then
         echo "Systemd service not found — creating..."
+
+        # Create .env if it doesn't exist and a token was provided
+        if [ ! -f "${INSTALL_DIR}/.env" ] && [ -n "$WORKER_TOKEN" ]; then
+            ORCHESTRATOR_URL="${ORCHESTRATOR_URL:-wss://lattice-api.appleby.cloud/ws/worker}"
+            WORKER_NAME="${WORKER_NAME:-$(hostname)}"
+
+            sudo tee "${INSTALL_DIR}/.env" > /dev/null <<ENVEOF
+ORCHESTRATOR_URL=${ORCHESTRATOR_URL}
+WORKER_TOKEN=${WORKER_TOKEN}
+WORKER_NAME=${WORKER_NAME}
+ENVEOF
+            sudo chmod 600 "${INSTALL_DIR}/.env"
+            echo "  Created ${INSTALL_DIR}/.env"
+        elif [ ! -f "${INSTALL_DIR}/.env" ]; then
+            echo "WARNING: ${INSTALL_DIR}/.env not found and no WORKER_TOKEN provided."
+            echo "  Run: sudo lattice-runner setup"
+        fi
+
         sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<SVCEOF
 [Unit]
 Description=Lattice Runner
