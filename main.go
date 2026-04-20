@@ -413,6 +413,7 @@ func main() {
 
 	// Overview (dashboard)
 	admin.HandleFunc("/overview", routers.HandleGetOverview).Methods(http.MethodGet)
+	admin.HandleFunc("/fleet-metrics", routers.HandleGetFleetMetrics).Methods(http.MethodGet)
 
 	// Versions & updates
 	admin.HandleFunc("/versions", routers.HandleGetVersions).Methods(http.MethodGet)
