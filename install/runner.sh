@@ -93,13 +93,20 @@ fi
 
 echo ""
 
+# Fetch latest release tag from GitHub
+LATEST_TAG=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+if [ -z "$LATEST_TAG" ]; then
+    echo "ERROR: Could not determine latest release tag from GitHub."
+    exit 1
+fi
+echo "  Version:  ${LATEST_TAG}"
+
 # Clone and build
 TMPDIR=$(mktemp -d)
 echo "Building lattice-runner..."
-git clone --depth=1 "https://github.com/${REPO}.git" "$TMPDIR/lattice-runner" 2>/dev/null
+git clone --depth=1 --branch "${LATEST_TAG}" "https://github.com/${REPO}.git" "$TMPDIR/lattice-runner" 2>/dev/null
 cd "$TMPDIR/lattice-runner"
-GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-CGO_ENABLED=0 go build -ldflags="-w -s -X main.Version=v0.1.6-${GIT_HASH}" -o "${BINARY_NAME}" .
+CGO_ENABLED=0 go build -ldflags="-w -s -X main.Version=${LATEST_TAG}" -o "${BINARY_NAME}" .
 
 # Install binary
 echo "Installing to ${INSTALL_DIR}..."
