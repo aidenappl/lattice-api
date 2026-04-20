@@ -105,7 +105,8 @@ echo "  Version:  ${LATEST_TAG}"
 BUILD_DIR=$(mktemp -d)
 export GOPATH="${BUILD_DIR}/gopath"
 export GOMODCACHE="${BUILD_DIR}/gomodcache"
-mkdir -p "$GOPATH" "$GOMODCACHE"
+export GOCACHE="${BUILD_DIR}/gocache"
+mkdir -p "$GOPATH" "$GOMODCACHE" "$GOCACHE"
 echo "Building lattice-runner..."
 git clone --depth=1 --branch "${LATEST_TAG}" "https://github.com/${REPO}.git" "$BUILD_DIR/lattice-runner" 2>/dev/null
 cd "$BUILD_DIR/lattice-runner"
