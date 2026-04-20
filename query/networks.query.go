@@ -73,6 +73,32 @@ func CreateNetwork(engine db.Queryable, req CreateNetworkRequest) error {
 	return err
 }
 
+func ListAllNetworks(engine db.Queryable) ([]structs.Network, error) {
+	q := sq.Select(networkColumns...).From("networks").OrderBy("networks.stack_id ASC", "networks.id ASC")
+
+	qStr, args, err := q.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build sql query: %w", err)
+	}
+
+	rows, err := engine.Query(qStr, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute sql query: %w", err)
+	}
+	defer rows.Close()
+
+	var networks []structs.Network
+	for rows.Next() {
+		n, err := scanNetwork(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan network: %w", err)
+		}
+		networks = append(networks, *n)
+	}
+
+	return networks, rows.Err()
+}
+
 func DeleteNetworksByStack(engine db.Queryable, stackID int) error {
 	_, err := engine.Exec("DELETE FROM networks WHERE stack_id = ?", stackID)
 	return err

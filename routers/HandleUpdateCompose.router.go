@@ -167,6 +167,26 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Replace networks — delete existing, create from compose
+	_ = query.DeleteNetworksByStack(db.DB, stack.ID)
+	if len(compose.Networks) > 0 {
+		for key, net := range compose.Networks {
+			driver := net.Driver
+			if driver == "" {
+				driver = "bridge"
+			}
+			name := net.Name
+			if name == "" {
+				name = key
+			}
+			_ = query.CreateNetwork(db.DB, query.CreateNetworkRequest{
+				StackID: stack.ID,
+				Name:    name,
+				Driver:  driver,
+			})
+		}
+	}
+
 	// Store compose YAML on stack
 	stack, err = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{
 		ComposeYAML: &body.ComposeYAML,

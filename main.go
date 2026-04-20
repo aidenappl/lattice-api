@@ -52,6 +52,9 @@ func main() {
 		log.Fatal("failed to bootstrap admin: ", err)
 	}
 
+	// 2b. Backfill networks from stored compose YAML for stacks that have no networks yet
+	routers.BackfillNetworksFromCompose(db.DB)
+
 	// 3. Forta setup (optional)
 	fortaEnabled := false
 	if env.FortaAPIDomain != "" && env.FortaClientID != "" {
@@ -347,6 +350,7 @@ func main() {
 	admin.HandleFunc("/workers/{id}/volumes", volumeHandler.HandleListVolumes).Methods(http.MethodGet)
 	admin.HandleFunc("/workers/{id}/volumes", middleware.RequireEditor(volumeHandler.HandleCreateVolume)).Methods(http.MethodPost)
 	admin.HandleFunc("/workers/{id}/volumes/{name}", middleware.RequireEditor(volumeHandler.HandleDeleteVolume)).Methods(http.MethodDelete)
+	admin.HandleFunc("/networks", routers.HandleListAllNetworks).Methods(http.MethodGet)
 	admin.HandleFunc("/workers/{id}/networks", networkHandler.HandleListNetworks).Methods(http.MethodGet)
 	admin.HandleFunc("/workers/{id}/networks", middleware.RequireEditor(networkHandler.HandleCreateNetwork)).Methods(http.MethodPost)
 	admin.HandleFunc("/workers/{id}/networks/{name}", middleware.RequireEditor(networkHandler.HandleDeleteNetwork)).Methods(http.MethodDelete)

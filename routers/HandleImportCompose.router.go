@@ -14,6 +14,12 @@ import (
 
 type composeFile struct {
 	Services map[string]composeService `yaml:"services"`
+	Networks map[string]composeNetwork `yaml:"networks"`
+}
+
+type composeNetwork struct {
+	Driver string `yaml:"driver"`
+	Name   string `yaml:"name"`
 }
 
 type composeService struct {
@@ -217,6 +223,25 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 		if _, err := query.CreateContainer(db.DB, req); err != nil {
 			responder.QueryError(w, err, fmt.Sprintf("failed to create container %s", name))
 			return
+		}
+	}
+
+	// Save top-level networks
+	if len(compose.Networks) > 0 {
+		for key, net := range compose.Networks {
+			driver := net.Driver
+			if driver == "" {
+				driver = "bridge"
+			}
+			name := net.Name
+			if name == "" {
+				name = key
+			}
+			_ = query.CreateNetwork(db.DB, query.CreateNetworkRequest{
+				StackID: stack.ID,
+				Name:    name,
+				Driver:  driver,
+			})
 		}
 	}
 
