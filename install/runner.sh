@@ -132,6 +132,33 @@ echo ""
 
 if [ "$IS_UPGRADE" = true ]; then
     # ── Upgrade path: restart the existing service ──────────────────────────
+
+    # Ensure the systemd service file exists (may be missing if the original
+    # install was interrupted or the binary was placed manually).
+    if [ ! -f "/etc/systemd/system/${SERVICE_NAME}.service" ]; then
+        echo "Systemd service not found — creating..."
+        sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<SVCEOF
+[Unit]
+Description=Lattice Runner
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/lattice-runner
+EnvironmentFile=/opt/lattice-runner/.env
+ExecStart=/opt/lattice-runner/lattice-runner
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+        sudo systemctl daemon-reload
+        sudo systemctl enable "$SERVICE_NAME"
+        echo "  Created and enabled ${SERVICE_NAME}.service"
+    fi
+
     # Delay the restart by 3 seconds so that the process that invoked this
     # script (lattice-runner itself) has time to read exit-code 0 and send
     # the success worker_action_status message before systemd kills it.
