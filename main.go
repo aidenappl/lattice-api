@@ -151,11 +151,11 @@ func main() {
 		case socket.MsgContainerStatus:
 			// Write lifecycle logs synchronously BEFORE broadcasting so the DB
 			// row exists when the frontend receives the event and calls loadLogs().
-			handleContainerStatus(session.WorkerID, msg.Payload)
+			enriched := handleContainerStatus(session.WorkerID, msg.Payload)
 			adminHub.BroadcastJSON(map[string]any{
 				"type":      "container_status",
 				"worker_id": session.WorkerID,
-				"payload":   msg.Payload,
+				"payload":   enriched,
 			})
 
 		case socket.MsgContainerHealthStatus:
@@ -620,13 +620,20 @@ func handleDeploymentProgress(payload map[string]any) {
 	}
 }
 
-func handleContainerStatus(workerID int, payload map[string]any) {
+func handleContainerStatus(workerID int, payload map[string]any) map[string]any {
 	containerName, _ := payload["container_name"].(string)
 	action, _ := payload["action"].(string)
 	status, _ := payload["status"].(string)
 
+	// Always return the raw payload with enrichments for the admin broadcast
+	enriched := map[string]any{
+		"container_name": containerName,
+		"action":         action,
+		"status":         status,
+	}
+
 	if containerName == "" || status != "success" {
-		return
+		return enriched
 	}
 
 	// Map action to container DB status
@@ -639,20 +646,25 @@ func handleContainerStatus(workerID int, payload map[string]any) {
 	case "pause":
 		dbStatus = "paused"
 	default:
-		return
+		return enriched
 	}
 
 	c, err := query.GetContainerByName(db.DB, containerName)
 	if err != nil {
 		log.Printf("container status: could not find container %q: %v", containerName, err)
-		return
+		return enriched
 	}
+
+	// Enrich with container_id and the resolved container state for the frontend
+	enriched["container_id"] = c.ID
+	enriched["container_state"] = dbStatus
 
 	req := query.UpdateContainerRequest{Status: &dbStatus}
 	// On start/recreate/restart, reset health_status to "starting" if the container has a healthcheck.
 	if (action == "start" || action == "recreate" || action == "restart") && c.HealthCheck != nil {
 		hs := "starting"
 		req.HealthStatus = &hs
+		enriched["health_status"] = hs
 	}
 
 	if _, err := query.UpdateContainer(db.DB, c.ID, req); err != nil {
@@ -686,6 +698,8 @@ func handleContainerStatus(workerID int, payload map[string]any) {
 			}
 		}
 	}
+
+	return enriched
 }
 
 // handleLifecycleLog processes lifecycle_log messages from workers and persists
