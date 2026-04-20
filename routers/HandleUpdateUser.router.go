@@ -38,5 +38,6 @@ func HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "update", "user", intPtr(id), nil)
 	responder.New(w, user, "user updated")
 }

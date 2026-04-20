@@ -285,69 +285,70 @@ func main() {
 
 	// Workers
 	admin.HandleFunc("/workers", routers.HandleGetWorkers).Methods(http.MethodGet)
-	admin.HandleFunc("/workers", routers.HandleCreateWorker).Methods(http.MethodPost)
+	admin.HandleFunc("/workers", middleware.RequireEditor(routers.HandleCreateWorker)).Methods(http.MethodPost)
 	admin.HandleFunc("/workers/{id}", routers.HandleGetWorker).Methods(http.MethodGet)
-	admin.HandleFunc("/workers/{id}", routers.HandleUpdateWorker).Methods(http.MethodPut)
-	admin.HandleFunc("/workers/{id}", routers.HandleDeleteWorker).Methods(http.MethodDelete)
+	admin.HandleFunc("/workers/{id}", middleware.RequireEditor(routers.HandleUpdateWorker)).Methods(http.MethodPut)
+	admin.HandleFunc("/workers/{id}", middleware.RequireEditor(routers.HandleDeleteWorker)).Methods(http.MethodDelete)
 	admin.HandleFunc("/workers/{id}/tokens", routers.HandleGetWorkerTokens).Methods(http.MethodGet)
-	admin.HandleFunc("/workers/{id}/tokens", routers.HandleCreateWorkerToken).Methods(http.MethodPost)
+	admin.HandleFunc("/workers/{id}/tokens", middleware.RequireEditor(routers.HandleCreateWorkerToken)).Methods(http.MethodPost)
 	admin.HandleFunc("/workers/{id}/metrics", routers.HandleGetWorkerMetrics).Methods(http.MethodGet)
-	admin.HandleFunc("/workers/{id}/reboot", workerActionHandler.HandleRebootWorker).Methods(http.MethodPost)
-	admin.HandleFunc("/workers/{id}/upgrade", workerActionHandler.HandleUpgradeRunner).Methods(http.MethodPost)
-	admin.HandleFunc("/workers/{id}/stop-all", workerActionHandler.HandleStopAllContainers).Methods(http.MethodPost)
-	admin.HandleFunc("/workers/{id}/start-all", workerActionHandler.HandleStartAllContainers).Methods(http.MethodPost)
-	admin.HandleFunc("/worker-tokens/{id}", routers.HandleDeleteWorkerToken).Methods(http.MethodDelete)
+	admin.HandleFunc("/workers/{id}/reboot", middleware.RequireAdmin(workerActionHandler.HandleRebootWorker)).Methods(http.MethodPost)
+	admin.HandleFunc("/workers/{id}/upgrade", middleware.RequireAdmin(workerActionHandler.HandleUpgradeRunner)).Methods(http.MethodPost)
+	admin.HandleFunc("/workers/{id}/stop-all", middleware.RequireEditor(workerActionHandler.HandleStopAllContainers)).Methods(http.MethodPost)
+	admin.HandleFunc("/workers/{id}/start-all", middleware.RequireEditor(workerActionHandler.HandleStartAllContainers)).Methods(http.MethodPost)
+	admin.HandleFunc("/worker-tokens/{id}", middleware.RequireEditor(routers.HandleDeleteWorkerToken)).Methods(http.MethodDelete)
 
 	// Stacks
 	admin.HandleFunc("/stacks", routers.HandleGetStacks).Methods(http.MethodGet)
-	admin.HandleFunc("/stacks", routers.HandleCreateStack).Methods(http.MethodPost)
-	admin.HandleFunc("/stacks/import", routers.HandleImportCompose).Methods(http.MethodPost)
+	admin.HandleFunc("/stacks", middleware.RequireEditor(routers.HandleCreateStack)).Methods(http.MethodPost)
+	admin.HandleFunc("/stacks/import", middleware.RequireEditor(routers.HandleImportCompose)).Methods(http.MethodPost)
 	admin.HandleFunc("/stacks/{id}", routers.HandleGetStack).Methods(http.MethodGet)
-	admin.HandleFunc("/stacks/{id}", routers.HandleUpdateStack).Methods(http.MethodPut)
-	admin.HandleFunc("/stacks/{id}", containerActionHandler.HandleDeleteStack).Methods(http.MethodDelete)
-	admin.HandleFunc("/stacks/{id}/compose", routers.HandleUpdateCompose).Methods(http.MethodPut)
-	admin.HandleFunc("/stacks/{id}/sync-compose", routers.HandleSyncCompose).Methods(http.MethodPost)
-	admin.HandleFunc("/stacks/{id}/deploy", deployHandler.HandleDeployStack).Methods(http.MethodPost)
+	admin.HandleFunc("/stacks/{id}", middleware.RequireEditor(routers.HandleUpdateStack)).Methods(http.MethodPut)
+	admin.HandleFunc("/stacks/{id}", middleware.RequireEditor(containerActionHandler.HandleDeleteStack)).Methods(http.MethodDelete)
+	admin.HandleFunc("/stacks/{id}/compose", middleware.RequireEditor(routers.HandleUpdateCompose)).Methods(http.MethodPut)
+	admin.HandleFunc("/stacks/{id}/sync-compose", middleware.RequireEditor(routers.HandleSyncCompose)).Methods(http.MethodPost)
+	admin.HandleFunc("/stacks/{id}/deploy", middleware.RequireEditor(deployHandler.HandleDeployStack)).Methods(http.MethodPost)
 
 	// Containers
 	admin.HandleFunc("/containers", routers.HandleListAllContainers).Methods(http.MethodGet)
 	admin.HandleFunc("/stacks/{id}/containers", routers.HandleGetContainers).Methods(http.MethodGet)
-	admin.HandleFunc("/stacks/{id}/containers", routers.HandleCreateContainer).Methods(http.MethodPost)
+	admin.HandleFunc("/stacks/{id}/containers", middleware.RequireEditor(routers.HandleCreateContainer)).Methods(http.MethodPost)
 	admin.HandleFunc("/containers/{id}", routers.HandleGetContainer).Methods(http.MethodGet)
-	admin.HandleFunc("/containers/{id}", routers.HandleUpdateContainer).Methods(http.MethodPut)
-	admin.HandleFunc("/containers/{id}", containerActionHandler.HandleDeleteContainer).Methods(http.MethodDelete)
+	admin.HandleFunc("/containers/{id}", middleware.RequireEditor(routers.HandleUpdateContainer)).Methods(http.MethodPut)
+	admin.HandleFunc("/containers/{id}", middleware.RequireEditor(containerActionHandler.HandleDeleteContainer)).Methods(http.MethodDelete)
 	admin.HandleFunc("/containers/{id}/logs", routers.HandleGetContainerLogs).Methods(http.MethodGet)
 	admin.HandleFunc("/containers/{id}/lifecycle", routers.HandleGetLifecycleLogs).Methods(http.MethodGet)
-	admin.HandleFunc("/containers/{id}/start", containerActionHandler.HandleStartContainer).Methods(http.MethodPost)
-	admin.HandleFunc("/containers/{id}/stop", containerActionHandler.HandleStopContainer).Methods(http.MethodPost)
-	admin.HandleFunc("/containers/{id}/kill", containerActionHandler.HandleKillContainer).Methods(http.MethodPost)
-	admin.HandleFunc("/containers/{id}/restart", containerActionHandler.HandleRestartContainer).Methods(http.MethodPost)
-	admin.HandleFunc("/containers/{id}/pause", containerActionHandler.HandlePauseContainer).Methods(http.MethodPost)
-	admin.HandleFunc("/containers/{id}/unpause", containerActionHandler.HandleUnpauseContainer).Methods(http.MethodPost)
-	admin.HandleFunc("/containers/{id}/remove", containerActionHandler.HandleRemoveContainer).Methods(http.MethodPost)
-	admin.HandleFunc("/containers/{id}/recreate", containerActionHandler.HandleRecreateContainer).Methods(http.MethodPost)
+	admin.HandleFunc("/containers/{id}/start", middleware.RequireEditor(containerActionHandler.HandleStartContainer)).Methods(http.MethodPost)
+	admin.HandleFunc("/containers/{id}/stop", middleware.RequireEditor(containerActionHandler.HandleStopContainer)).Methods(http.MethodPost)
+	admin.HandleFunc("/containers/{id}/kill", middleware.RequireEditor(containerActionHandler.HandleKillContainer)).Methods(http.MethodPost)
+	admin.HandleFunc("/containers/{id}/restart", middleware.RequireEditor(containerActionHandler.HandleRestartContainer)).Methods(http.MethodPost)
+	admin.HandleFunc("/containers/{id}/pause", middleware.RequireEditor(containerActionHandler.HandlePauseContainer)).Methods(http.MethodPost)
+	admin.HandleFunc("/containers/{id}/unpause", middleware.RequireEditor(containerActionHandler.HandleUnpauseContainer)).Methods(http.MethodPost)
+	admin.HandleFunc("/containers/{id}/remove", middleware.RequireEditor(containerActionHandler.HandleRemoveContainer)).Methods(http.MethodPost)
+	admin.HandleFunc("/containers/{id}/recreate", middleware.RequireEditor(containerActionHandler.HandleRecreateContainer)).Methods(http.MethodPost)
 
 	// Deployments
 	admin.HandleFunc("/deployments", routers.HandleGetDeployments).Methods(http.MethodGet)
 	admin.HandleFunc("/deployments/{id}", routers.HandleGetDeployment).Methods(http.MethodGet)
 	admin.HandleFunc("/deployments/{id}/logs", routers.HandleGetDeploymentLogs).Methods(http.MethodGet)
-	admin.HandleFunc("/deployments/{id}/approve", routers.HandleApproveDeployment).Methods(http.MethodPost)
-	admin.HandleFunc("/deployments/{id}/rollback", deployHandler.HandleRollbackDeployment).Methods(http.MethodPost)
+	admin.HandleFunc("/deployments/{id}/approve", middleware.RequireEditor(routers.HandleApproveDeployment)).Methods(http.MethodPost)
+	admin.HandleFunc("/deployments/{id}/rollback", middleware.RequireEditor(deployHandler.HandleRollbackDeployment)).Methods(http.MethodPost)
 
 	// Registries
 	admin.HandleFunc("/registries", routers.HandleGetRegistries).Methods(http.MethodGet)
-	admin.HandleFunc("/registries", routers.HandleCreateRegistry).Methods(http.MethodPost)
-	admin.HandleFunc("/registries/test", routers.HandleTestRegistryInline).Methods(http.MethodPost)
-	admin.HandleFunc("/registries/{id}", routers.HandleUpdateRegistry).Methods(http.MethodPut)
-	admin.HandleFunc("/registries/{id}", routers.HandleDeleteRegistry).Methods(http.MethodDelete)
-	admin.HandleFunc("/registries/{id}/test", routers.HandleTestRegistry).Methods(http.MethodPost)
+	admin.HandleFunc("/registries", middleware.RequireEditor(routers.HandleCreateRegistry)).Methods(http.MethodPost)
+	admin.HandleFunc("/registries/test", middleware.RequireEditor(routers.HandleTestRegistryInline)).Methods(http.MethodPost)
+	admin.HandleFunc("/registries/{id}", middleware.RequireEditor(routers.HandleUpdateRegistry)).Methods(http.MethodPut)
+	admin.HandleFunc("/registries/{id}", middleware.RequireEditor(routers.HandleDeleteRegistry)).Methods(http.MethodDelete)
+	admin.HandleFunc("/registries/{id}/test", middleware.RequireEditor(routers.HandleTestRegistry)).Methods(http.MethodPost)
 	admin.HandleFunc("/registries/{id}/repositories", routers.HandleListRegistryRepos).Methods(http.MethodGet)
 	admin.HandleFunc("/registries/{id}/tags", routers.HandleListRegistryTags).Methods(http.MethodGet)
 
 	// Users
 	admin.HandleFunc("/users", routers.HandleGetUsers).Methods(http.MethodGet)
-	admin.HandleFunc("/users", routers.HandleCreateUser).Methods(http.MethodPost)
-	admin.HandleFunc("/users/{id}", routers.HandleUpdateUser).Methods(http.MethodPut)
+	admin.HandleFunc("/users", middleware.RequireAdmin(routers.HandleCreateUser)).Methods(http.MethodPost)
+	admin.HandleFunc("/users/{id}", middleware.RequireAdmin(routers.HandleUpdateUser)).Methods(http.MethodPut)
+	admin.HandleFunc("/users/{id}", middleware.RequireAdmin(routers.HandleDeleteUser)).Methods(http.MethodDelete)
 
 	// Audit log
 	admin.HandleFunc("/audit-log", routers.HandleGetAuditLog).Methods(http.MethodGet)
@@ -357,9 +358,9 @@ func main() {
 
 	// Versions & updates
 	admin.HandleFunc("/versions", routers.HandleGetVersions).Methods(http.MethodGet)
-	admin.HandleFunc("/versions/refresh", routers.HandleRefreshVersions).Methods(http.MethodPost)
-	admin.HandleFunc("/update/api", routers.HandleUpdateAPI).Methods(http.MethodPost)
-	admin.HandleFunc("/update/web", routers.HandleUpdateWeb).Methods(http.MethodPost)
+	admin.HandleFunc("/versions/refresh", middleware.RequireAdmin(routers.HandleRefreshVersions)).Methods(http.MethodPost)
+	admin.HandleFunc("/update/api", middleware.RequireAdmin(routers.HandleUpdateAPI)).Methods(http.MethodPost)
+	admin.HandleFunc("/update/web", middleware.RequireAdmin(routers.HandleUpdateWeb)).Methods(http.MethodPost)
 
 	// WebSocket endpoints
 	r.Handle("/ws/worker", workerHandler).Methods(http.MethodGet)
@@ -773,7 +774,7 @@ func handleContainerLog(workerID int, payload map[string]any) {
 // belonging to workerID. Used for shutdown and crash events so the log viewer
 // shows what happened to the runner.
 func writeWorkerLifecycleLogs(workerID int, event string, message string) {
-	containers, err := query.ListAllContainers(db.DB, nil, &workerID)
+	containers, err := query.ListAllContainers(db.DB, query.ListAllContainersRequest{WorkerID: &workerID})
 	if err != nil {
 		log.Printf("worker lifecycle log: failed to list containers for worker=%d: %v", workerID, err)
 		return

@@ -22,5 +22,6 @@ func HandleDeleteWorkerToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "delete", "worker_token", intPtr(id), nil)
 	responder.New(w, nil, "worker token deleted")
 }

@@ -40,5 +40,6 @@ func HandleCreateWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "create", "worker", intPtr(worker.ID), strPtr(worker.Name))
 	responder.NewCreated(w, worker, "worker created")
 }

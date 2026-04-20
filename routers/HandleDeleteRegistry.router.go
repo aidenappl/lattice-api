@@ -22,5 +22,6 @@ func HandleDeleteRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "delete", "registry", intPtr(id), nil)
 	responder.New(w, nil, "registry deleted")
 }

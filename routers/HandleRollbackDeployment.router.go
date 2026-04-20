@@ -302,5 +302,6 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		Message:      fmt.Sprintf("Rollback command sent to worker %d via WebSocket", *stack.WorkerID),
 	})
 
+	logAudit(r, "rollback", "deployment", intPtr(targetID), nil)
 	responder.NewCreated(w, rollbackDeployment, "rollback deployment created and sent to worker")
 }

@@ -185,5 +185,6 @@ func HandleSyncCompose(w http.ResponseWriter, r *http.Request) {
 		results = append(results, syncResult{ContainerName: containerName, Updated: true})
 	}
 
+	logAudit(r, "sync_compose", "stack", intPtr(stackID), nil)
 	responder.New(w, results, "compose sync complete")
 }

@@ -39,6 +39,8 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "update", "api", nil, nil)
+
 	// Respond immediately before we trigger the recreate.
 	responder.New(w, map[string]any{
 		"service": service,
@@ -122,6 +124,7 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "update", "web", nil, nil)
 	responder.New(w, map[string]any{
 		"service": service,
 	}, "Web update triggered successfully")

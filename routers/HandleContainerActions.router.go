@@ -118,6 +118,7 @@ func (h *ContainerActionHandler) HandleRecreateContainer(w http.ResponseWriter, 
 		return
 	}
 
+	logAudit(r, "recreate", "container", intPtr(id), strPtr(container.Name))
 	responder.New(w, nil, "container recreate command sent")
 }
 
@@ -161,5 +162,6 @@ func (h *ContainerActionHandler) sendContainerAction(w http.ResponseWriter, r *h
 		return
 	}
 
+	logAudit(r, action, "container", intPtr(id), strPtr(container.Name))
 	responder.New(w, nil, fmt.Sprintf("container %s command sent", action))
 }

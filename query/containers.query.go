@@ -92,7 +92,14 @@ func ListContainersByStack(engine db.Queryable, stackID int) (*[]structs.Contain
 
 // ListAllContainers returns all active containers from active stacks, optionally filtered by stackID or workerID
 // (workerID is resolved through the stack→worker relationship).
-func ListAllContainers(engine db.Queryable, stackID *int, workerID *int) (*[]structs.Container, error) {
+type ListAllContainersRequest struct {
+	StackID  *int
+	WorkerID *int
+	Name     *string
+	Status   *string
+}
+
+func ListAllContainers(engine db.Queryable, req ListAllContainersRequest) (*[]structs.Container, error) {
 	q := sq.Select(containerColumns...).
 		From("containers").
 		Join("stacks ON stacks.id = containers.stack_id").
@@ -100,12 +107,17 @@ func ListAllContainers(engine db.Queryable, stackID *int, workerID *int) (*[]str
 		Where(sq.Eq{"stacks.active": true}).
 		OrderBy("containers.stack_id ASC, containers.id ASC")
 
-	if stackID != nil {
-		q = q.Where(sq.Eq{"containers.stack_id": *stackID})
+	if req.StackID != nil {
+		q = q.Where(sq.Eq{"containers.stack_id": *req.StackID})
 	}
-	if workerID != nil {
-		// stacks is already joined above; just filter by worker_id
-		q = q.Where(sq.Eq{"stacks.worker_id": *workerID})
+	if req.WorkerID != nil {
+		q = q.Where(sq.Eq{"stacks.worker_id": *req.WorkerID})
+	}
+	if req.Name != nil {
+		q = q.Where(sq.Like{"containers.name": "%" + *req.Name + "%"})
+	}
+	if req.Status != nil {
+		q = q.Where(sq.Eq{"containers.status": *req.Status})
 	}
 
 	qStr, args, err := q.ToSql()

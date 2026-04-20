@@ -43,5 +43,6 @@ func HandleCreateStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "create", "stack", intPtr(stack.ID), strPtr(stack.Name))
 	responder.NewCreated(w, stack, "stack created")
 }

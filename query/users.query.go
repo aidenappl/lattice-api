@@ -179,6 +179,22 @@ type UpdateUserRequest struct {
 	Active *bool
 }
 
+func DeleteUser(engine db.Queryable, id int) error {
+	q := sq.Update("users").Set("active", false).Where(sq.Eq{"id": id})
+
+	qStr, args, err := q.ToSql()
+	if err != nil {
+		return fmt.Errorf("failed to build sql query: %w", err)
+	}
+
+	_, err = engine.Exec(qStr, args...)
+	if err != nil {
+		return fmt.Errorf("failed to execute sql query: %w", err)
+	}
+
+	return nil
+}
+
 func UpdateUser(engine db.Queryable, id int, req UpdateUserRequest) (*structs.User, error) {
 	q := sq.Update("users").Where(sq.Eq{"id": id})
 

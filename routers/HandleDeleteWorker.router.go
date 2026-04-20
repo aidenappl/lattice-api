@@ -22,5 +22,6 @@ func HandleDeleteWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "delete", "worker", intPtr(id), nil)
 	responder.New(w, nil, "worker deleted")
 }

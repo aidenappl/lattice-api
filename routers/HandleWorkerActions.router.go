@@ -58,5 +58,6 @@ func (h *WorkerActionHandler) sendWorkerAction(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	logAudit(r, label, "worker", intPtr(workerID), nil)
 	responder.New(w, nil, fmt.Sprintf("%s command sent to worker", label))
 }

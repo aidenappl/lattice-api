@@ -56,5 +56,6 @@ func HandleCreateRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "create", "registry", intPtr(reg.ID), strPtr(reg.Name))
 	responder.NewCreated(w, reg, "registry created")
 }

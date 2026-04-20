@@ -227,6 +227,7 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "import", "stack", intPtr(stack.ID), strPtr(stack.Name))
 	responder.NewCreated(w, stack, "stack imported from compose file")
 }
 

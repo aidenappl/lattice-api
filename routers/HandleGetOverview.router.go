@@ -71,11 +71,11 @@ func HandleGetOverview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	responder.New(w, map[string]any{
-		"total_workers":          totalWorkers,
-		"online_workers":         onlineWorkerCount,
-		"total_stacks":           totalStacks,
-		"active_stacks":          activeStackCount,
-		"recent_deployments":     recentDeployments,
+		"total_workers":           totalWorkers,
+		"online_workers":          onlineWorkerCount,
+		"total_stacks":            totalStacks,
+		"active_stacks":           activeStackCount,
+		"recent_deployments":      recentDeployments,
 		"recent_deployment_count": recentDeploymentCount,
 	}, "overview retrieved")
 }

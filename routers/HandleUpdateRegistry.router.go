@@ -44,5 +44,6 @@ func HandleUpdateRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "update", "registry", intPtr(id), nil)
 	responder.New(w, reg, "registry updated")
 }

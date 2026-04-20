@@ -75,5 +75,6 @@ func HandleCreateContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "create", "container", intPtr(container.ID), strPtr(container.Name))
 	responder.NewCreated(w, container, "container created")
 }

@@ -48,5 +48,6 @@ func HandleUpdateStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "update", "stack", intPtr(id), nil)
 	responder.New(w, stack, "stack updated")
 }

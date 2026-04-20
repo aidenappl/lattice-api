@@ -44,5 +44,6 @@ func HandleUpdateWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "update", "worker", intPtr(id), nil)
 	responder.New(w, worker, "worker updated")
 }

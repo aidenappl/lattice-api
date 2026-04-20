@@ -99,6 +99,22 @@ func RequireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// RequireEditor wraps a handler to require the authenticated user has admin or editor role.
+func RequireEditor(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, ok := GetUserFromContext(r.Context())
+		if !ok || user == nil {
+			responder.SendError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		if user.Role != "admin" && user.Role != "editor" {
+			responder.SendError(w, http.StatusForbidden, "editor access required")
+			return
+		}
+		next(w, r)
+	}
+}
+
 // WorkerTokenAuth validates a worker API token from the query string or header.
 // Returns the worker_id on success, or writes an error response and returns 0.
 func WorkerTokenAuth(r *http.Request) (int, bool) {

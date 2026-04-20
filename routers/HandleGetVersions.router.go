@@ -68,6 +68,7 @@ func HandleGetVersions(w http.ResponseWriter, r *http.Request) {
 
 func HandleRefreshVersions(w http.ResponseWriter, r *http.Request) {
 	versions.Refresh()
+	logAudit(r, "refresh", "versions", nil, nil)
 	responder.New(w, map[string]any{
 		"api":          versions.LatestAPI(),
 		"web":          versions.LatestWeb(),

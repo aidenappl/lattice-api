@@ -64,5 +64,6 @@ func HandleUpdateContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "update", "container", intPtr(id), nil)
 	responder.New(w, container, "container updated")
 }

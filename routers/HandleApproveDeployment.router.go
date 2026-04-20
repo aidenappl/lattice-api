@@ -35,5 +35,6 @@ func HandleApproveDeployment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "approve", "deployment", intPtr(id), nil)
 	responder.New(w, deployment, "deployment approved")
 }

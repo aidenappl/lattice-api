@@ -283,6 +283,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		Message:      fmt.Sprintf("Deploy command sent to worker %d via WebSocket", *stack.WorkerID),
 	})
 
+	logAudit(r, "deploy", "stack", intPtr(stackID), strPtr(stack.Name))
 	responder.NewCreated(w, deployment, "deployment created and sent to worker")
 }
 

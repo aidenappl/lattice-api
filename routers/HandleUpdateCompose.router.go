@@ -176,5 +176,6 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "update_compose", "stack", intPtr(stackID), nil)
 	responder.New(w, stack, "stack updated from compose file")
 }

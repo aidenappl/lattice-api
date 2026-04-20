@@ -44,5 +44,6 @@ func (h *ContainerActionHandler) HandleDeleteContainer(w http.ResponseWriter, r 
 		return
 	}
 
+	logAudit(r, "delete", "container", intPtr(id), strPtr(container.Name))
 	responder.New(w, nil, "container deleted")
 }

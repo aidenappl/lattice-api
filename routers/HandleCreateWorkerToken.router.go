@@ -47,6 +47,7 @@ func HandleCreateWorkerToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "create", "worker_token", intPtr(token.ID), strPtr(body.Name))
 	responder.NewCreated(w, map[string]any{
 		"token":        plaintext,
 		"id":           token.ID,

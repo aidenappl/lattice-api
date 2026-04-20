@@ -51,5 +51,6 @@ func HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logAudit(r, "create", "user", intPtr(user.ID), strPtr(user.Email))
 	responder.NewCreated(w, user, "user created")
 }

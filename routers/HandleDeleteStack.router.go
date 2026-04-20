@@ -51,5 +51,6 @@ func (h *ContainerActionHandler) HandleDeleteStack(w http.ResponseWriter, r *htt
 		return
 	}
 
+	logAudit(r, "delete", "stack", intPtr(id), strPtr(stack.Name))
 	responder.New(w, nil, "stack deleted")
 }
