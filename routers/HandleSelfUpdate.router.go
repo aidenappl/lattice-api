@@ -52,28 +52,38 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 
 	// Recreate the API container with the newly-pulled image.
 	//
-	// We cannot run `docker compose up --force-recreate` directly: that command
-	// runs inside this container, and Docker kills all processes in the container
-	// (including this goroutine) as part of the stop step — so the create/start
-	// steps never execute.
+	// We cannot run the recreate command inside this container: Docker kills all
+	// processes in the container (including this goroutine) as part of the stop
+	// step, so create/start never execute.
 	//
-	// Instead we spin up a short-lived sibling container that runs the compose
-	// command. It shares the Docker socket and compose directory but lives in a
-	// separate process namespace, so it survives this container's death.
+	// We also cannot use `docker run --rm -d docker:cli ...` because that image
+	// may not be cached at update time.
+	//
+	// Solution: exec into the persistent docker-helper sidecar, which runs
+	// docker:cli with the socket and compose dir mounted and is immune to this
+	// container's lifecycle. `docker exec` without -d means the exec session
+	// is attached, but the process inside the helper container continues even if
+	// this container dies before the command finishes.
 	go func() {
 		time.Sleep(2 * time.Second)
-		upCmd := exec.Command(
-			"docker", "run", "--rm", "-d",
-			"-v", "/var/run/docker.sock:/var/run/docker.sock",
-			"-v", env.DockerComposeDir+":"+env.DockerComposeDir,
-			"--workdir", env.DockerComposeDir,
-			"docker:cli",
-			"docker", "compose", "-f", composeFile,
-			"up", "-d", "--force-recreate", service,
+		execCmd := exec.Command(
+			"docker", "exec",
+			env.DockerHelperContainer,
+			"docker", "compose",
+			"-f", composeFile,
+			"--env-file", env.DockerComposeDir+"/.env",
+			"up", "-d",
+			"--force-recreate",
+			"--no-deps",
+			"--pull", "never",
+			service,
 		)
-		upCmd.Env = append(os.Environ(), extraEnv...)
-		if out, err := upCmd.CombinedOutput(); err != nil {
-			log.Printf("API self-update recreate failed: %v — %s", err, string(out))
+		if out, err := execCmd.CombinedOutput(); err != nil {
+			// An error here is expected if this container was killed before exec
+			// returned — the compose command in the helper continues regardless.
+			log.Printf("API self-update exec returned (may be benign disconnect): %v — %s", err, string(out))
+		} else {
+			log.Printf("API self-update exec completed: %s", string(out))
 		}
 	}()
 }

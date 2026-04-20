@@ -38,6 +38,7 @@ services:
       DOCKER_COMPOSE_DIR: "${DOCKER_COMPOSE_DIR:-/opt/lattice}"
       API_SERVICE_NAME: "${API_SERVICE_NAME:-lattice-api}"
       WEB_SERVICE_NAME: "${WEB_SERVICE_NAME:-lattice-web}"
+      DOCKER_HELPER_CONTAINER: "${DOCKER_HELPER_CONTAINER:-lattice-docker-helper}"
       REGISTRY_URL: "${REGISTRY_URL:-registry.appleby.cloud}"
       REGISTRY_USERNAME: "${REGISTRY_USERNAME}"
       REGISTRY_PASSWORD: "${REGISTRY_PASSWORD}"
@@ -65,6 +66,18 @@ services:
       - "${WEB_PORT:-3000}:3000"
     environment:
       NEXT_PUBLIC_LATTICE_API: "${PUBLIC_API_URL:-http://localhost:8000}"
+
+  # Persistent sidecar used by the API to recreate itself after a self-update.
+  # Runs docker compose on behalf of the API container so the recreate survives
+  # the API container's own shutdown.
+  docker-helper:
+    image: docker:cli
+    container_name: lattice-docker-helper
+    restart: always
+    entrypoint: ["tail", "-f", "/dev/null"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${DOCKER_COMPOSE_DIR:-/opt/lattice}:/opt/lattice:ro
 
 volumes:
   mariadb_data:

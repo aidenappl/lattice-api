@@ -41,12 +41,13 @@ var (
 	AllowedOrigins = getEnv("ALLOWED_ORIGINS", "")
 
 	// Docker update configuration (for self-update capability).
-	DockerComposeDir = getEnv("DOCKER_COMPOSE_DIR", "")
-	APIServiceName   = getEnv("API_SERVICE_NAME", "lattice-api")
-	WebServiceName   = getEnv("WEB_SERVICE_NAME", "lattice-web")
-	RegistryURL      = getEnv("REGISTRY_URL", "")
-	RegistryUsername = getEnv("REGISTRY_USERNAME", "")
-	RegistryPassword = getEnv("REGISTRY_PASSWORD", "")
+	DockerComposeDir      = getEnv("DOCKER_COMPOSE_DIR", "")
+	APIServiceName        = getEnv("API_SERVICE_NAME", "lattice-api")
+	WebServiceName        = getEnv("WEB_SERVICE_NAME", "lattice-web")
+	DockerHelperContainer = getEnv("DOCKER_HELPER_CONTAINER", "lattice-docker-helper")
+	RegistryURL           = getEnv("REGISTRY_URL", "")
+	RegistryUsername      = getEnv("REGISTRY_USERNAME", "")
+	RegistryPassword      = getEnv("REGISTRY_PASSWORD", "")
 )
 
 func getEnv(key string, fallback string) string {
