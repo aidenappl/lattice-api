@@ -85,15 +85,16 @@ jobs:
           username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ env.REGISTRY_PASSWORD }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5.7.0
-        with:
-          images: ${{ env.REGISTRY_URL }}/${{ github.event.repository.name }}
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix={{branch}}-
-            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Resolve image tags
+        id: tags
+        run: |
+          IMAGE="${{ env.REGISTRY_URL }}/${{ github.event.repository.name }}"
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+          if [ "${{ needs.resolve-version.outputs.is_release }}" = "true" ]; then
+            echo "value=${IMAGE}:latest,${IMAGE}:${VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${IMAGE}:development,${IMAGE}:${VERSION}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -101,15 +102,14 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.tags.outputs.value }}
           build-args: VERSION=${{ needs.resolve-version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Summary
         run: |
-          echo "Image pushed: ${{ env.REGISTRY_URL }}/${{ github.event.repository.name }}:latest @ ${{ needs.resolve-version.outputs.version }}"
+          echo "Image pushed: ${{ steps.tags.outputs.value }} @ ${{ needs.resolve-version.outputs.version }}"
 
   create-release:
     runs-on: ubuntu-latest
