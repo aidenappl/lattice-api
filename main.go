@@ -89,6 +89,7 @@ func main() {
 		return middleware.WorkerTokenAuth(r)
 	}
 
+	// Worker lifecycle:
 	workerHandler.OnConnect = func(session *socket.WorkerSession) {
 		logger.Info("worker", "connected", logger.F{"worker_id": session.WorkerID})
 		_ = query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "online")
@@ -98,6 +99,7 @@ func main() {
 		})
 	}
 
+	// On disconnect, mark worker offline and fire webhook. We don't attempt to distinguish between graceful shutdowns and crashes here since in both cases the worker is offline and needs attention. The frontend can determine if it was a crash vs shutdown based on recent lifecycle logs and the presence of a shutdown message.
 	workerHandler.OnDisconnect = func(session *socket.WorkerSession, err error) {
 		logger.Info("worker", "disconnected", logger.F{"worker_id": session.WorkerID})
 		_ = query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "offline")
@@ -110,6 +112,7 @@ func main() {
 		})
 	}
 
+	//  Handle incoming messages from workers. These include heartbeats, container status updates, deployment progress, and more. We process some messages synchronously (like heartbeats and lifecycle logs) to ensure the database is updated before broadcasting to the frontend, while others are processed asynchronously to optimize for lower latency.
 	workerHandler.OnMessage = func(session *socket.WorkerSession, msg socket.IncomingMessage) {
 		switch msg.Type {
 		case socket.MsgHeartbeat:
