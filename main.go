@@ -400,6 +400,7 @@ func main() {
 	// Admin routes (protected)
 	admin := r.PathPrefix("/admin").Subrouter()
 	admin.Use(middleware.DualAuthMiddleware)
+	admin.Use(middleware.RejectPending)
 
 	// Workers
 	admin.HandleFunc("/workers", routers.HandleGetWorkers).Methods(http.MethodGet)

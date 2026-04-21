@@ -107,12 +107,12 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, loginErrorURL("sso_no_account"), http.StatusFound)
 			return
 		}
-		// Auto-create with viewer role
+		// Auto-create with pending role (requires admin approval)
 		user, err = query.CreateUser(db.DB, query.CreateUserRequest{
 			Email:    email,
 			Name:     &name,
 			AuthType: "sso",
-			Role:     "viewer",
+			Role:     "pending",
 		})
 		if err != nil {
 			logger.Error("sso", "failed to create user", logger.F{"email": email, "error": err})

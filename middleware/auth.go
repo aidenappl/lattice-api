@@ -54,6 +54,19 @@ func DualAuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// RejectPending blocks users with role "pending" from accessing protected routes.
+// Pending users can still access /auth/self to check their status.
+func RejectPending(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, ok := GetUserFromContext(r.Context())
+		if ok && user != nil && user.Role == "pending" {
+			responder.SendErrorWithCode(w, http.StatusForbidden, "your account is pending admin approval", 4004)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // RequireAdmin wraps a handler to require the authenticated user has admin role.
 func RequireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

@@ -34,9 +34,9 @@ func HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if body.Role != "" {
-		validRoles := map[string]bool{"admin": true, "editor": true, "viewer": true}
+		validRoles := map[string]bool{"admin": true, "editor": true, "viewer": true, "pending": true}
 		if !validRoles[body.Role] {
-			responder.SendError(w, http.StatusBadRequest, "role must be admin, editor, or viewer")
+			responder.SendError(w, http.StatusBadRequest, "role must be admin, editor, viewer, or pending")
 			return
 		}
 	}
