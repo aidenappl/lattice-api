@@ -56,6 +56,11 @@ func Init() {
 	_, _ = db.Exec("ALTER TABLE containers ADD COLUMN depends_on TEXT DEFAULT NULL")
 	_, _ = db.Exec("ALTER TABLE stacks ADD COLUMN placement_constraints TEXT DEFAULT NULL")
 
+	// Rename forta_id -> sso_subject (Forta removal migration)
+	_, _ = db.Exec("ALTER TABLE users CHANGE COLUMN forta_id sso_subject VARCHAR(255) DEFAULT NULL")
+	// If forta_id doesn't exist, add sso_subject directly
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN sso_subject VARCHAR(255) DEFAULT NULL")
+
 	// Auto-create global_env_vars table if it doesn't exist
 	_, _ = db.Exec("CREATE TABLE IF NOT EXISTS global_env_vars (" +
 		"id INT AUTO_INCREMENT PRIMARY KEY," +
