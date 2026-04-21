@@ -227,7 +227,17 @@ func ExchangeCode(code string) (*TokenResponse, error) {
 	return &tokenResp, nil
 }
 
-// FetchUserInfo calls the userinfo endpoint with the access token
+// FetchUserInfo calls the userinfo endpoint with the access token.
+//
+// The function handles two response formats transparently:
+//  1. Flat OIDC-style JSON (e.g. from /oauth/userinfo):
+//     {"sub":"123","email":"a@b.com", ...}
+//  2. Forta envelope JSON (e.g. from /auth/self):
+//     {"success":true,"data":{"id":123,"email":"a@b.com", ...}}
+//
+// When the response is a Forta envelope (has "success" and "data" keys where
+// "data" is a JSON object), the inner object is returned so that callers like
+// GetUserEmail can find fields at the top level.
 func FetchUserInfo(accessToken string) (map[string]any, error) {
 	cfg := LoadConfig()
 	if cfg.UserInfoURL == "" {
@@ -239,6 +249,7 @@ func FetchUserInfo(accessToken string) (map[string]any, error) {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -255,6 +266,15 @@ func FetchUserInfo(accessToken string) (map[string]any, error) {
 	var userInfo map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
 		return nil, fmt.Errorf("failed to decode userinfo: %w", err)
+	}
+
+	// Unwrap Forta envelope: if the response has a "success" key and "data" is
+	// a nested object, return the inner data map so callers find user fields
+	// (email, name, etc.) at the top level.
+	if _, hasSuccess := userInfo["success"]; hasSuccess {
+		if data, ok := userInfo["data"].(map[string]any); ok {
+			return data, nil
+		}
 	}
 
 	return userInfo, nil
