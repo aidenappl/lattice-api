@@ -208,14 +208,51 @@ func ExchangeCode(code string) (*TokenResponse, error) {
 	cfg := LoadConfig()
 
 	data := url.Values{
-		"grant_type":    {"authorization_code"},
-		"code":          {code},
-		"redirect_uri":  {cfg.RedirectURL},
-		"client_id":     {cfg.ClientID},
-		"client_secret": {cfg.ClientSecret},
+		"grant_type":   {"authorization_code"},
+		"code":         {code},
+		"redirect_uri": {cfg.RedirectURL},
 	}
 
-	resp, err := http.PostForm(cfg.TokenURL, data)
+	// Try Basic auth first (OAuth2 RFC 6749 §2.3.1 preferred), fall back to
+	// client credentials in the POST body (§2.3.1 alternative) if that fails.
+	tokenResp, err := exchangeWithBasicAuth(cfg, data)
+	if err == nil {
+		return tokenResp, nil
+	}
+
+	// Retry with credentials in the POST body
+	return exchangeWithBodyAuth(cfg, data)
+}
+
+func exchangeWithBasicAuth(cfg *SSOConfig, data url.Values) (*TokenResponse, error) {
+	req, err := http.NewRequest("POST", cfg.TokenURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	req.SetBasicAuth(cfg.ClientID, cfg.ClientSecret)
+
+	return doTokenRequest(req)
+}
+
+func exchangeWithBodyAuth(cfg *SSOConfig, data url.Values) (*TokenResponse, error) {
+	data.Set("client_id", cfg.ClientID)
+	data.Set("client_secret", cfg.ClientSecret)
+
+	req, err := http.NewRequest("POST", cfg.TokenURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	return doTokenRequest(req)
+}
+
+func doTokenRequest(req *http.Request) (*TokenResponse, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token exchange failed: %w", err)
 	}
