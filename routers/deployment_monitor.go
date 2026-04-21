@@ -35,6 +35,12 @@ func (h *DeployHandler) startDeploymentMonitor(deploymentID, stackID, workerID i
 }
 
 func (h *DeployHandler) monitorDeployment(deploymentID, stackID, workerID int, payload map[string]any) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[PANIC] deployment monitor %d: %v", deploymentID, r)
+		}
+	}()
+
 	ticker := time.NewTicker(deployPingInterval)
 	defer ticker.Stop()
 

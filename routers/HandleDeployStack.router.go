@@ -56,6 +56,24 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Validate placement constraints against worker labels
+	if stack.PlacementConstraints != nil && *stack.PlacementConstraints != "" {
+		worker, wErr := query.GetWorkerByID(db.DB, *stack.WorkerID)
+		if wErr == nil && worker != nil {
+			var constraints map[string]string
+			if json.Unmarshal([]byte(*stack.PlacementConstraints), &constraints) == nil {
+				workerLabels := parseWorkerLabels(worker.Labels)
+				for key, value := range constraints {
+					if workerLabels[key] != value {
+						responder.SendError(w, http.StatusBadRequest,
+							fmt.Sprintf("worker does not satisfy placement constraint: %s=%s", key, value))
+						return
+					}
+				}
+			}
+		}
+	}
+
 	// Fetch containers for this stack
 	containers, err := query.ListContainersByStack(db.DB, stack.ID)
 	if err != nil {

@@ -31,6 +31,14 @@ func HandleUpdateWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if body.Status != nil {
+		validStatuses := map[string]bool{"online": true, "offline": true, "maintenance": true}
+		if !validStatuses[*body.Status] {
+			responder.SendError(w, http.StatusBadRequest, "status must be online, offline, or maintenance")
+			return
+		}
+	}
+
 	worker, err := query.UpdateWorker(db.DB, id, query.UpdateWorkerRequest{
 		Name:      body.Name,
 		Hostname:  body.Hostname,

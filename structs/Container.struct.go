@@ -21,6 +21,7 @@ type Container struct {
 	HealthCheck   *string   `json:"health_check"`
 	HealthStatus  string    `json:"health_status"`
 	RegistryID    *int      `json:"registry_id"`
+	DependsOn     *string   `json:"depends_on"`
 	Active        bool      `json:"active"`
 	UpdatedAt     time.Time `json:"updated_at"`
 	InsertedAt    time.Time `json:"inserted_at"`

@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -61,7 +62,13 @@ func (h *WorkerActionHandler) sendWorkerAction(w http.ResponseWriter, r *http.Re
 
 	// Persist pending action for trackable actions
 	if action == socket.MsgUpgradeRunner || action == socket.MsgRebootOS {
-		actionJSON := fmt.Sprintf(`{"action":"%s","status":"accepted","started_at":"%s"}`, action, time.Now().UTC().Format(time.RFC3339))
+		actionData := map[string]string{
+			"action":     action,
+			"status":     "accepted",
+			"started_at": time.Now().UTC().Format(time.RFC3339),
+		}
+		actionBytes, _ := json.Marshal(actionData)
+		actionJSON := string(actionBytes)
 		_ = query.SetWorkerPendingAction(db.DB, workerID, &actionJSON)
 	}
 

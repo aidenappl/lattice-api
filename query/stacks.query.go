@@ -18,6 +18,7 @@ var stackColumns = []string{
 	"stacks.auto_deploy",
 	"stacks.env_vars",
 	"stacks.compose_yaml",
+	"stacks.placement_constraints",
 	"stacks.active",
 	"stacks.updated_at",
 	"stacks.inserted_at",
@@ -35,6 +36,7 @@ func scanStack(row scanner) (*structs.Stack, error) {
 		&s.AutoDeploy,
 		&s.EnvVars,
 		&s.ComposeYAML,
+		&s.PlacementConstraints,
 		&s.Active,
 		&s.UpdatedAt,
 		&s.InsertedAt,
@@ -121,14 +123,15 @@ type CreateStackRequest struct {
 	WorkerID           *int
 	DeploymentStrategy string
 	AutoDeploy         bool
-	EnvVars            *string
-	ComposeYAML        *string
+	EnvVars              *string
+	ComposeYAML          *string
+	PlacementConstraints *string
 }
 
 func CreateStack(engine db.Queryable, req CreateStackRequest) (*structs.Stack, error) {
 	q := sq.Insert("stacks").
-		Columns("name", "description", "worker_id", "deployment_strategy", "auto_deploy", "env_vars", "compose_yaml").
-		Values(req.Name, req.Description, req.WorkerID, req.DeploymentStrategy, req.AutoDeploy, req.EnvVars, req.ComposeYAML)
+		Columns("name", "description", "worker_id", "deployment_strategy", "auto_deploy", "env_vars", "compose_yaml", "placement_constraints").
+		Values(req.Name, req.Description, req.WorkerID, req.DeploymentStrategy, req.AutoDeploy, req.EnvVars, req.ComposeYAML, req.PlacementConstraints)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
@@ -155,9 +158,10 @@ type UpdateStackRequest struct {
 	Status             *string
 	DeploymentStrategy *string
 	AutoDeploy         *bool
-	EnvVars            *string
-	ComposeYAML        *string
-	Active             *bool
+	EnvVars              *string
+	ComposeYAML          *string
+	PlacementConstraints *string
+	Active               *bool
 }
 
 func UpdateStack(engine db.Queryable, id int, req UpdateStackRequest) (*structs.Stack, error) {
@@ -198,6 +202,10 @@ func UpdateStack(engine db.Queryable, id int, req UpdateStackRequest) (*structs.
 	}
 	if req.ComposeYAML != nil {
 		q = q.Set("compose_yaml", *req.ComposeYAML)
+		hasUpdate = true
+	}
+	if req.PlacementConstraints != nil {
+		q = q.Set("placement_constraints", *req.PlacementConstraints)
 		hasUpdate = true
 	}
 	if req.Active != nil {

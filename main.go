@@ -226,7 +226,14 @@ func main() {
 				if actionStatus == "success" || actionStatus == "failed" || actionStatus == "error" {
 					_ = query.SetWorkerPendingAction(db.DB, session.WorkerID, nil)
 				} else {
-					actionJSON := fmt.Sprintf(`{"action":"%s","status":"%s","message":"%s","started_at":"%s"}`, actionName, actionStatus, actionMessage, time.Now().UTC().Format(time.RFC3339))
+					actionData := map[string]string{
+						"action":     actionName,
+						"status":     actionStatus,
+						"message":    actionMessage,
+						"started_at": time.Now().UTC().Format(time.RFC3339),
+					}
+					actionBytes, _ := json.Marshal(actionData)
+					actionJSON := string(actionBytes)
 					_ = query.SetWorkerPendingAction(db.DB, session.WorkerID, &actionJSON)
 				}
 			}
@@ -337,6 +344,7 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	}).Methods(http.MethodGet)
 
+	r.Use(middleware.RateLimitMiddleware)
 	r.Use(middleware.RequestIDMiddleware)
 	r.Use(middleware.LoggingMiddleware)
 	r.Use(middleware.MuxHeaderMiddleware)
@@ -409,6 +417,11 @@ func main() {
 	admin.HandleFunc("/stacks/{id}/compose", middleware.RequireEditor(routers.HandleUpdateCompose)).Methods(http.MethodPut)
 	admin.HandleFunc("/stacks/{id}/sync-compose", middleware.RequireEditor(routers.HandleSyncCompose)).Methods(http.MethodPost)
 	admin.HandleFunc("/stacks/{id}/deploy", middleware.RequireEditor(deployHandler.HandleDeployStack)).Methods(http.MethodPost)
+	admin.HandleFunc("/stacks/{id}/restart-all", middleware.RequireEditor(containerActionHandler.HandleRestartStack)).Methods(http.MethodPost)
+	admin.HandleFunc("/stacks/{id}/stop-all", middleware.RequireEditor(containerActionHandler.HandleStopStack)).Methods(http.MethodPost)
+	admin.HandleFunc("/stacks/{id}/start-all", middleware.RequireEditor(containerActionHandler.HandleStartStack)).Methods(http.MethodPost)
+	admin.HandleFunc("/stacks/{id}/export", routers.HandleExportStack).Methods(http.MethodGet)
+	admin.HandleFunc("/stacks/import-export", middleware.RequireEditor(routers.HandleImportStackExport)).Methods(http.MethodPost)
 
 	// Containers
 	admin.HandleFunc("/containers", routers.HandleListAllContainers).Methods(http.MethodGet)

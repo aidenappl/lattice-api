@@ -51,8 +51,10 @@ func Init() {
 
 	DB = db
 
-	// Auto-add pending_action column if it doesn't exist (ignore error if already present)
+	// Auto-add columns if they don't exist (ignore error if already present)
 	_, _ = db.Exec("ALTER TABLE workers ADD COLUMN pending_action TEXT DEFAULT NULL")
+	_, _ = db.Exec("ALTER TABLE containers ADD COLUMN depends_on TEXT DEFAULT NULL")
+	_, _ = db.Exec("ALTER TABLE stacks ADD COLUMN placement_constraints TEXT DEFAULT NULL")
 }
 
 type Queryable interface {

@@ -19,14 +19,15 @@ func HandleUpdateStack(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Name               *string `json:"name"`
-		Description        *string `json:"description"`
-		WorkerID           *int    `json:"worker_id"`
-		Status             *string `json:"status"`
-		DeploymentStrategy *string `json:"deployment_strategy"`
-		AutoDeploy         *bool   `json:"auto_deploy"`
-		EnvVars            *string `json:"env_vars"`
-		Active             *bool   `json:"active"`
+		Name                 *string `json:"name"`
+		Description          *string `json:"description"`
+		WorkerID             *int    `json:"worker_id"`
+		Status               *string `json:"status"`
+		DeploymentStrategy   *string `json:"deployment_strategy"`
+		AutoDeploy           *bool   `json:"auto_deploy"`
+		EnvVars              *string `json:"env_vars"`
+		PlacementConstraints *string `json:"placement_constraints"`
+		Active               *bool   `json:"active"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		responder.BadBody(w, err)
@@ -48,8 +49,9 @@ func HandleUpdateStack(w http.ResponseWriter, r *http.Request) {
 		Status:             body.Status,
 		DeploymentStrategy: body.DeploymentStrategy,
 		AutoDeploy:         body.AutoDeploy,
-		EnvVars:            body.EnvVars,
-		Active:             body.Active,
+		EnvVars:              body.EnvVars,
+		PlacementConstraints: body.PlacementConstraints,
+		Active:               body.Active,
 	})
 	if err != nil {
 		responder.QueryError(w, err, "failed to update stack")

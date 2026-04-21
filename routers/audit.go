@@ -3,6 +3,7 @@ package routers
 import (
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/middleware"
@@ -37,3 +38,18 @@ func logAudit(r *http.Request, action, resourceType string, resourceID *int, det
 
 func intPtr(i int) *int       { return &i }
 func strPtr(s string) *string { return &s }
+
+// parseWorkerLabels parses comma-separated key=value labels from a worker's labels field.
+func parseWorkerLabels(raw *string) map[string]string {
+	labels := make(map[string]string)
+	if raw == nil || *raw == "" {
+		return labels
+	}
+	for _, pair := range strings.Split(*raw, ",") {
+		parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+		if len(parts) == 2 {
+			labels[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		}
+	}
+	return labels
+}

@@ -27,6 +27,7 @@ var containerColumns = []string{
 	"containers.health_check",
 	"containers.health_status",
 	"containers.registry_id",
+	"containers.depends_on",
 	"containers.active",
 	"containers.updated_at",
 	"containers.inserted_at",
@@ -53,6 +54,7 @@ func scanContainer(row scanner) (*structs.Container, error) {
 		&c.HealthCheck,
 		&c.HealthStatus,
 		&c.RegistryID,
+		&c.DependsOn,
 		&c.Active,
 		&c.UpdatedAt,
 		&c.InsertedAt,
@@ -97,6 +99,7 @@ type ListAllContainersRequest struct {
 	WorkerID *int
 	Name     *string
 	Status   *string
+	Limit    int
 }
 
 func ListAllContainers(engine db.Queryable, req ListAllContainersRequest) (*[]structs.Container, error) {
@@ -118,6 +121,12 @@ func ListAllContainers(engine db.Queryable, req ListAllContainersRequest) (*[]st
 	}
 	if req.Status != nil {
 		q = q.Where(sq.Eq{"containers.status": *req.Status})
+	}
+
+	if req.Limit > 0 {
+		q = q.Limit(uint64(req.Limit))
+	} else {
+		q = q.Limit(uint64(db.MAX_LIMIT))
 	}
 
 	qStr, args, err := q.ToSql()
@@ -176,14 +185,15 @@ type CreateContainerRequest struct {
 	Entrypoint    *string
 	HealthCheck   *string
 	RegistryID    *int
+	DependsOn     *string
 }
 
 func CreateContainer(engine db.Queryable, req CreateContainerRequest) (*structs.Container, error) {
 	q := sq.Insert("containers").
 		Columns("stack_id", "name", "image", "tag", "port_mappings", "env_vars", "volumes",
-			"cpu_limit", "memory_limit", "replicas", "restart_policy", "command", "entrypoint", "health_check", "registry_id").
+			"cpu_limit", "memory_limit", "replicas", "restart_policy", "command", "entrypoint", "health_check", "registry_id", "depends_on").
 		Values(req.StackID, req.Name, req.Image, req.Tag, req.PortMappings, req.EnvVars, req.Volumes,
-			req.CPULimit, req.MemoryLimit, req.Replicas, req.RestartPolicy, req.Command, req.Entrypoint, req.HealthCheck, req.RegistryID)
+			req.CPULimit, req.MemoryLimit, req.Replicas, req.RestartPolicy, req.Command, req.Entrypoint, req.HealthCheck, req.RegistryID, req.DependsOn)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
@@ -220,6 +230,7 @@ type UpdateContainerRequest struct {
 	HealthCheck   *string
 	HealthStatus  *string
 	RegistryID    *int
+	DependsOn     *string
 	Active        *bool
 }
 
@@ -289,6 +300,10 @@ func UpdateContainer(engine db.Queryable, id int, req UpdateContainerRequest) (*
 	}
 	if req.RegistryID != nil {
 		q = q.Set("registry_id", *req.RegistryID)
+		hasUpdate = true
+	}
+	if req.DependsOn != nil {
+		q = q.Set("depends_on", *req.DependsOn)
 		hasUpdate = true
 	}
 	if req.Active != nil {

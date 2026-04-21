@@ -195,7 +195,7 @@ func CreateDeploymentLog(engine db.Queryable, req CreateDeploymentLogRequest) er
 
 func ListDeploymentLogs(engine db.Queryable, deploymentID int) (*[]structs.DeploymentLog, error) {
 	rows, err := engine.Query(
-		"SELECT id, deployment_id, level, stage, message, recorded_at FROM deployment_logs WHERE deployment_id = ? ORDER BY id ASC",
+		"SELECT id, deployment_id, level, stage, message, recorded_at FROM deployment_logs WHERE deployment_id = ? ORDER BY id ASC LIMIT 2000",
 		deploymentID,
 	)
 	if err != nil {

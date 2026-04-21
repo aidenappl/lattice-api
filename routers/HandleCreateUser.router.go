@@ -33,6 +33,14 @@ func HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 		body.Role = "viewer"
 	}
 
+	if body.Role != "" {
+		validRoles := map[string]bool{"admin": true, "editor": true, "viewer": true}
+		if !validRoles[body.Role] {
+			responder.SendError(w, http.StatusBadRequest, "role must be admin, editor, or viewer")
+			return
+		}
+	}
+
 	if err := tools.ValidateEmail(body.Email); err != nil {
 		responder.SendError(w, http.StatusBadRequest, err.Error())
 		return
