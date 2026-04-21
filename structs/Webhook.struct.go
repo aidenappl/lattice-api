@@ -8,7 +8,7 @@ type WebhookConfig struct {
 	URL        string    `json:"url"`
 	Events     string    `json:"events"`     // JSON array of event types
 	Active     bool      `json:"active"`
-	Secret     *string   `json:"secret"`     // HMAC signing secret
+	Secret     *string   `json:"-"`           // HMAC signing secret — never exposed in API responses
 	UpdatedAt  time.Time `json:"updated_at"`
 	InsertedAt time.Time `json:"inserted_at"`
 }

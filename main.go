@@ -25,6 +25,7 @@ import (
 	"github.com/aidenappl/lattice-api/socket"
 	"github.com/aidenappl/lattice-api/structs"
 	"github.com/aidenappl/lattice-api/versions"
+	"github.com/aidenappl/lattice-api/watcher"
 	"github.com/aidenappl/lattice-api/webhooks"
 	"github.com/gorilla/mux"
 	"github.com/rs/cors"
@@ -53,6 +54,9 @@ func main() {
 
 	// Start background data retention cleanup.
 	retention.Start(db.DB)
+
+	// Start background image version watcher (polls registries for tag changes).
+	watcher.Start()
 	if err := db.PingDB(db.DB); err != nil {
 		log.Fatal("failed to ping db: ", err)
 	}
@@ -986,8 +990,10 @@ func handleContainerLog(workerID int, payload map[string]any) {
 // shows what happened to the runner.
 func writeWorkerLifecycleLogs(workerID int, event string, message string) {
 	containers, err := query.ListAllContainers(db.DB, query.ListAllContainersRequest{WorkerID: &workerID})
-	if err != nil {
-		log.Printf("worker lifecycle log: failed to list containers for worker=%d: %v", workerID, err)
+	if err != nil || containers == nil {
+		if err != nil {
+			log.Printf("worker lifecycle log: failed to list containers for worker=%d: %v", workerID, err)
+		}
 		return
 	}
 	for _, c := range *containers {

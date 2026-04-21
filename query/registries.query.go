@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/structs"
 )
@@ -33,6 +34,10 @@ func scanRegistry(row scanner) (*structs.Registry, error) {
 		&r.UpdatedAt,
 		&r.InsertedAt,
 	)
+	if err == nil && r.Password != nil && *r.Password != "" {
+		decrypted, _ := crypto.Decrypt(*r.Password)
+		r.Password = &decrypted
+	}
 	return &r, err
 }
 
@@ -91,9 +96,16 @@ type CreateRegistryRequest struct {
 }
 
 func CreateRegistry(engine db.Queryable, req CreateRegistryRequest) (*structs.Registry, error) {
+	encPassword := req.Password
+	if encPassword != nil && *encPassword != "" {
+		encrypted, err := crypto.Encrypt(*encPassword)
+		if err == nil {
+			encPassword = &encrypted
+		}
+	}
 	q := sq.Insert("registries").
 		Columns("name", "url", "type", "username", "password").
-		Values(req.Name, req.URL, req.Type, req.Username, req.Password)
+		Values(req.Name, req.URL, req.Type, req.Username, encPassword)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
@@ -143,7 +155,13 @@ func UpdateRegistry(engine db.Queryable, id int, req UpdateRegistryRequest) (*st
 		hasUpdate = true
 	}
 	if req.Password != nil {
-		q = q.Set("password", *req.Password)
+		pw := *req.Password
+		if pw != "" {
+			if encrypted, err := crypto.Encrypt(pw); err == nil {
+				pw = encrypted
+			}
+		}
+		q = q.Set("password", pw)
 		hasUpdate = true
 	}
 	if req.Active != nil {

@@ -106,8 +106,16 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Begin transaction — if container creation fails, the stack is rolled back too
+	tx, err := db.BeginTx()
+	if err != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback() // no-op if committed
+
 	// Create stack
-	stack, err := query.CreateStack(db.DB, query.CreateStackRequest{
+	stack, err := query.CreateStack(tx, query.CreateStackRequest{
 		Name:               body.Name,
 		Description:        body.Description,
 		WorkerID:           body.WorkerID,
@@ -227,7 +235,7 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		if _, err := query.CreateContainer(db.DB, req); err != nil {
+		if _, err := query.CreateContainer(tx, req); err != nil {
 			responder.QueryError(w, err, fmt.Sprintf("failed to create container %s", name))
 			return
 		}
@@ -244,7 +252,7 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 			if name == "" {
 				name = key
 			}
-			_ = query.CreateNetwork(db.DB, query.CreateNetworkRequest{
+			_ = query.CreateNetwork(tx, query.CreateNetworkRequest{
 				StackID: stack.ID,
 				Name:    name,
 				Driver:  driver,
@@ -252,7 +260,12 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Re-fetch stack to return
+	if err := tx.Commit(); err != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to commit transaction")
+		return
+	}
+
+	// Re-fetch stack to return (outside transaction, it's committed now)
 	stack, err = query.GetStackByID(db.DB, stack.ID)
 	if err != nil {
 		responder.QueryError(w, err, "failed to fetch created stack")

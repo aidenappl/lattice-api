@@ -108,3 +108,7 @@ type Queryable interface {
 	Query(query string, args ...interface{}) (*sql.Rows, error)
 	QueryRow(query string, args ...interface{}) *sql.Row
 }
+
+func BeginTx() (*sql.Tx, error) {
+	return DB.Begin()
+}

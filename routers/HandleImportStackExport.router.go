@@ -61,8 +61,16 @@ func HandleImportStackExport(w http.ResponseWriter, r *http.Request) {
 		strategy = "rolling"
 	}
 
+	// Begin transaction — if container creation fails, the stack is rolled back too
+	tx, err := db.BeginTx()
+	if err != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback() // no-op if committed
+
 	// Create the stack
-	stack, err := query.CreateStack(db.DB, query.CreateStackRequest{
+	stack, err := query.CreateStack(tx, query.CreateStackRequest{
 		Name:                 body.Stack.Name,
 		Description:          body.Stack.Description,
 		DeploymentStrategy:   strategy,
@@ -89,7 +97,7 @@ func HandleImportStackExport(w http.ResponseWriter, r *http.Request) {
 		if replicas <= 0 {
 			replicas = 1
 		}
-		_, err := query.CreateContainer(db.DB, query.CreateContainerRequest{
+		_, err := query.CreateContainer(tx, query.CreateContainerRequest{
 			StackID:       stack.ID,
 			Name:          c.Name,
 			Image:         c.Image,
@@ -111,6 +119,11 @@ func HandleImportStackExport(w http.ResponseWriter, r *http.Request) {
 			responder.QueryError(w, err, "failed to create container from import")
 			return
 		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to commit transaction")
+		return
 	}
 
 	logAudit(r, "import", "stack", intPtr(stack.ID), strPtr(body.Stack.Name))

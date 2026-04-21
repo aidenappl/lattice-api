@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
@@ -78,10 +79,29 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Load global env vars and merge as base layer
+	globalVars, _ := query.ListGlobalEnvVars(db.DB)
+	globalEnvMap := make(map[string]any)
+	if globalVars != nil {
+		for _, gv := range *globalVars {
+			decrypted, _ := crypto.Decrypt(gv.EncryptedValue)
+			globalEnvMap[gv.Key] = decrypted
+		}
+	}
+
 	// Parse stack-level env vars
 	stackEnvVars := map[string]any{}
 	if stack.EnvVars != nil {
 		_ = json.Unmarshal([]byte(*stack.EnvVars), &stackEnvVars)
+	}
+
+	// Merge: global -> stack (stack wins)
+	mergedEnvVars := make(map[string]any)
+	for k, v := range globalEnvMap {
+		mergedEnvVars[k] = v
+	}
+	for k, v := range stackEnvVars {
+		mergedEnvVars[k] = v
 	}
 
 	// Load all registries for auto-matching by image hostname
@@ -104,7 +124,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 			if err := json.Unmarshal([]byte(*c.PortMappings), &pm); err != nil {
 				log.Printf("invalid port_mappings JSON for container %s: %v", c.Name, err)
 			} else {
-				resolved := resolveVarsInValue(pm, stackEnvVars)
+				resolved := resolveVarsInValue(pm, mergedEnvVars)
 				spec["port_mappings"] = resolved
 			}
 		}
@@ -116,7 +136,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 				merged := make(map[string]any, len(ev))
 				for k, v := range ev {
 					if s, ok := v.(string); ok {
-						if resolved, ok := resolveEnvRef(s, stackEnvVars); ok {
+						if resolved, ok := resolveEnvRef(s, mergedEnvVars); ok {
 							merged[k] = resolved
 							continue
 						}
@@ -131,7 +151,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 			if err := json.Unmarshal([]byte(*c.Volumes), &vol); err != nil {
 				log.Printf("invalid volumes JSON for container %s: %v", c.Name, err)
 			} else {
-				resolved := resolveVarsInValue(vol, stackEnvVars)
+				resolved := resolveVarsInValue(vol, mergedEnvVars)
 				spec["volumes"] = resolved
 			}
 		}
@@ -162,8 +182,8 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 			if err := json.Unmarshal([]byte(*c.HealthCheck), &hc); err != nil {
 				log.Printf("invalid health_check JSON for container %s: %v", c.Name, err)
 			} else {
-				allEnvVars := make(map[string]any, len(stackEnvVars))
-				for k, v := range stackEnvVars {
+				allEnvVars := make(map[string]any, len(mergedEnvVars))
+				for k, v := range mergedEnvVars {
 					allEnvVars[k] = v
 				}
 				if containerEnvs, ok := spec["env_vars"].(map[string]any); ok {

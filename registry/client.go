@@ -131,6 +131,41 @@ func (c *Client) ListTags(repository string) ([]string, error) {
 	return tags.Tags, nil
 }
 
+// GetManifestDigest returns the Docker-Content-Digest for a given repository:tag
+// without downloading the full manifest. This is used to detect when a mutable
+// tag (e.g. "latest") has been re-pushed to a new image.
+func (c *Client) GetManifestDigest(repository, tag string) (string, error) {
+	req, err := http.NewRequest("HEAD", c.URL+"/v2/"+repository+"/manifests/"+tag, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+	c.setAuth(req)
+	// Accept both OCI and Docker manifest types so the registry returns a digest.
+	req.Header.Set("Accept", "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("registry unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "", fmt.Errorf("authentication failed (401)")
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return "", fmt.Errorf("manifest not found: %s:%s", repository, tag)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+
+	digest := resp.Header.Get("Docker-Content-Digest")
+	if digest == "" {
+		return "", fmt.Errorf("registry did not return Docker-Content-Digest header")
+	}
+	return digest, nil
+}
+
 func (c *Client) setAuth(req *http.Request) {
 	if c.Username != "" && c.Password != "" {
 		req.SetBasicAuth(c.Username, c.Password)

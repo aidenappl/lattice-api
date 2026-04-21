@@ -55,15 +55,23 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Begin transaction — if creation fails partway, soft-deleted containers are restored
+	tx, err := db.BeginTx()
+	if err != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback() // no-op if committed
+
 	// Soft-delete existing containers
-	existing, err := query.ListContainersByStack(db.DB, stack.ID)
+	existing, err := query.ListContainersByStack(tx, stack.ID)
 	if err != nil {
 		responder.QueryError(w, err, "failed to list containers")
 		return
 	}
 	if existing != nil {
 		for _, c := range *existing {
-			_ = query.DeleteContainer(db.DB, c.ID)
+			_ = query.DeleteContainer(tx, c.ID)
 		}
 	}
 
@@ -166,14 +174,14 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		if _, err := query.CreateContainer(db.DB, req); err != nil {
+		if _, err := query.CreateContainer(tx, req); err != nil {
 			responder.QueryError(w, err, fmt.Sprintf("failed to create container %s", name))
 			return
 		}
 	}
 
 	// Replace networks — delete existing, create from compose
-	_ = query.DeleteNetworksByStack(db.DB, stack.ID)
+	_ = query.DeleteNetworksByStack(tx, stack.ID)
 	if len(compose.Networks) > 0 {
 		for key, net := range compose.Networks {
 			driver := net.Driver
@@ -184,7 +192,7 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 			if name == "" {
 				name = key
 			}
-			_ = query.CreateNetwork(db.DB, query.CreateNetworkRequest{
+			_ = query.CreateNetwork(tx, query.CreateNetworkRequest{
 				StackID: stack.ID,
 				Name:    name,
 				Driver:  driver,
@@ -193,11 +201,16 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Store compose YAML on stack
-	stack, err = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{
+	stack, err = query.UpdateStack(tx, stack.ID, query.UpdateStackRequest{
 		ComposeYAML: &body.ComposeYAML,
 	})
 	if err != nil {
 		responder.QueryError(w, err, "failed to update stack compose")
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to commit transaction")
 		return
 	}
 
