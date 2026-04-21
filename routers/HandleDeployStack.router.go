@@ -169,8 +169,19 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 			if err := json.Unmarshal([]byte(*c.HealthCheck), &hc); err != nil {
 				log.Printf("invalid health_check JSON for container %s: %v", c.Name, err)
 			} else {
-				// Resolve environment variable references in health check (e.g., ${PORT_FOO} in test command)
-				resolved := resolveVarsInValue(hc, stackEnvVars)
+				// Resolve env var references in health check against both stack-level
+				// and container-level env vars (container vars take precedence).
+				allEnvVars := make(map[string]any, len(stackEnvVars))
+				for k, v := range stackEnvVars {
+					allEnvVars[k] = v
+				}
+				// Merge container-level env vars on top
+				if containerEnvs, ok := spec["env_vars"].(map[string]any); ok {
+					for k, v := range containerEnvs {
+						allEnvVars[k] = v
+					}
+				}
+				resolved := resolveVarsInValue(hc, allEnvVars)
 				spec["health_check"] = resolved
 			}
 		}
