@@ -1,6 +1,7 @@
 package sso
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -213,15 +214,35 @@ func ExchangeCode(code string) (*TokenResponse, error) {
 		"redirect_uri": {cfg.RedirectURL},
 	}
 
-	// Try Basic auth first (OAuth2 RFC 6749 §2.3.1 preferred), fall back to
-	// client credentials in the POST body (§2.3.1 alternative) if that fails.
-	tokenResp, err := exchangeWithBasicAuth(cfg, data)
-	if err == nil {
-		return tokenResp, nil
+	// Try three methods in order:
+	// 1. JSON body (Forta-style: POST {url} with {"client_id","client_secret","code"})
+	// 2. Basic auth header (OAuth2 RFC 6749 §2.3.1 preferred)
+	// 3. Credentials in POST body (OAuth2 §2.3.1 alternative)
+	if resp, err := exchangeWithJSON(cfg, code); err == nil {
+		return resp, nil
 	}
-
-	// Retry with credentials in the POST body
+	if resp, err := exchangeWithBasicAuth(cfg, data); err == nil {
+		return resp, nil
+	}
 	return exchangeWithBodyAuth(cfg, data)
+}
+
+func exchangeWithJSON(cfg *SSOConfig, code string) (*TokenResponse, error) {
+	payload := map[string]string{
+		"client_id":     cfg.ClientID,
+		"client_secret": cfg.ClientSecret,
+		"code":          code,
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest("POST", cfg.TokenURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	return doTokenRequest(req)
 }
 
 func exchangeWithBasicAuth(cfg *SSOConfig, data url.Values) (*TokenResponse, error) {
@@ -263,12 +284,42 @@ func doTokenRequest(req *http.Request) (*TokenResponse, error) {
 		return nil, fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, string(body))
 	}
 
+	body, _ := io.ReadAll(resp.Body)
+
+	// Try standard OAuth2 format first: {"access_token": "...", ...}
 	var tokenResp TokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to decode token response: %w", err)
+	if err := json.Unmarshal(body, &tokenResp); err == nil && tokenResp.AccessToken != "" {
+		return &tokenResp, nil
 	}
 
-	return &tokenResp, nil
+	// Try Forta envelope format: {"success": true, "data": {"authorization": {"access_token": "..."}}}
+	var envelope struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Authorization TokenResponse `json:"authorization"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Success && envelope.Data.Authorization.AccessToken != "" {
+		return &envelope.Data.Authorization, nil
+	}
+
+	// Try Forta envelope with token at data level: {"success": true, "data": {"access_token": "..."}}
+	var envelope2 struct {
+		Success bool          `json:"success"`
+		Data    TokenResponse `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope2); err == nil && envelope2.Success && envelope2.Data.AccessToken != "" {
+		return &envelope2.Data, nil
+	}
+
+	return nil, fmt.Errorf("unrecognized token response format: %s", string(body[:min(len(body), 200)]))
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // FetchUserInfo calls the userinfo endpoint with the access token.
