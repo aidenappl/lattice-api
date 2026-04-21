@@ -13,7 +13,7 @@ import (
 // EnsureAdminUser checks if any user exists in the database.
 // If no users exist and LATTICE_ADMIN_EMAIL + LATTICE_ADMIN_PASSWORD are set,
 // it creates an initial local admin user. This enables bootstrapping Lattice
-// before Forta is available.
+// before SSO is available.
 func EnsureAdminUser(engine db.Queryable) error {
 	count, err := query.CountUsers(engine)
 	if err != nil {

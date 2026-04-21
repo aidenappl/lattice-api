@@ -100,6 +100,12 @@ func Init() {
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 		inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`)
+
+	// Auto-create settings table if it doesn't exist
+	_, _ = db.Exec("CREATE TABLE IF NOT EXISTS settings (" +
+		"`key` VARCHAR(255) PRIMARY KEY," +
+		"value TEXT NOT NULL," +
+		"updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)")
 }
 
 type Queryable interface {

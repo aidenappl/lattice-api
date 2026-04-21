@@ -14,7 +14,7 @@ var userColumns = []string{
 	"users.name",
 	"users.auth_type",
 	"users.password_hash",
-	"users.forta_id",
+	"users.sso_subject",
 	"users.role",
 	"users.active",
 	"users.updated_at",
@@ -29,7 +29,7 @@ func scanUser(row scanner) (*structs.User, error) {
 		&u.Name,
 		&u.AuthType,
 		&u.PasswordHash,
-		&u.FortaID,
+		&u.SSOSubject,
 		&u.Role,
 		&u.Active,
 		&u.UpdatedAt,
@@ -118,23 +118,6 @@ func GetUserByEmail(engine db.Queryable, email string) (*structs.User, error) {
 	return u, nil
 }
 
-func GetUserByFortaID(engine db.Queryable, fortaID int64) (*structs.User, error) {
-	q := sq.Select(userColumns...).From("users").Where(sq.Eq{"users.forta_id": fortaID})
-
-	qStr, args, err := q.ToSql()
-	if err != nil {
-		return nil, fmt.Errorf("failed to build sql query: %w", err)
-	}
-
-	row := engine.QueryRow(qStr, args...)
-	u, err := scanUser(row)
-	if err != nil {
-		return nil, fmt.Errorf("failed to scan user: %w", err)
-	}
-
-	return u, nil
-}
-
 func CountUsers(engine db.Queryable) (int, error) {
 	var count int
 	err := engine.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
@@ -146,14 +129,13 @@ type CreateUserRequest struct {
 	Name         *string
 	AuthType     string
 	PasswordHash *string
-	FortaID      *int64
 	Role         string
 }
 
 func CreateUser(engine db.Queryable, req CreateUserRequest) (*structs.User, error) {
 	q := sq.Insert("users").
-		Columns("email", "name", "auth_type", "password_hash", "forta_id", "role").
-		Values(req.Email, req.Name, req.AuthType, req.PasswordHash, req.FortaID, req.Role)
+		Columns("email", "name", "auth_type", "password_hash", "role").
+		Values(req.Email, req.Name, req.AuthType, req.PasswordHash, req.Role)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

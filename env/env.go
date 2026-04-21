@@ -17,21 +17,18 @@ var (
 	LatticeAdminEmail    = getEnv("LATTICE_ADMIN_EMAIL", "")
 	LatticeAdminPassword = getEnv("LATTICE_ADMIN_PASSWORD", "")
 
-	// Forta OAuth2 configuration (optional — only needed when Forta is running)
-	FortaAPIDomain          = getEnv("FORTA_API_DOMAIN", "")
-	FortaLoginDomain        = getEnv("FORTA_LOGIN_DOMAIN", "")
-	FortaAppDomain          = getEnv("FORTA_APP_DOMAIN", "")
-	FortaClientID           = getEnv("FORTA_CLIENT_ID", "")
-	FortaClientSecret       = getEnv("FORTA_CLIENT_SECRET", "")
-	FortaCallbackURL        = getEnv("FORTA_CALLBACK_URL", "")
-	FortaJWTSigningKey      = getEnv("FORTA_JWT_SIGNING_KEY", "")
-	FortaCookieDomain       = getEnv("FORTA_COOKIE_DOMAIN", "")
-	FortaCookieInsecure     = getEnv("FORTA_COOKIE_INSECURE", "false") == "true"
-	FortaPostLoginRedirect  = getEnv("FORTA_POST_LOGIN_REDIRECT", "/")
-	FortaPostLogoutRedirect = getEnv("FORTA_POST_LOGOUT_REDIRECT", "/")
-	FortaFetchUserOnProtect = getEnv("FORTA_FETCH_USER_ON_PROTECT", "true") == "true"
-	FortaDisableAutoRefresh = getEnv("FORTA_DISABLE_AUTO_REFRESH", "false") == "true"
-	FortaEnforceGrants      = getEnv("FORTA_ENFORCE_GRANTS", "true") == "true"
+	// SSO OAuth2 configuration (optional — enables "Sign in with SSO" on the login page)
+	SSOClientID       = getEnv("SSO_CLIENT_ID", "")
+	SSOClientSecret   = getEnv("SSO_CLIENT_SECRET", "")
+	SSOAuthorizeURL   = getEnv("SSO_AUTHORIZE_URL", "")
+	SSOTokenURL       = getEnv("SSO_TOKEN_URL", "")
+	SSOUserInfoURL    = getEnv("SSO_USERINFO_URL", "")
+	SSORedirectURL    = getEnv("SSO_REDIRECT_URL", "")
+	SSOLogoutURL      = getEnv("SSO_LOGOUT_URL", "")
+	SSOScopes         = getEnv("SSO_SCOPES", "openid email profile")
+	SSOUserIdentifier = getEnv("SSO_USER_IDENTIFIER", "email") // field in userinfo to match user
+	SSOButtonLabel    = getEnv("SSO_BUTTON_LABEL", "Sign in with SSO")
+	SSOAutoProvision  = getEnv("SSO_AUTO_PROVISION", "true") == "true" // auto-create users on first SSO login
 
 	// TLS (optional — for local HTTPS development)
 	TLSCert = getEnv("TLS_CERT", "")

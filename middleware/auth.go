@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	forta "github.com/aidenappl/go-forta"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/jwt"
 	"github.com/aidenappl/lattice-api/query"
@@ -26,12 +25,14 @@ func GetUserFromContext(ctx context.Context) (*structs.User, bool) {
 }
 
 // DualAuthMiddleware checks authentication from either:
-// 1. Lattice-issued JWT (local users) via Authorization: Bearer header or lattice-access-token cookie
-// 2. Forta access token (OAuth users) via forta-access-token cookie
+// 1. Lattice-issued JWT (local users) via Authorization: Bearer header
+// 2. Lattice-issued JWT from lattice-access-token cookie
+// SSO users receive Lattice JWTs via the SSO callback, so they authenticate
+// the same way as local users after login.
 // On success, injects *structs.User into the request context.
 func DualAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Try Lattice JWT first (from Authorization header)
+		// Try Lattice JWT from Authorization header
 		if token := extractBearerToken(r); token != "" {
 			if user := validateLatticeToken(token); user != nil {
 				ctx := context.WithValue(r.Context(), UserContextKey, user)
@@ -47,36 +48,6 @@ func DualAuthMiddleware(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
-		}
-
-		// Try Forta authentication
-		if fortaUser, err := forta.FetchCurrentUser(r); err == nil && fortaUser != nil {
-			user, err := query.GetUserByFortaID(db.DB, fortaUser.ID)
-			if err != nil || user == nil {
-				// Auto-create OAuth user on first login
-				name := ""
-				if fortaUser.Name != nil {
-					name = *fortaUser.Name
-				}
-				user, err = query.CreateUser(db.DB, query.CreateUserRequest{
-					Email:    fortaUser.Email,
-					Name:     &name,
-					AuthType: "oauth",
-					FortaID:  &fortaUser.ID,
-					Role:     "viewer",
-				})
-				if err != nil {
-					responder.SendError(w, http.StatusInternalServerError, "failed to create user from forta", err)
-					return
-				}
-			}
-			if !user.Active {
-				responder.SendError(w, http.StatusForbidden, "account is disabled")
-				return
-			}
-			ctx := context.WithValue(r.Context(), UserContextKey, user)
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
 		}
 
 		responder.SendError(w, http.StatusUnauthorized, "authentication required")

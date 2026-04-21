@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	forta "github.com/aidenappl/go-forta"
 	"github.com/aidenappl/lattice-api/bootstrap"
 	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
@@ -23,6 +22,7 @@ import (
 	"github.com/aidenappl/lattice-api/retention"
 	"github.com/aidenappl/lattice-api/routers"
 	"github.com/aidenappl/lattice-api/socket"
+	"github.com/aidenappl/lattice-api/sso"
 	"github.com/aidenappl/lattice-api/structs"
 	"github.com/aidenappl/lattice-api/versions"
 	"github.com/aidenappl/lattice-api/watcher"
@@ -69,39 +69,11 @@ func main() {
 	// 2b. Backfill networks from stored compose YAML for stacks that have no networks yet
 	routers.BackfillNetworksFromCompose(db.DB)
 
-	// 3. Forta setup (optional)
-	fortaEnabled := false
-	if env.FortaAPIDomain != "" && env.FortaClientID != "" {
-		fmt.Print("Connecting to Forta...")
-		if err := forta.Setup(forta.Config{
-			APIDomain:          env.FortaAPIDomain,
-			AppDomain:          env.FortaAppDomain,
-			LoginDomain:        env.FortaLoginDomain,
-			ClientID:           env.FortaClientID,
-			ClientSecret:       env.FortaClientSecret,
-			CallbackURL:        env.FortaCallbackURL,
-			PostLoginRedirect:  env.FortaPostLoginRedirect,
-			PostLogoutRedirect: env.FortaPostLogoutRedirect,
-			CookieDomain:       env.FortaCookieDomain,
-			CookieInsecure:     env.FortaCookieInsecure,
-			JWTSigningKey:      env.FortaJWTSigningKey,
-			FetchUserOnProtect: env.FortaFetchUserOnProtect,
-			DisableAutoRefresh: env.FortaDisableAutoRefresh,
-			EnforceGrants:      env.FortaEnforceGrants,
-		}); err != nil {
-			fmt.Println(" ⚠️  Failed (running without Forta)")
-			log.Println("forta setup error:", err)
-		} else {
-			if err := forta.Ping(); err != nil {
-				fmt.Println(" ⚠️  Unreachable (running without Forta)")
-				log.Println("forta ping error:", err)
-			} else {
-				fmt.Println(" ✅ Done")
-				fortaEnabled = true
-			}
-		}
+	// 3. SSO setup (optional)
+	if sso.IsConfigured() {
+		fmt.Println("SSO: configured")
 	} else {
-		fmt.Println("Forta: not configured (local auth only)")
+		fmt.Println("SSO: not configured (local auth only)")
 	}
 
 	// 4. WebSocket hubs
@@ -402,14 +374,17 @@ func main() {
 	r.HandleFunc("/auth/login", routers.HandleLocalLogin).Methods(http.MethodPost)
 	r.HandleFunc("/auth/refresh", routers.HandleAuthRefresh).Methods(http.MethodPost)
 
-	// Forta routes (conditional)
-	if fortaEnabled {
-		r.HandleFunc("/forta/login", forta.LoginHandler).Methods(http.MethodGet)
-		r.HandleFunc("/forta/callback", forta.CallbackHandler).Methods(http.MethodGet)
-		r.HandleFunc("/forta/logout", forta.LogoutHandler).Methods(http.MethodGet)
-	}
+	// SSO routes (always registered — config can change at runtime via DB)
+	r.HandleFunc("/auth/sso/login", sso.LoginHandler).Methods(http.MethodGet)
+	r.HandleFunc("/auth/sso/callback", routers.HandleSSOCallback).Methods(http.MethodGet)
 
-	// Auth self (protected - works with both local and Forta auth)
+	// SSO config endpoint (public — frontend uses this to show/hide SSO button)
+	r.HandleFunc("/auth/sso/config", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(sso.Config())
+	}).Methods(http.MethodGet)
+
+	// Auth self (protected - works with both local and SSO auth)
 	authRouter := r.PathPrefix("/auth").Subrouter()
 	authRouter.Use(middleware.DualAuthMiddleware)
 	authRouter.HandleFunc("/self", routers.HandleAuthSelf).Methods(http.MethodGet)
@@ -524,6 +499,10 @@ func main() {
 
 	// Audit log
 	admin.HandleFunc("/audit-log", middleware.RequireAdmin(routers.HandleGetAuditLog)).Methods(http.MethodGet)
+
+	// SSO Configuration
+	admin.HandleFunc("/sso-config", middleware.RequireAdmin(routers.HandleGetSSOConfig)).Methods(http.MethodGet)
+	admin.HandleFunc("/sso-config", middleware.RequireAdmin(routers.HandleUpdateSSOConfig)).Methods(http.MethodPut)
 
 	// Overview (dashboard)
 	admin.HandleFunc("/overview", routers.HandleGetOverview).Methods(http.MethodGet)
