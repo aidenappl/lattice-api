@@ -7,6 +7,7 @@ import (
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
+	"github.com/aidenappl/lattice-api/tools"
 )
 
 func HandleCreateWorker(w http.ResponseWriter, r *http.Request) {
@@ -22,6 +23,10 @@ func HandleCreateWorker(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Name == "" {
 		responder.MissingBodyFields(w, "name")
+		return
+	}
+	if err := tools.ValidateName(body.Name); err != nil {
+		responder.SendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if body.Hostname == "" {

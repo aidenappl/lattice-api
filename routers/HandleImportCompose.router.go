@@ -9,6 +9,7 @@ import (
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
+	"github.com/aidenappl/lattice-api/tools"
 	"gopkg.in/yaml.v3"
 )
 
@@ -61,6 +62,8 @@ type composeResourceLimit struct {
 }
 
 func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, int64(tools.MaxYAMLSize)+4096) // allow overhead for JSON wrapper
+
 	var body struct {
 		Name               string  `json:"name"`
 		Description        *string `json:"description"`
@@ -74,6 +77,10 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.ComposeYAML == "" {
 		responder.MissingBodyFields(w, "compose_yaml")
+		return
+	}
+	if err := tools.ValidateYAMLSize(body.ComposeYAML); err != nil {
+		responder.SendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if body.DeploymentStrategy == "" {

@@ -6,10 +6,42 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+// AllowedOrigins holds the configured allowed origins for WebSocket connections.
+// Must be set before handlers are used.
+var AllowedOrigins []string
+
+// CheckAllowedOrigin validates that the request's Origin header matches one of the allowed origins.
+// If no origins are configured, all origins are rejected. If the request has no Origin header,
+// it is allowed (same-origin or non-browser clients).
+func CheckAllowedOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		// No origin header means same-origin or non-browser client — allow.
+		return true
+	}
+
+	originURL, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+
+	for _, allowed := range AllowedOrigins {
+		allowedURL, err := url.Parse(allowed)
+		if err != nil {
+			continue
+		}
+		if originURL.Scheme == allowedURL.Scheme && originURL.Host == allowedURL.Host {
+			return true
+		}
+	}
+	return false
+}
 
 const (
 	writeWait      = 10 * time.Second
@@ -42,9 +74,7 @@ func NewWorkerHandler(hub *WorkerHub) *WorkerHandler {
 		Upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
-			CheckOrigin: func(r *http.Request) bool {
-				return true
-			},
+			CheckOrigin:     CheckAllowedOrigin,
 		},
 	}
 }

@@ -131,7 +131,7 @@ All `/admin/*` routes are protected by `DualAuthMiddleware`.
 
 ### WebSocket
 - `GET /ws/worker?token=<token>` — worker connection (token auth)
-- `GET /ws/admin` — admin live updates (DualAuthMiddleware via cookie)
+- `GET /ws/admin` — admin live updates (requires DualAuthMiddleware authentication, origin validation via `CheckAllowedOrigin`)
 
 ## WebSocket Protocol
 
@@ -156,7 +156,15 @@ Dual auth system — both can coexist:
 1. **Local JWT** — `Authorization: Bearer <token>` or `lattice-access-token` cookie. HS512, 15min access / 7d refresh.
 2. **Forta OAuth** — `forta-access-token` cookie. First OAuth login auto-creates user with role `viewer`.
 
-`RequireAdmin` middleware exists in `middleware/auth.go` but is not applied to any routes yet.
+**CSRF Protection** — Double-submit cookie pattern (`middleware/csrf.go`). State-changing requests must include a CSRF token that matches the cookie value.
+
+**Role-Based Access Control** — `RequireAdmin` middleware enforced on `HandleGetUsers`, `HandleGetAuditLog`, and other sensitive endpoints.
+
+**Security Headers** — Applied globally via middleware: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy` (restrictive).
+
+**Input Validation** — `tools/validate.go` provides `ValidateName`, `ValidateEmail`, `ValidatePassword`, `ValidateYAMLSize`. Password requires minimum 8 characters on user creation.
+
+**Audit Logging** — Mutation handlers now call `CreateAuditLog` to record state-changing operations.
 
 ## Version Management
 
@@ -182,3 +190,5 @@ RUN go build -ldflags="-w -s -X main.Version=${VERSION}" -o /lattice-api .
 - Stack status mirrors deployment terminal state
 - Worker registration on connect sends OS, arch, Docker version, IP, runner version
 - Graceful shutdown with 10s timeout via SIGINT/SIGTERM
+- YAML size limit: compose import/update rejects payloads exceeding 1MB (`ValidateYAMLSize`)
+- WebSocket origin validation: `CheckAllowedOrigin` replaces permissive `CheckOrigin` to prevent cross-origin WebSocket hijacking

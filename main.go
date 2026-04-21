@@ -21,6 +21,7 @@ import (
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/routers"
 	"github.com/aidenappl/lattice-api/socket"
+	"github.com/aidenappl/lattice-api/structs"
 	"github.com/aidenappl/lattice-api/versions"
 	"github.com/gorilla/mux"
 	"github.com/rs/cors"
@@ -266,6 +267,12 @@ func main() {
 
 	adminHandler := socket.NewAdminHandler(adminHub)
 
+	// Authenticate admin WebSocket connections using the same dual-auth logic.
+	adminHandler.AuthFunc = func(r *http.Request) (*structs.User, bool) {
+		user, ok := middleware.GetUserFromContext(r.Context())
+		return user, ok && user != nil
+	}
+
 	// Handle admin client messages (exec forwarding)
 	adminHandler.OnMessage = func(session *socket.AdminSession, msg socket.IncomingMessage) {
 		switch msg.Type {
@@ -319,6 +326,8 @@ func main() {
 	r.Use(middleware.RequestIDMiddleware)
 	r.Use(middleware.LoggingMiddleware)
 	r.Use(middleware.MuxHeaderMiddleware)
+	r.Use(middleware.SecurityHeadersMiddleware)
+	r.Use(middleware.CSRFMiddleware)
 
 	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("Lattice API"))
@@ -422,13 +431,13 @@ func main() {
 	admin.HandleFunc("/registries/{id}/tags", routers.HandleListRegistryTags).Methods(http.MethodGet)
 
 	// Users
-	admin.HandleFunc("/users", routers.HandleGetUsers).Methods(http.MethodGet)
+	admin.HandleFunc("/users", middleware.RequireAdmin(routers.HandleGetUsers)).Methods(http.MethodGet)
 	admin.HandleFunc("/users", middleware.RequireAdmin(routers.HandleCreateUser)).Methods(http.MethodPost)
 	admin.HandleFunc("/users/{id}", middleware.RequireAdmin(routers.HandleUpdateUser)).Methods(http.MethodPut)
 	admin.HandleFunc("/users/{id}", middleware.RequireAdmin(routers.HandleDeleteUser)).Methods(http.MethodDelete)
 
 	// Audit log
-	admin.HandleFunc("/audit-log", routers.HandleGetAuditLog).Methods(http.MethodGet)
+	admin.HandleFunc("/audit-log", middleware.RequireAdmin(routers.HandleGetAuditLog)).Methods(http.MethodGet)
 
 	// Overview (dashboard)
 	admin.HandleFunc("/overview", routers.HandleGetOverview).Methods(http.MethodGet)
@@ -442,13 +451,16 @@ func main() {
 
 	// WebSocket endpoints
 	r.Handle("/ws/worker", workerHandler).Methods(http.MethodGet)
-	r.Handle("/ws/admin", adminHandler).Methods(http.MethodGet)
+	r.Handle("/ws/admin", middleware.DualAuthMiddleware(adminHandler)).Methods(http.MethodGet)
 
 	// 6. CORS
 	allowedOrigins := []string{"http://localhost:3000"}
 	if env.AllowedOrigins != "" {
 		allowedOrigins = append(allowedOrigins, strings.Split(env.AllowedOrigins, ",")...)
 	}
+
+	// Configure WebSocket origin validation with the same allowed origins.
+	socket.AllowedOrigins = allowedOrigins
 
 	corsMiddleware := cors.New(cors.Options{
 		AllowedOrigins:   allowedOrigins,

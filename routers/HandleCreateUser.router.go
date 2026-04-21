@@ -33,6 +33,15 @@ func HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 		body.Role = "viewer"
 	}
 
+	if err := tools.ValidateEmail(body.Email); err != nil {
+		responder.SendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := tools.ValidatePassword(body.Password); err != nil {
+		responder.SendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	hash, err := tools.HashPassword(body.Password)
 	if err != nil {
 		responder.SendError(w, http.StatusInternalServerError, "failed to hash password", err)

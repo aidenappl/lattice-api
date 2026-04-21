@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aidenappl/lattice-api/structs"
 	"github.com/gorilla/websocket"
 )
 
@@ -98,6 +99,10 @@ type AdminHandler struct {
 	Hub       *AdminHub
 	Upgrader  websocket.Upgrader
 	OnMessage func(session *AdminSession, msg IncomingMessage)
+
+	// AuthFunc validates the request and returns the authenticated user.
+	// If nil, all connections are rejected.
+	AuthFunc func(r *http.Request) (*structs.User, bool)
 }
 
 func NewAdminHandler(hub *AdminHub) *AdminHandler {
@@ -110,14 +115,22 @@ func NewAdminHandler(hub *AdminHub) *AdminHandler {
 		Upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
-			CheckOrigin: func(r *http.Request) bool {
-				return true
-			},
+			CheckOrigin:     CheckAllowedOrigin,
 		},
 	}
 }
 
 func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.AuthFunc == nil {
+		http.Error(w, "auth not configured", http.StatusInternalServerError)
+		return
+	}
+
+	if _, ok := h.AuthFunc(r); !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	conn, err := h.Upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("socket: admin upgrade failed: %v", err)
