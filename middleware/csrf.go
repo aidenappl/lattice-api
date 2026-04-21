@@ -37,7 +37,7 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 
 		// Skip exempt paths
 		path := r.URL.Path
-		if path == "/auth/login" || path == "/auth/refresh" || path == "/ws/worker" {
+		if path == "/auth/login" || path == "/auth/refresh" || path == "/ws/worker" || strings.HasPrefix(path, "/api/deploy/") {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -15,6 +15,7 @@ import (
 
 	forta "github.com/aidenappl/go-forta"
 	"github.com/aidenappl/lattice-api/bootstrap"
+	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/middleware"
@@ -46,6 +47,9 @@ func main() {
 
 	// 1. Database
 	db.Init()
+
+	// 1b. Encryption
+	crypto.Init()
 
 	// Start background data retention cleanup.
 	retention.Start(db.DB)
@@ -387,6 +391,9 @@ func main() {
 	// Install script (public)
 	r.HandleFunc("/install/runner", routers.HandleInstallRunner).Methods(http.MethodGet)
 
+	// CI/CD deploy (public, token-authenticated)
+	r.HandleFunc("/api/deploy/{token}", deployHandler.HandlePublicDeploy).Methods(http.MethodPost)
+
 	// Auth routes (unprotected)
 	r.HandleFunc("/auth/login", routers.HandleLocalLogin).Methods(http.MethodPost)
 	r.HandleFunc("/auth/refresh", routers.HandleAuthRefresh).Methods(http.MethodPost)
@@ -446,6 +453,11 @@ func main() {
 	admin.HandleFunc("/stacks/{id}/export", routers.HandleExportStack).Methods(http.MethodGet)
 	admin.HandleFunc("/stacks/import-export", middleware.RequireEditor(routers.HandleImportStackExport)).Methods(http.MethodPost)
 
+	// Deploy tokens
+	admin.HandleFunc("/stacks/{id}/deploy-tokens", routers.HandleListDeployTokens).Methods(http.MethodGet)
+	admin.HandleFunc("/stacks/{id}/deploy-tokens", middleware.RequireAdmin(routers.HandleCreateDeployToken)).Methods(http.MethodPost)
+	admin.HandleFunc("/deploy-tokens/{id}", middleware.RequireAdmin(routers.HandleDeleteDeployToken)).Methods(http.MethodDelete)
+
 	// Containers
 	admin.HandleFunc("/containers", routers.HandleListAllContainers).Methods(http.MethodGet)
 	admin.HandleFunc("/stacks/{id}/containers", routers.HandleGetContainers).Methods(http.MethodGet)
@@ -493,6 +505,18 @@ func main() {
 	admin.HandleFunc("/webhooks/{id}", middleware.RequireAdmin(routers.HandleUpdateWebhook)).Methods(http.MethodPut)
 	admin.HandleFunc("/webhooks/{id}", middleware.RequireAdmin(routers.HandleDeleteWebhook)).Methods(http.MethodDelete)
 	admin.HandleFunc("/webhooks/{id}/test", middleware.RequireAdmin(routers.HandleTestWebhook)).Methods(http.MethodPost)
+
+	// Global Environment Variables
+	admin.HandleFunc("/env-vars", routers.HandleListGlobalEnvVars).Methods(http.MethodGet)
+	admin.HandleFunc("/env-vars", middleware.RequireAdmin(routers.HandleCreateGlobalEnvVar)).Methods(http.MethodPost)
+	admin.HandleFunc("/env-vars/{id}", middleware.RequireAdmin(routers.HandleUpdateGlobalEnvVar)).Methods(http.MethodPut)
+	admin.HandleFunc("/env-vars/{id}", middleware.RequireAdmin(routers.HandleDeleteGlobalEnvVar)).Methods(http.MethodDelete)
+
+	// Templates
+	admin.HandleFunc("/templates", routers.HandleListTemplates).Methods(http.MethodGet)
+	admin.HandleFunc("/templates", middleware.RequireEditor(routers.HandleCreateTemplate)).Methods(http.MethodPost)
+	admin.HandleFunc("/templates/{id}", middleware.RequireEditor(routers.HandleDeleteTemplate)).Methods(http.MethodDelete)
+	admin.HandleFunc("/stacks/{id}/save-template", middleware.RequireEditor(routers.HandleCreateTemplateFromStack)).Methods(http.MethodPost)
 
 	// Audit log
 	admin.HandleFunc("/audit-log", middleware.RequireAdmin(routers.HandleGetAuditLog)).Methods(http.MethodGet)

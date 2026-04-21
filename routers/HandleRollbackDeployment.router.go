@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/query"
@@ -71,10 +72,29 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Stack-level env vars (same as deploy path).
+	// Load global env vars and merge as base layer (same as deploy path).
+	globalVars, _ := query.ListGlobalEnvVars(db.DB)
+	globalEnvMap := make(map[string]any)
+	if globalVars != nil {
+		for _, gv := range *globalVars {
+			decrypted, _ := crypto.Decrypt(gv.EncryptedValue)
+			globalEnvMap[gv.Key] = decrypted
+		}
+	}
+
+	// Stack-level env vars.
 	stackEnvVars := map[string]any{}
 	if stack.EnvVars != nil {
 		_ = json.Unmarshal([]byte(*stack.EnvVars), &stackEnvVars)
+	}
+
+	// Merge: global -> stack (stack wins)
+	mergedEnvVars := make(map[string]any)
+	for k, v := range globalEnvMap {
+		mergedEnvVars[k] = v
+	}
+	for k, v := range stackEnvVars {
+		mergedEnvVars[k] = v
 	}
 
 	allRegistries, _ := query.ListRegistries(db.DB)
@@ -104,7 +124,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 				log.Printf("rollback: invalid port_mappings JSON for container %s: %v", c.Name, err)
 			} else {
 				// Resolve environment variable references in port mappings
-				resolved := resolveVarsInValue(pm, stackEnvVars)
+				resolved := resolveVarsInValue(pm, mergedEnvVars)
 				spec["port_mappings"] = resolved
 			}
 		}
@@ -119,7 +139,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 				merged := make(map[string]any, len(ev))
 				for k, v := range ev {
 					if s, ok := v.(string); ok {
-						if resolved, ok := resolveEnvRef(s, stackEnvVars); ok {
+						if resolved, ok := resolveEnvRef(s, mergedEnvVars); ok {
 							merged[k] = resolved
 							continue
 						}
@@ -136,7 +156,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 				log.Printf("rollback: invalid volumes JSON for container %s: %v", c.Name, err)
 			} else {
 				// Resolve environment variable references in volumes
-				resolved := resolveVarsInValue(vol, stackEnvVars)
+				resolved := resolveVarsInValue(vol, mergedEnvVars)
 				spec["volumes"] = resolved
 			}
 		}
@@ -172,7 +192,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 				log.Printf("rollback: invalid health_check JSON for container %s: %v", c.Name, err)
 			} else {
 				// Resolve environment variable references in health check (e.g., ${PORT_FOO} in test command)
-				resolved := resolveVarsInValue(hc, stackEnvVars)
+				resolved := resolveVarsInValue(hc, mergedEnvVars)
 				spec["health_check"] = resolved
 			}
 		}

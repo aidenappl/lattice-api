@@ -83,6 +83,17 @@ func RateLimitMiddleware(next http.Handler) http.Handler {
 
 		ip := getClientIP(r)
 
+		// Deploy token endpoints: strict limit (brute-force protection)
+		if strings.HasPrefix(path, "/api/deploy/") {
+			if !authLimiter.allow(ip, 10, time.Minute) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After", "60")
+				w.WriteHeader(http.StatusTooManyRequests)
+				w.Write([]byte(`{"success":false,"error":"rate_limited","error_message":"too many requests, try again later","error_code":4290}`))
+				return
+			}
+		}
+
 		// Auth endpoints: strict limit (brute-force protection)
 		if path == "/auth/login" || path == "/auth/refresh" {
 			if !authLimiter.allow(ip, 10, time.Minute) {

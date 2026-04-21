@@ -5,38 +5,34 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"regexp"
-	"strconv"
 	"strings"
 
-	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
-	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/socket"
+	"github.com/aidenappl/lattice-api/tools"
 	"github.com/gorilla/mux"
 )
 
-type DeployHandler struct {
-	WorkerHub *socket.WorkerHub
-	AdminHub  *socket.AdminHub
-}
-
-func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request) {
-	stackID, err := strconv.Atoi(mux.Vars(r)["id"])
-	if err != nil {
-		responder.SendError(w, http.StatusBadRequest, "invalid stack id")
+func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Request) {
+	token := mux.Vars(r)["token"]
+	if token == "" {
+		responder.SendError(w, http.StatusUnauthorized, "missing deploy token")
 		return
 	}
 
-	user, ok := middleware.GetUserFromContext(r.Context())
-	if !ok || user == nil {
-		responder.SendError(w, http.StatusUnauthorized, "not authenticated")
+	hash := tools.HashToken(token)
+	dt, err := query.GetDeployTokenByHash(db.DB, hash)
+	if err != nil || dt == nil || !dt.Active {
+		responder.SendError(w, http.StatusUnauthorized, "invalid deploy token")
 		return
 	}
 
-	stack, err := query.GetStackByID(db.DB, stackID)
+	_ = query.TouchDeployToken(db.DB, dt.ID)
+
+	// Look up the stack
+	stack, err := query.GetStackByID(db.DB, dt.StackID)
 	if err != nil {
 		responder.NotFound(w)
 		return
@@ -82,29 +78,10 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Load global env vars and merge as base layer
-	globalVars, _ := query.ListGlobalEnvVars(db.DB)
-	globalEnvMap := make(map[string]any)
-	if globalVars != nil {
-		for _, gv := range *globalVars {
-			decrypted, _ := crypto.Decrypt(gv.EncryptedValue)
-			globalEnvMap[gv.Key] = decrypted
-		}
-	}
-
 	// Parse stack-level env vars
 	stackEnvVars := map[string]any{}
 	if stack.EnvVars != nil {
 		_ = json.Unmarshal([]byte(*stack.EnvVars), &stackEnvVars)
-	}
-
-	// Merge: global -> stack (stack wins)
-	mergedEnvVars := make(map[string]any)
-	for k, v := range globalEnvMap {
-		mergedEnvVars[k] = v
-	}
-	for k, v := range stackEnvVars {
-		mergedEnvVars[k] = v
 	}
 
 	// Load all registries for auto-matching by image hostname
@@ -127,8 +104,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 			if err := json.Unmarshal([]byte(*c.PortMappings), &pm); err != nil {
 				log.Printf("invalid port_mappings JSON for container %s: %v", c.Name, err)
 			} else {
-				// Resolve environment variable references in port mappings
-				resolved := resolveVarsInValue(pm, mergedEnvVars)
+				resolved := resolveVarsInValue(pm, stackEnvVars)
 				spec["port_mappings"] = resolved
 			}
 		}
@@ -137,12 +113,10 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 			if err := json.Unmarshal([]byte(*c.EnvVars), &ev); err != nil {
 				log.Printf("invalid env_vars JSON for container %s: %v", c.Name, err)
 			} else {
-				// Preserve compose semantics: only include env keys explicitly defined
-				// for the service, but resolve ${VAR} references from stack-level env.
 				merged := make(map[string]any, len(ev))
 				for k, v := range ev {
 					if s, ok := v.(string); ok {
-						if resolved, ok := resolveEnvRef(s, mergedEnvVars); ok {
+						if resolved, ok := resolveEnvRef(s, stackEnvVars); ok {
 							merged[k] = resolved
 							continue
 						}
@@ -157,8 +131,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 			if err := json.Unmarshal([]byte(*c.Volumes), &vol); err != nil {
 				log.Printf("invalid volumes JSON for container %s: %v", c.Name, err)
 			} else {
-				// Resolve environment variable references in volumes
-				resolved := resolveVarsInValue(vol, mergedEnvVars)
+				resolved := resolveVarsInValue(vol, stackEnvVars)
 				spec["volumes"] = resolved
 			}
 		}
@@ -166,7 +139,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 			spec["cpu_limit"] = *c.CPULimit
 		}
 		if c.MemoryLimit != nil {
-			spec["memory_limit"] = int64(*c.MemoryLimit) * 1024 * 1024 // convert MB to bytes for Docker
+			spec["memory_limit"] = int64(*c.MemoryLimit) * 1024 * 1024
 		}
 		if c.Command != nil {
 			var cmd []string
@@ -189,13 +162,10 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 			if err := json.Unmarshal([]byte(*c.HealthCheck), &hc); err != nil {
 				log.Printf("invalid health_check JSON for container %s: %v", c.Name, err)
 			} else {
-				// Resolve env var references in health check against both stack-level
-				// and container-level env vars (container vars take precedence).
-				allEnvVars := make(map[string]any, len(mergedEnvVars))
-				for k, v := range mergedEnvVars {
+				allEnvVars := make(map[string]any, len(stackEnvVars))
+				for k, v := range stackEnvVars {
 					allEnvVars[k] = v
 				}
-				// Merge container-level env vars on top
 				if containerEnvs, ok := spec["env_vars"].(map[string]any); ok {
 					for k, v := range containerEnvs {
 						allEnvVars[k] = v
@@ -222,7 +192,6 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 				}
 			}
 		} else if allRegistries != nil {
-			// Auto-match registry by image hostname
 			for _, reg := range *allRegistries {
 				regHost := strings.TrimPrefix(strings.TrimPrefix(reg.URL, "https://"), "http://")
 				regHost = strings.TrimSuffix(regHost, "/")
@@ -246,11 +215,11 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		containerSpecs = append(containerSpecs, spec)
 	}
 
-	// Create deployment record
+	// Create deployment record (no user — triggered by CI/CD token)
 	deployment, err := query.CreateDeployment(db.DB, query.CreateDeploymentRequest{
 		StackID:     stack.ID,
 		Strategy:    stack.DeploymentStrategy,
-		TriggeredBy: &user.ID,
+		TriggeredBy: nil,
 	})
 	if err != nil {
 		responder.QueryError(w, err, "failed to create deployment")
@@ -279,7 +248,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 	_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
 		DeploymentID: deployment.ID,
 		Level:        "info",
-		Message:      fmt.Sprintf("Deployment initiated by user %d for stack '%s' (strategy=%s, containers=%d)", user.ID, stack.Name, stack.DeploymentStrategy, len(*containers)),
+		Message:      fmt.Sprintf("Deployment initiated by deploy token %q for stack '%s' (strategy=%s, containers=%d)", dt.Name, stack.Name, stack.DeploymentStrategy, len(*containers)),
 	})
 
 	// Send deploy command to worker
@@ -341,73 +310,5 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 
 	h.startDeploymentMonitor(deployment.ID, stack.ID, *stack.WorkerID, payload)
 
-	logAudit(r, "deploy", "stack", intPtr(stackID), strPtr(stack.Name))
 	responder.NewCreated(w, deployment, "deployment created and sent to worker")
-}
-
-// resolveEnvRef checks if s is a compose-style variable reference (${VAR} or $VAR)
-// and, if so, returns the corresponding value from envVars. Returns ("", false) if
-// s is not a reference or the variable is not present in envVars.
-func resolveEnvRef(s string, envVars map[string]any) (any, bool) {
-	var name string
-	switch {
-	case strings.HasPrefix(s, "${") && strings.HasSuffix(s, "}"):
-		name = s[2 : len(s)-1]
-	case strings.HasPrefix(s, "$"):
-		name = s[1:]
-	default:
-		return nil, false
-	}
-	if name == "" {
-		return nil, false
-	}
-	if v, ok := envVars[name]; ok {
-		return v, true
-	}
-	return nil, false
-}
-
-var envRefPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
-
-// interpolateEnvRefs replaces ${VAR} and $VAR occurrences inside s using
-// stack-level env vars. Unknown variables are left unchanged.
-func interpolateEnvRefs(s string, envVars map[string]any) string {
-	return envRefPattern.ReplaceAllStringFunc(s, func(match string) string {
-		if resolved, ok := resolveEnvRef(match, envVars); ok {
-			return fmt.Sprint(resolved)
-		}
-		return match
-	})
-}
-
-// resolveVarsInValue recursively resolves environment variable references in any value.
-// Handles strings (${VAR} syntax), maps, and slices.
-func resolveVarsInValue(val any, envVars map[string]any) any {
-	switch v := val.(type) {
-	case string:
-		// Try to resolve as an environment variable reference
-		if resolved, ok := resolveEnvRef(v, envVars); ok {
-			return resolved
-		}
-		// Resolve embedded references in larger strings, e.g.
-		// "http://localhost:${PORT}/healthcheck".
-		return interpolateEnvRefs(v, envVars)
-	case map[string]any:
-		// Recursively resolve all values in the map
-		result := make(map[string]any, len(v))
-		for k, value := range v {
-			result[k] = resolveVarsInValue(value, envVars)
-		}
-		return result
-	case []any:
-		// Recursively resolve all elements in the slice
-		result := make([]any, len(v))
-		for i, value := range v {
-			result[i] = resolveVarsInValue(value, envVars)
-		}
-		return result
-	default:
-		// For other types (int, float, bool, nil), return as-is
-		return val
-	}
 }

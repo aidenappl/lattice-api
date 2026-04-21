@@ -44,6 +44,9 @@ var (
 	// are on different subdomains so that cookies are readable cross-subdomain.
 	CookieDomain = getEnv("COOKIE_DOMAIN", "")
 
+	// Encryption key for secrets (optional — 64 hex chars / 32 bytes AES-256-GCM)
+	EncryptionKey = getEnv("ENCRYPTION_KEY", "")
+
 	// Docker update configuration (for self-update capability).
 	DockerComposeDir      = getEnv("DOCKER_COMPOSE_DIR", "")
 	APIServiceName        = getEnv("API_SERVICE_NAME", "lattice-api")

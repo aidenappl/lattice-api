@@ -56,6 +56,27 @@ func Init() {
 	_, _ = db.Exec("ALTER TABLE containers ADD COLUMN depends_on TEXT DEFAULT NULL")
 	_, _ = db.Exec("ALTER TABLE stacks ADD COLUMN placement_constraints TEXT DEFAULT NULL")
 
+	// Auto-create global_env_vars table if it doesn't exist
+	_, _ = db.Exec("CREATE TABLE IF NOT EXISTS global_env_vars (" +
+		"id INT AUTO_INCREMENT PRIMARY KEY," +
+		"`key` VARCHAR(255) NOT NULL UNIQUE," +
+		"encrypted_value TEXT NOT NULL," +
+		"is_secret BOOLEAN DEFAULT FALSE," +
+		"updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP," +
+		"inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+
+	// Auto-create deploy_tokens table if it doesn't exist
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS deploy_tokens (
+		id INT AUTO_INCREMENT PRIMARY KEY,
+		stack_id INT NOT NULL,
+		name VARCHAR(255) NOT NULL,
+		token_hash VARCHAR(255) NOT NULL,
+		last_used_at TIMESTAMP NULL DEFAULT NULL,
+		active BOOLEAN DEFAULT TRUE,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		INDEX idx_deploy_tokens_hash (token_hash))`)
+
 	// Auto-create webhook_configs table if it doesn't exist
 	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS webhook_configs (
 		id INT AUTO_INCREMENT PRIMARY KEY,
@@ -64,6 +85,18 @@ func Init() {
 		events TEXT NOT NULL,
 		active BOOLEAN DEFAULT TRUE,
 		secret VARCHAR(255) DEFAULT NULL,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`)
+
+	// Auto-create templates table if it doesn't exist
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS templates (
+		id INT AUTO_INCREMENT PRIMARY KEY,
+		name VARCHAR(255) NOT NULL,
+		description TEXT DEFAULT NULL,
+		config LONGTEXT NOT NULL,
+		created_by INT DEFAULT NULL,
+		active BOOLEAN DEFAULT TRUE,
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 		inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`)
