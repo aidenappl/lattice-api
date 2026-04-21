@@ -40,6 +40,7 @@ func HandleGetSSOConfig(w http.ResponseWriter, r *http.Request) {
 		"user_identifier": cfg.UserIdentifier,
 		"button_label":    cfg.ButtonLabel,
 		"auto_provision":  cfg.AutoProvision,
+		"post_login_url":  cfg.PostLoginURL,
 	}, "SSO configuration")
 }
 
@@ -59,6 +60,7 @@ func HandleUpdateSSOConfig(w http.ResponseWriter, r *http.Request) {
 		UserIdentifier *string `json:"user_identifier"`
 		ButtonLabel    *string `json:"button_label"`
 		AutoProvision  *bool   `json:"auto_provision"`
+		PostLoginURL   *string `json:"post_login_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		responder.BadBody(w, err)
@@ -102,6 +104,7 @@ func HandleUpdateSSOConfig(w http.ResponseWriter, r *http.Request) {
 	setIf("sso.user_identifier", body.UserIdentifier)
 	setIf("sso.button_label", body.ButtonLabel)
 	setBoolIf("sso.auto_provision", body.AutoProvision)
+	setIf("sso.post_login_url", body.PostLoginURL)
 
 	logAudit(r, "update", "sso_config", nil, nil)
 

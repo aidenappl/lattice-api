@@ -37,6 +37,7 @@ type SSOConfig struct {
 	UserIdentifier string
 	ButtonLabel    string
 	AutoProvision  bool
+	PostLoginURL   string // frontend URL to redirect to after SSO login
 }
 
 func or(a, b string) string {
@@ -65,6 +66,7 @@ func LoadConfig() *SSOConfig {
 			UserIdentifier: env.SSOUserIdentifier,
 			ButtonLabel:    env.SSOButtonLabel,
 			AutoProvision:  env.SSOAutoProvision,
+			PostLoginURL:   env.SSOPostLoginURL,
 		}
 	}
 
@@ -80,6 +82,7 @@ func LoadConfig() *SSOConfig {
 		UserIdentifier: or(settings["sso.user_identifier"], "email"),
 		ButtonLabel:    or(settings["sso.button_label"], "Sign in with SSO"),
 		AutoProvision:  settings["sso.auto_provision"] != "false",
+		PostLoginURL:   or(settings["sso.post_login_url"], env.SSOPostLoginURL),
 	}
 
 	// Decrypt client secret from DB

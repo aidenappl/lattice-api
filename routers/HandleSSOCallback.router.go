@@ -126,6 +126,11 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 
 	logAudit(r, "sso_login", "user", intPtr(user.ID), strPtr(email))
 
-	// Redirect to dashboard
-	http.Redirect(w, r, "/", http.StatusFound)
+	// Redirect to frontend dashboard
+	redirectTo := ssoCfg().PostLoginURL
+	if redirectTo == "" || redirectTo == "/" {
+		// Default: try the Origin or Referer header, otherwise just "/"
+		redirectTo = "/"
+	}
+	http.Redirect(w, r, redirectTo, http.StatusFound)
 }

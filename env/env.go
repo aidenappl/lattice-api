@@ -31,6 +31,7 @@ var (
 	SSOUserIdentifier = getEnv("SSO_USER_IDENTIFIER", "email") // field in userinfo to match user
 	SSOButtonLabel    = getEnv("SSO_BUTTON_LABEL", "Sign in with SSO")
 	SSOAutoProvision  = getEnv("SSO_AUTO_PROVISION", "true") == "true" // auto-create users on first SSO login
+	SSOPostLoginURL   = getEnv("SSO_POST_LOGIN_URL", "/")             // URL to redirect to after SSO login (frontend URL)
 
 	// TLS (optional — for local HTTPS development)
 	TLSCert = getEnv("TLS_CERT", "")
