@@ -14,51 +14,50 @@ const csrfCookieName = "lattice-csrf"
 const csrfHeaderName = "X-CSRF-Token"
 
 // CSRFMiddleware implements the double-submit cookie pattern for CSRF protection.
-// It sets a lattice-csrf cookie on every response and validates that mutating requests
-// include a matching X-CSRF-Token header.
+// It sets a lattice-csrf cookie on first visit (not rotated per-request) and validates
+// that mutating requests include a matching X-CSRF-Token header.
 func CSRFMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip CSRF validation for safe methods
-		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		// Ensure CSRF cookie exists (set on first visit, not rotated per-request)
+		if _, err := r.Cookie(csrfCookieName); err != nil {
 			setCSRFCookie(w)
+		}
+
+		// Skip validation for safe methods
+		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Skip CSRF for Bearer token auth (API clients are not vulnerable to CSRF)
-		authHeader := r.Header.Get("Authorization")
-		if strings.HasPrefix(authHeader, "Bearer ") {
+		// Skip for Bearer token auth
+		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Skip CSRF for exempt paths
+		// Skip exempt paths
 		path := r.URL.Path
 		if path == "/auth/login" || path == "/auth/refresh" || path == "/ws/worker" {
-			setCSRFCookie(w)
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Validate CSRF token: header must match cookie
+		// Validate
 		cookie, err := r.Cookie(csrfCookieName)
 		if err != nil || cookie.Value == "" {
-			http.Error(w, `{"error":"missing CSRF cookie"}`, http.StatusForbidden)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"success":false,"error":"csrf_error","error_message":"missing CSRF cookie","error_code":4030}`))
 			return
 		}
-
 		headerToken := r.Header.Get(csrfHeaderName)
-		if headerToken == "" {
-			http.Error(w, `{"error":"missing CSRF token header"}`, http.StatusForbidden)
+		if headerToken == "" || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(headerToken)) != 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"success":false,"error":"csrf_error","error_message":"CSRF token mismatch","error_code":4031}`))
 			return
 		}
 
-		if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(headerToken)) != 1 {
-			http.Error(w, `{"error":"CSRF token mismatch"}`, http.StatusForbidden)
-			return
-		}
-
-		setCSRFCookie(w)
 		next.ServeHTTP(w, r)
 	})
 }
@@ -72,9 +71,10 @@ func setCSRFCookie(w http.ResponseWriter) {
 		Name:     csrfCookieName,
 		Value:    token,
 		Path:     "/",
+		Domain:   env.CookieDomain,
 		HttpOnly: false, // JavaScript needs to read this
 		Secure:   secure,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: http.SameSiteLaxMode,
 	})
 }
 

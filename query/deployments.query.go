@@ -155,11 +155,21 @@ func UpdateDeploymentStatus(engine db.Queryable, id int, status string) error {
 }
 
 func ApproveDeployment(engine db.Queryable, id int, approvedBy int) error {
-	_, err := engine.Exec(
+	result, err := engine.Exec(
 		"UPDATE deployments SET status = 'approved', approved_by = ? WHERE id = ? AND status = 'pending'",
 		approvedBy, id,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("deployment not found or not in pending status")
+	}
+	return nil
 }
 
 // Deployment Logs

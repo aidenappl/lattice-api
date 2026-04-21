@@ -184,7 +184,7 @@ func main() {
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
-			go handleContainerHealthStatus(msg.Payload)
+			safeGo("container-health", func() { handleContainerHealthStatus(msg.Payload) })
 
 		case socket.MsgContainerSync:
 			adminHub.BroadcastJSON(map[string]any{
@@ -192,7 +192,7 @@ func main() {
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
-			go handleContainerSync(msg.Payload)
+			safeGo("container-sync", func() { handleContainerSync(msg.Payload) })
 
 		case socket.MsgContainerLogs:
 			adminHub.BroadcastJSON(map[string]any{
@@ -200,7 +200,7 @@ func main() {
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
-			go handleContainerLog(session.WorkerID, msg.Payload)
+			safeGo("container-log", func() { handleContainerLog(session.WorkerID, msg.Payload) })
 
 		case socket.MsgLifecycleLog:
 			handleLifecycleLog(session.WorkerID, msg.Payload)
@@ -357,6 +357,7 @@ func main() {
 	authRouter := r.PathPrefix("/auth").Subrouter()
 	authRouter.Use(middleware.DualAuthMiddleware)
 	authRouter.HandleFunc("/self", routers.HandleAuthSelf).Methods(http.MethodGet)
+	authRouter.HandleFunc("/logout", routers.HandleLogout).Methods(http.MethodPost)
 
 	// Admin routes (protected)
 	admin := r.PathPrefix("/admin").Subrouter()
@@ -511,6 +512,17 @@ func main() {
 		log.Fatal("server forced to shutdown: ", err)
 	}
 	log.Println("server stopped")
+}
+
+func safeGo(name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[PANIC] %s: %v", name, r)
+			}
+		}()
+		fn()
+	}()
 }
 
 func handleHeartbeatMetrics(workerID int, payload map[string]any) {

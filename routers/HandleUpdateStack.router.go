@@ -33,6 +33,14 @@ func HandleUpdateStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if body.Status != nil {
+		validStatuses := map[string]bool{"active": true, "stopped": true, "deploying": true, "deployed": true, "failed": true, "error": true}
+		if !validStatuses[*body.Status] {
+			responder.SendError(w, http.StatusBadRequest, "invalid status value")
+			return
+		}
+	}
+
 	stack, err := query.UpdateStack(db.DB, id, query.UpdateStackRequest{
 		Name:               body.Name,
 		Description:        body.Description,

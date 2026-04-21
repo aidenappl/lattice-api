@@ -40,6 +40,10 @@ var (
 	// CORS
 	AllowedOrigins = getEnv("ALLOWED_ORIGINS", "")
 
+	// Cookie domain (e.g. ".appleby.cloud") — required when frontend and API
+	// are on different subdomains so that cookies are readable cross-subdomain.
+	CookieDomain = getEnv("COOKIE_DOMAIN", "")
+
 	// Docker update configuration (for self-update capability).
 	DockerComposeDir      = getEnv("DOCKER_COMPOSE_DIR", "")
 	APIServiceName        = getEnv("API_SERVICE_NAME", "lattice-api")

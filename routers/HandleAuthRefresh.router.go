@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/jwt"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
@@ -38,9 +39,10 @@ func HandleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 		Name:     "lattice-access-token",
 		Value:    accessToken,
 		Path:     "/",
+		Domain:   env.CookieDomain,
 		Expires:  accessExpiry,
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   env.Environment == "production",
 		SameSite: http.SameSiteLaxMode,
 	})
 

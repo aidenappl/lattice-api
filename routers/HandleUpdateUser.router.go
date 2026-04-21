@@ -28,6 +28,14 @@ func HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if body.Role != nil {
+		validRoles := map[string]bool{"admin": true, "editor": true, "viewer": true}
+		if !validRoles[*body.Role] {
+			responder.SendError(w, http.StatusBadRequest, "role must be admin, editor, or viewer")
+			return
+		}
+	}
+
 	user, err := query.UpdateUser(db.DB, id, query.UpdateUserRequest{
 		Name:   body.Name,
 		Role:   body.Role,

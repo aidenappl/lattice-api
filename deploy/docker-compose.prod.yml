@@ -32,6 +32,7 @@ services:
       PORT: "8000"
       ENVIRONMENT: "production"
       ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-https://lattice.appleby.cloud}"
+      COOKIE_DOMAIN: "${COOKIE_DOMAIN:-.appleby.cloud}"
       TLS_CERT: ""
       TLS_KEY: ""
       # Self-update: points to the host directory containing this compose file

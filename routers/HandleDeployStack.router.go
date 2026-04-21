@@ -41,6 +41,11 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if stack.Status == "deploying" {
+		responder.SendError(w, http.StatusConflict, "deployment already in progress for this stack")
+		return
+	}
+
 	if stack.WorkerID == nil {
 		responder.SendError(w, http.StatusBadRequest, "stack has no worker assigned")
 		return

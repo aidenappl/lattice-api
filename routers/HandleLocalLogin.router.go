@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/jwt"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
@@ -63,13 +64,17 @@ func HandleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	secure := env.Environment == "production"
+	domain := env.CookieDomain
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     "lattice-access-token",
 		Value:    accessToken,
 		Path:     "/",
+		Domain:   domain,
 		Expires:  accessExpiry,
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -77,9 +82,10 @@ func HandleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		Name:     "lattice-refresh-token",
 		Value:    refreshToken,
 		Path:     "/",
+		Domain:   domain,
 		Expires:  refreshExpiry,
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -87,9 +93,10 @@ func HandleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		Name:     "logged_in",
 		Value:    "1",
 		Path:     "/",
+		Domain:   domain,
 		Expires:  time.Now().Add(7 * 24 * time.Hour),
 		HttpOnly: false,
-		Secure:   true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 
