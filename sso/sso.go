@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/aidenappl/lattice-api/crypto"
@@ -18,10 +17,7 @@ import (
 	"github.com/aidenappl/lattice-api/query"
 )
 
-var (
-	stateStore   = make(map[string]time.Time)
-	stateStoreMu sync.Mutex
-)
+// State is now stored in the DB via the settings table, so it survives restarts.
 
 // SSOConfig holds all SSO configuration values.
 type SSOConfig struct {
@@ -72,17 +68,17 @@ func LoadConfig() *SSOConfig {
 
 	cfg := &SSOConfig{
 		Enabled:        settings["sso.enabled"] == "true",
-		ClientID:       settings["sso.client_id"],
-		AuthorizeURL:   settings["sso.authorize_url"],
-		TokenURL:       settings["sso.token_url"],
-		UserInfoURL:    settings["sso.userinfo_url"],
-		RedirectURL:    settings["sso.redirect_url"],
-		LogoutURL:      settings["sso.logout_url"],
-		Scopes:         or(settings["sso.scopes"], "openid email profile"),
-		UserIdentifier: or(settings["sso.user_identifier"], "email"),
+		ClientID:       strings.TrimSpace(settings["sso.client_id"]),
+		AuthorizeURL:   strings.TrimSpace(settings["sso.authorize_url"]),
+		TokenURL:       strings.TrimSpace(settings["sso.token_url"]),
+		UserInfoURL:    strings.TrimSpace(settings["sso.userinfo_url"]),
+		RedirectURL:    strings.TrimSpace(settings["sso.redirect_url"]),
+		LogoutURL:      strings.TrimSpace(settings["sso.logout_url"]),
+		Scopes:         strings.TrimSpace(or(settings["sso.scopes"], "openid email profile")),
+		UserIdentifier: strings.TrimSpace(or(settings["sso.user_identifier"], "email")),
 		ButtonLabel:    or(settings["sso.button_label"], "Sign in with SSO"),
 		AutoProvision:  settings["sso.auto_provision"] != "false",
-		PostLoginURL:   or(settings["sso.post_login_url"], env.SSOPostLoginURL),
+		PostLoginURL:   strings.TrimSpace(or(settings["sso.post_login_url"], env.SSOPostLoginURL)),
 	}
 
 	// Decrypt client secret from DB
@@ -135,34 +131,45 @@ func Config() map[string]any {
 	}
 }
 
-// generateState creates a random state parameter and stores it for validation
+// generateState creates a random state parameter and stores it in the DB for validation.
+// Using the DB (instead of in-memory) ensures states survive API restarts.
 func generateState() string {
 	b := make([]byte, 32)
 	rand.Read(b)
 	state := base64.URLEncoding.EncodeToString(b)
 
-	stateStoreMu.Lock()
-	stateStore[state] = time.Now().Add(10 * time.Minute)
-	// Cleanup old states
-	for k, v := range stateStore {
-		if time.Now().After(v) {
-			delete(stateStore, k)
+	// Store with expiry timestamp as value
+	expiry := time.Now().Add(10 * time.Minute).Format(time.RFC3339)
+	_ = query.SetSetting(db.DB, "sso_state:"+state, expiry)
+
+	// Cleanup expired states (best-effort)
+	go func() {
+		states, _ := query.GetSettingsByPrefix(db.DB, "sso_state:")
+		for k, v := range states {
+			if t, err := time.Parse(time.RFC3339, v); err == nil && time.Now().After(t) {
+				_ = query.DeleteSetting(db.DB, k)
+			}
 		}
-	}
-	stateStoreMu.Unlock()
+	}()
 
 	return state
 }
 
 // ValidateState checks that a state parameter is valid and not expired, then removes it.
 func ValidateState(state string) bool {
-	stateStoreMu.Lock()
-	defer stateStoreMu.Unlock()
-	expiry, exists := stateStore[state]
-	if !exists || time.Now().After(expiry) {
+	key := "sso_state:" + state
+	val, err := query.GetSetting(db.DB, key)
+	if err != nil || val == "" {
 		return false
 	}
-	delete(stateStore, state)
+	// Delete immediately (one-time use)
+	_ = query.DeleteSetting(db.DB, key)
+
+	// Check expiry
+	expiry, err := time.Parse(time.RFC3339, val)
+	if err != nil || time.Now().After(expiry) {
+		return false
+	}
 	return true
 }
 

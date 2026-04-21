@@ -67,10 +67,10 @@ func HandleUpdateSSOConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Helper to set a string setting if provided
+	// Helper to set a string setting if provided (trims whitespace)
 	setIf := func(key string, val *string) {
 		if val != nil {
-			_ = query.SetSetting(db.DB, key, *val)
+			_ = query.SetSetting(db.DB, key, strings.TrimSpace(*val))
 		}
 	}
 	// Helper to set a bool setting if provided
