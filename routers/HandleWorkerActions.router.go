@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/query"
@@ -56,6 +57,12 @@ func (h *WorkerActionHandler) sendWorkerAction(w http.ResponseWriter, r *http.Re
 	}); err != nil {
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send %s command: %v", label, err))
 		return
+	}
+
+	// Persist pending action for trackable actions
+	if action == socket.MsgUpgradeRunner || action == socket.MsgRebootOS {
+		actionJSON := fmt.Sprintf(`{"action":"%s","status":"accepted","started_at":"%s"}`, action, time.Now().UTC().Format(time.RFC3339))
+		_ = query.SetWorkerPendingAction(db.DB, workerID, &actionJSON)
 	}
 
 	logAudit(r, label, "worker", intPtr(workerID), nil)

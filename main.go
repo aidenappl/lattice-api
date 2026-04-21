@@ -125,6 +125,8 @@ func main() {
 			// Persist runner_version if included so it stays current after upgrades.
 			if rv, ok := msg.Payload["runner_version"].(string); ok && rv != "" {
 				_ = query.UpdateWorkerRunnerVersion(db.DB, session.WorkerID, rv)
+				// Clear any pending upgrade action — runner is alive and reporting its version
+				_ = query.SetWorkerPendingAction(db.DB, session.WorkerID, nil)
 			}
 			handleHeartbeatMetrics(session.WorkerID, msg.Payload)
 			adminHub.BroadcastJSON(map[string]any{
@@ -216,6 +218,18 @@ func main() {
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
+			// Persist action status and clear on completion
+			actionName, _ := msg.Payload["action"].(string)
+			actionStatus, _ := msg.Payload["status"].(string)
+			actionMessage, _ := msg.Payload["message"].(string)
+			if actionName == "upgrade_runner" || actionName == "reboot_os" {
+				if actionStatus == "success" || actionStatus == "failed" || actionStatus == "error" {
+					_ = query.SetWorkerPendingAction(db.DB, session.WorkerID, nil)
+				} else {
+					actionJSON := fmt.Sprintf(`{"action":"%s","status":"%s","message":"%s","started_at":"%s"}`, actionName, actionStatus, actionMessage, time.Now().UTC().Format(time.RFC3339))
+					_ = query.SetWorkerPendingAction(db.DB, session.WorkerID, &actionJSON)
+				}
+			}
 
 		case socket.MsgWorkerShutdown:
 			reason, _ := msg.Payload["reason"].(string)

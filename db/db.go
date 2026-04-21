@@ -50,6 +50,9 @@ func Init() {
 	db.SetConnMaxLifetime(5 * time.Minute) // Recycle connections
 
 	DB = db
+
+	// Auto-add pending_action column if it doesn't exist (ignore error if already present)
+	_, _ = db.Exec("ALTER TABLE workers ADD COLUMN pending_action TEXT DEFAULT NULL")
 }
 
 type Queryable interface {

@@ -14,6 +14,7 @@ type Worker struct {
 	RunnerVersion   *string    `json:"runner_version"`
 	LastHeartbeatAt *time.Time `json:"last_heartbeat_at"`
 	Labels          *string    `json:"labels"`
+	PendingAction   *string    `json:"pending_action"`
 	Active          bool       `json:"active"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 	InsertedAt      time.Time  `json:"inserted_at"`

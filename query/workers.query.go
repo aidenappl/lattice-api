@@ -21,6 +21,7 @@ var workerColumns = []string{
 	"workers.runner_version",
 	"workers.last_heartbeat_at",
 	"workers.labels",
+	"workers.pending_action",
 	"workers.active",
 	"workers.updated_at",
 	"workers.inserted_at",
@@ -40,6 +41,7 @@ func scanWorker(row scanner) (*structs.Worker, error) {
 		&w.RunnerVersion,
 		&w.LastHeartbeatAt,
 		&w.Labels,
+		&w.PendingAction,
 		&w.Active,
 		&w.UpdatedAt,
 		&w.InsertedAt,
@@ -217,6 +219,11 @@ func UpdateWorkerRunnerVersion(engine db.Queryable, workerID int, runnerVersion 
 		"UPDATE workers SET runner_version = ? WHERE id = ?",
 		runnerVersion, workerID,
 	)
+	return err
+}
+
+func SetWorkerPendingAction(engine db.Queryable, workerID int, action *string) error {
+	_, err := engine.Exec("UPDATE workers SET pending_action = ? WHERE id = ?", action, workerID)
 	return err
 }
 

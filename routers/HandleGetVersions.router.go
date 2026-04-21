@@ -25,6 +25,7 @@ func HandleGetVersions(w http.ResponseWriter, r *http.Request) {
 		RunnerVersion *string `json:"runner_version"`
 		Status        string  `json:"status"`
 		Outdated      bool    `json:"outdated"`
+		PendingAction *string `json:"pending_action"`
 	}
 
 	latestRunner := versions.LatestRunner()
@@ -46,6 +47,7 @@ func HandleGetVersions(w http.ResponseWriter, r *http.Request) {
 			RunnerVersion: wk.RunnerVersion,
 			Status:        wk.Status,
 			Outdated:      outdated,
+			PendingAction: wk.PendingAction,
 		})
 	}
 
