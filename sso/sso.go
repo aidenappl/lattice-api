@@ -98,6 +98,25 @@ func LoadConfig() *SSOConfig {
 	return cfg
 }
 
+// PostLoginRedirectURL returns the URL to redirect users to after SSO login.
+// If PostLoginURL is configured, it uses that. Otherwise it derives a default
+// from the RedirectURL by stripping the callback path (e.g.,
+// "https://api.example.com/auth/sso/callback" -> "https://api.example.com/").
+func (c *SSOConfig) PostLoginRedirectURL() string {
+	if c.PostLoginURL != "" && c.PostLoginURL != "/" {
+		return c.PostLoginURL
+	}
+	// Derive from RedirectURL (the SSO callback URL on this API)
+	if c.RedirectURL != "" {
+		if u, err := url.Parse(c.RedirectURL); err == nil {
+			u.Path = "/"
+			u.RawQuery = ""
+			return u.String()
+		}
+	}
+	return "/"
+}
+
 func IsConfigured() bool {
 	cfg := LoadConfig()
 	return cfg.Enabled && cfg.ClientID != "" && cfg.AuthorizeURL != "" && cfg.TokenURL != ""
@@ -264,23 +283,44 @@ func GetUserIdentifier(userInfo map[string]any) string {
 
 // GetUserName extracts a display name from userinfo
 func GetUserName(userInfo map[string]any) string {
-	if name, ok := userInfo["name"]; ok && fmt.Sprint(name) != "" {
-		return fmt.Sprint(name)
+	if name, ok := userInfo["name"]; ok {
+		s := fmt.Sprint(name)
+		if s != "" && s != "<nil>" {
+			return s
+		}
 	}
 	if given, ok := userInfo["given_name"]; ok {
-		name := fmt.Sprint(given)
-		if family, ok := userInfo["family_name"]; ok {
-			name += " " + fmt.Sprint(family)
+		s := fmt.Sprint(given)
+		if s != "" && s != "<nil>" {
+			name := s
+			if family, ok := userInfo["family_name"]; ok {
+				fs := fmt.Sprint(family)
+				if fs != "" && fs != "<nil>" {
+					name += " " + fs
+				}
+			}
+			return strings.TrimSpace(name)
 		}
-		return strings.TrimSpace(name)
+	}
+	// Fallback: use the part before @ in the email
+	if email := GetUserEmail(userInfo); email != "" {
+		if at := strings.Index(email, "@"); at > 0 {
+			return email[:at]
+		}
 	}
 	return ""
 }
 
-// GetUserEmail extracts email from userinfo
+// GetUserEmail extracts email from userinfo, trying common field names.
+// Some providers use "preferred_username" or "upn" instead of "email".
 func GetUserEmail(userInfo map[string]any) string {
-	if email, ok := userInfo["email"]; ok {
-		return fmt.Sprint(email)
+	for _, field := range []string{"email", "preferred_username", "upn", "mail"} {
+		if val, ok := userInfo[field]; ok {
+			s := fmt.Sprint(val)
+			if s != "" && s != "<nil>" && strings.Contains(s, "@") {
+				return s
+			}
+		}
 	}
 	return ""
 }

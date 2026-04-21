@@ -78,8 +78,7 @@ func RateLimitMiddleware(next http.Handler) http.Handler {
 		// Skip rate limiting for non-API paths
 		if path == "/healthcheck" || strings.HasPrefix(path, "/ws/") ||
 			path == "/auth/sso/config" || path == "/auth/sso/login" ||
-			path == "/auth/sso/callback" || path == "/version" ||
-			path == "/install/runner" {
+			path == "/version" || path == "/install/runner" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -98,7 +97,7 @@ func RateLimitMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Auth endpoints: strict limit (brute-force protection)
-		if path == "/auth/login" || path == "/auth/refresh" {
+		if path == "/auth/login" || path == "/auth/refresh" || path == "/auth/sso/callback" {
 			if !authLimiter.allow(ip, 20, time.Minute) {
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Retry-After", "60")

@@ -2,6 +2,8 @@ package routers
 
 import (
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/aidenappl/lattice-api/db"
@@ -12,36 +14,64 @@ import (
 	"github.com/aidenappl/lattice-api/sso"
 )
 
+// userInfoKeys returns a comma-separated list of keys from a userinfo map,
+// useful for debugging when expected fields (like email) are missing.
+func userInfoKeys(m map[string]any) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return strings.Join(keys, ", ")
+}
+
 // ssoCfg returns the current SSO configuration from DB/env.
 func ssoCfg() *sso.SSOConfig { return sso.LoadConfig() }
 
 func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
-	// Validate state
-	state := r.URL.Query().Get("state")
-	if !sso.ValidateState(state) {
-		http.Error(w, "invalid or expired state parameter", http.StatusBadRequest)
-		return
+	cfg := ssoCfg()
+
+	// Helper: redirect to the frontend login page with an error code.
+	// Derives the frontend URL from the SSO config.
+	loginErrorURL := func(errorCode string) string {
+		base := cfg.PostLoginRedirectURL()
+		// Ensure we redirect to /login on the frontend, not /
+		if u, err := url.Parse(base); err == nil {
+			u.Path = "/login"
+			u.RawQuery = "error=" + url.QueryEscape(errorCode)
+			return u.String()
+		}
+		return "/login?error=" + url.QueryEscape(errorCode)
 	}
 
-	// Check for error from provider
+	// Check for error from provider (before state validation — some providers
+	// return errors without a valid state parameter)
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
 		desc := r.URL.Query().Get("error_description")
 		logger.Error("sso", "provider returned error", logger.F{"error": errParam, "description": desc})
-		http.Redirect(w, r, "/login?error=sso_denied", http.StatusFound)
+		http.Redirect(w, r, loginErrorURL("sso_denied"), http.StatusFound)
+		return
+	}
+
+	// Validate state
+	state := r.URL.Query().Get("state")
+	if !sso.ValidateState(state) {
+		logger.Error("sso", "invalid or expired state parameter")
+		http.Redirect(w, r, loginErrorURL("sso_state_expired"), http.StatusFound)
 		return
 	}
 
 	// Exchange code for tokens
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		http.Error(w, "missing authorization code", http.StatusBadRequest)
+		logger.Error("sso", "callback missing authorization code")
+		http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
 		return
 	}
 
 	tokenResp, err := sso.ExchangeCode(code)
 	if err != nil {
 		logger.Error("sso", "token exchange failed", logger.F{"error": err})
-		http.Redirect(w, r, "/login?error=sso_failed", http.StatusFound)
+		http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
 		return
 	}
 
@@ -49,15 +79,15 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	userInfo, err := sso.FetchUserInfo(tokenResp.AccessToken)
 	if err != nil {
 		logger.Error("sso", "userinfo fetch failed", logger.F{"error": err})
-		http.Redirect(w, r, "/login?error=sso_failed", http.StatusFound)
+		http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
 		return
 	}
 
 	// Extract user details
 	email := sso.GetUserEmail(userInfo)
 	if email == "" {
-		logger.Error("sso", "no email in userinfo response")
-		http.Redirect(w, r, "/login?error=sso_no_email", http.StatusFound)
+		logger.Error("sso", "no email in userinfo response", logger.F{"userinfo_keys": userInfoKeys(userInfo)})
+		http.Redirect(w, r, loginErrorURL("sso_no_email"), http.StatusFound)
 		return
 	}
 	name := sso.GetUserName(userInfo)
@@ -65,9 +95,9 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	// Find or create user
 	user, err := query.GetUserByEmail(db.DB, email)
 	if err != nil || user == nil {
-		if !ssoCfg().AutoProvision {
+		if !cfg.AutoProvision {
 			logger.Info("sso", "user not found and auto-provisioning disabled", logger.F{"email": email})
-			http.Redirect(w, r, "/login?error=sso_no_account", http.StatusFound)
+			http.Redirect(w, r, loginErrorURL("sso_no_account"), http.StatusFound)
 			return
 		}
 		// Auto-create with viewer role
@@ -79,14 +109,14 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			logger.Error("sso", "failed to create user", logger.F{"email": email, "error": err})
-			http.Redirect(w, r, "/login?error=sso_failed", http.StatusFound)
+			http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
 			return
 		}
 		logger.Info("sso", "auto-provisioned user", logger.F{"email": email, "user_id": user.ID})
 	}
 
 	if !user.Active {
-		http.Redirect(w, r, "/login?error=account_disabled", http.StatusFound)
+		http.Redirect(w, r, loginErrorURL("account_disabled"), http.StatusFound)
 		return
 	}
 
@@ -94,13 +124,13 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	accessToken, accessExpiry, err := jwt.NewAccessToken(user.ID)
 	if err != nil {
 		logger.Error("sso", "failed to create access token", logger.F{"error": err})
-		http.Redirect(w, r, "/login?error=sso_failed", http.StatusFound)
+		http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
 		return
 	}
 	refreshToken, refreshExpiry, err := jwt.NewRefreshToken(user.ID)
 	if err != nil {
 		logger.Error("sso", "failed to create refresh token", logger.F{"error": err})
-		http.Redirect(w, r, "/login?error=sso_failed", http.StatusFound)
+		http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
 		return
 	}
 
@@ -127,10 +157,5 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	logAudit(r, "sso_login", "user", intPtr(user.ID), strPtr(email))
 
 	// Redirect to frontend dashboard
-	redirectTo := ssoCfg().PostLoginURL
-	if redirectTo == "" || redirectTo == "/" {
-		// Default: try the Origin or Referer header, otherwise just "/"
-		redirectTo = "/"
-	}
-	http.Redirect(w, r, redirectTo, http.StatusFound)
+	http.Redirect(w, r, cfg.PostLoginRedirectURL(), http.StatusFound)
 }
