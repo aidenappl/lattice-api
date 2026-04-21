@@ -1,13 +1,13 @@
 package watcher
 
 import (
-	"log"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/registry"
 	"github.com/aidenappl/lattice-api/webhooks"
@@ -34,7 +34,7 @@ func Start() {
 			poll()
 		}
 	}()
-	log.Println("[watcher] image version watcher started (first poll in 2 minutes)")
+	logger.Info("watcher", "image version watcher started (first poll in 2 minutes)")
 }
 
 func poll() {
@@ -108,7 +108,7 @@ func poll() {
 			prev, exists := lastKnownDigests[cacheKey]
 			if exists && prev != digest {
 				// Image changed
-				log.Printf("[watcher] image change detected for %s in stack %q", cacheKey, stack.Name)
+				logger.Info("watcher", "image change detected", logger.F{"image": cacheKey, "stack": stack.Name})
 
 				webhooks.Fire("image.updated", map[string]any{
 					"stack_id":   stack.ID,
@@ -119,7 +119,7 @@ func poll() {
 				})
 
 				if stack.AutoDeploy {
-					log.Printf("[watcher] auto-deploy requested for stack %q (auto_deploy=true)", stack.Name)
+					logger.Info("watcher", "auto-deploy requested", logger.F{"stack": stack.Name})
 					webhooks.Fire("image.auto_deploy_requested", map[string]any{
 						"stack_id":   stack.ID,
 						"stack_name": stack.Name,

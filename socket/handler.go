@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"time"
 
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/gorilla/websocket"
 )
 
@@ -93,7 +93,7 @@ func (h *WorkerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := h.Upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("socket: upgrade failed for worker=%d: %v", workerID, err)
+		logger.Error("socket", "upgrade failed", logger.F{"worker_id": workerID, "error": err})
 		return
 	}
 
@@ -131,7 +131,7 @@ func (h *WorkerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	if err := h.Hub.SendJSONToWorker(workerID, hello); err != nil {
-		log.Printf("socket: failed to queue connected message for worker=%d: %v", workerID, err)
+		logger.Warn("socket", "failed to queue connected message", logger.F{"worker_id": workerID, "error": err})
 	}
 
 	go h.writePump(ctx, session)
@@ -173,14 +173,14 @@ func (h *WorkerHandler) writePump(ctx context.Context, session *WorkerSession) {
 			}
 
 			if err := session.Conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-				log.Printf("socket: write failed for worker=%d: %v", session.WorkerID, err)
+				logger.Error("socket", "write failed", logger.F{"worker_id": session.WorkerID, "error": err})
 				return
 			}
 
 		case <-ticker.C:
 			_ = session.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := session.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				log.Printf("socket: ping failed for worker=%d: %v", session.WorkerID, err)
+				logger.Warn("socket", "ping failed", logger.F{"worker_id": session.WorkerID, "error": err})
 				return
 			}
 		}
@@ -200,7 +200,7 @@ func (h *WorkerHandler) readPump(ctx context.Context, session *WorkerSession) {
 		messageType, payload, err := session.Conn.ReadMessage()
 		if err != nil {
 			if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-				log.Printf("socket: read error for worker=%d: %v", session.WorkerID, err)
+				logger.Warn("socket", "read error", logger.F{"worker_id": session.WorkerID, "error": err})
 			}
 			return
 		}
@@ -215,7 +215,7 @@ func (h *WorkerHandler) readPump(ctx context.Context, session *WorkerSession) {
 		var msg IncomingMessage
 		msg.Raw = json.RawMessage(payload)
 		if err := json.Unmarshal(payload, &msg); err != nil {
-			log.Printf("socket: invalid json from worker=%d: %v", session.WorkerID, err)
+			logger.Warn("socket", "invalid JSON from worker", logger.F{"worker_id": session.WorkerID, "error": err})
 			continue
 		}
 

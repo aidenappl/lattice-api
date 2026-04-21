@@ -17,6 +17,7 @@ import (
 	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/env"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/retention"
@@ -39,7 +40,10 @@ var installRunnerScript []byte
 var Version = "dev"
 
 func main() {
-	fmt.Printf("Lattice API %s\n\n", Version)
+	// Initialize structured logger
+	logger.Init(env.LogLevel, env.LogFormat)
+
+	logger.Info("server", fmt.Sprintf("Lattice API %s starting", Version))
 	routers.InstallScript = installRunnerScript
 	routers.APIVersion = Version
 
@@ -71,9 +75,9 @@ func main() {
 
 	// 3. SSO setup (optional)
 	if sso.IsConfigured() {
-		fmt.Println("SSO: configured")
+		logger.Info("sso", "configured")
 	} else {
-		fmt.Println("SSO: not configured (local auth only)")
+		logger.Info("sso", "not configured (local auth only)")
 	}
 
 	// 4. WebSocket hubs
@@ -86,7 +90,7 @@ func main() {
 	}
 
 	workerHandler.OnConnect = func(session *socket.WorkerSession) {
-		log.Printf("worker=%d connected", session.WorkerID)
+		logger.Info("worker", "connected", logger.F{"worker_id": session.WorkerID})
 		_ = query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "online")
 		adminHub.BroadcastJSON(map[string]any{
 			"type":      "worker_connected",
@@ -95,7 +99,7 @@ func main() {
 	}
 
 	workerHandler.OnDisconnect = func(session *socket.WorkerSession, err error) {
-		log.Printf("worker=%d disconnected", session.WorkerID)
+		logger.Info("worker", "disconnected", logger.F{"worker_id": session.WorkerID})
 		_ = query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "offline")
 		adminHub.BroadcastJSON(map[string]any{
 			"type":      "worker_disconnected",
@@ -239,7 +243,7 @@ func main() {
 		case socket.MsgWorkerShutdown:
 			reason, _ := msg.Payload["reason"].(string)
 			message, _ := msg.Payload["message"].(string)
-			log.Printf("worker=%d shutting down gracefully: reason=%s", session.WorkerID, reason)
+			logger.Info("worker", "shutting down gracefully", logger.F{"worker_id": session.WorkerID, "reason": reason})
 			// Write lifecycle logs synchronously BEFORE broadcasting.
 			writeWorkerLifecycleLogs(session.WorkerID, "worker_shutdown", message)
 			adminHub.BroadcastJSON(map[string]any{
@@ -251,7 +255,7 @@ func main() {
 		case socket.MsgWorkerCrash:
 			goroutine, _ := msg.Payload["goroutine"].(string)
 			panicMsg, _ := msg.Payload["panic"].(string)
-			log.Printf("worker=%d CRASH in goroutine %q: %s", session.WorkerID, goroutine, panicMsg)
+			logger.Error("worker", "crash detected", logger.F{"worker_id": session.WorkerID, "goroutine": goroutine, "panic": panicMsg})
 			crashMsg := fmt.Sprintf("worker crashed: %s (goroutine: %s)", panicMsg, goroutine)
 			// Write lifecycle logs synchronously BEFORE broadcasting.
 			writeWorkerLifecycleLogs(session.WorkerID, "worker_crash", crashMsg)
@@ -553,12 +557,12 @@ func main() {
 
 	go func() {
 		if env.TLSCert != "" && env.TLSKey != "" {
-			fmt.Printf("Lattice API running (HTTPS) on port %s\n\n", env.Port)
+			logger.Info("server", "listening", logger.F{"port": env.Port, "tls": true})
 			if err := server.ListenAndServeTLS(env.TLSCert, env.TLSKey); err != nil && err != http.ErrServerClosed {
 				log.Fatal("server error: ", err)
 			}
 		} else {
-			fmt.Printf("Lattice API running on port %s\n\n", env.Port)
+			logger.Info("server", "listening", logger.F{"port": env.Port, "tls": false})
 			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Fatal("server error: ", err)
 			}
@@ -569,20 +573,20 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("shutting down server...")
+	logger.Info("server", "shutting down...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
 		log.Fatal("server forced to shutdown: ", err)
 	}
-	log.Println("server stopped")
+	logger.Info("server", "stopped")
 }
 
 func safeGo(name string, fn func()) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("[PANIC] %s: %v", name, r)
+				logger.Error("panic", fmt.Sprintf("%v", r), logger.F{"goroutine": name})
 			}
 		}()
 		fn()
@@ -633,7 +637,7 @@ func handleHeartbeatMetrics(workerID int, payload map[string]any) {
 	req.ProcessCount = extractInt("process_count")
 
 	if err := query.CreateMetrics(db.DB, req); err != nil {
-		log.Printf("failed to store heartbeat metrics for worker=%d: %v", workerID, err)
+		logger.Error("worker", "failed to store heartbeat metrics", logger.F{"worker_id": workerID, "error": err})
 	}
 }
 
@@ -671,7 +675,7 @@ func handleDeploymentProgress(payload map[string]any) {
 		logMsg = fmt.Sprintf("status=%s", status)
 	}
 
-	log.Printf("deploy[%d]: [%s] %s (stage=%v)", int(deploymentID), level, logMsg, stage)
+	logger.Info("deploy", logMsg, logger.F{"deployment_id": int(deploymentID), "level": level, "stage": stage})
 
 	// Store deployment log
 	if err := query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
@@ -680,7 +684,7 @@ func handleDeploymentProgress(payload map[string]any) {
 		Stage:        stage,
 		Message:      logMsg,
 	}); err != nil {
-		log.Printf("failed to store deployment log: %v", err)
+		logger.Error("deploy", "failed to store deployment log", logger.F{"error": err})
 	}
 
 	// Fire webhooks on deployment terminal states
@@ -700,7 +704,7 @@ func handleDeploymentProgress(payload map[string]any) {
 	// Update deployment status if it's a terminal/state-change status
 	if status == "deploying" || status == "deployed" || status == "failed" || status == "rolled_back" {
 		if err := query.UpdateDeploymentStatus(db.DB, int(deploymentID), status); err != nil {
-			log.Printf("failed to update deployment=%d status: %v", int(deploymentID), err)
+			logger.Error("deploy", "failed to update deployment status", logger.F{"deployment_id": int(deploymentID), "error": err})
 		}
 
 		// On terminal states, update stack status and all containers in the deployment
@@ -708,16 +712,16 @@ func handleDeploymentProgress(payload map[string]any) {
 			// Update stack status to match
 			dep, err := query.GetDeploymentByID(db.DB, int(deploymentID))
 			if err != nil {
-				log.Printf("failed to get deployment %d for stack status update: %v", int(deploymentID), err)
+				logger.Error("deploy", "failed to get deployment for stack status update", logger.F{"deployment_id": int(deploymentID), "error": err})
 			} else {
 				stackStatus := status
 				if status == "rolled_back" {
 					stackStatus = "failed"
 				}
 				if _, err := query.UpdateStack(db.DB, dep.StackID, query.UpdateStackRequest{Status: &stackStatus}); err != nil {
-					log.Printf("failed to update stack %d status to %q: %v", dep.StackID, stackStatus, err)
+					logger.Error("deploy", "failed to update stack status", logger.F{"stack_id": dep.StackID, "status": stackStatus, "error": err})
 				} else {
-					log.Printf("updated stack %d status to %q", dep.StackID, stackStatus)
+					logger.Info("deploy", "updated stack status", logger.F{"stack_id": dep.StackID, "status": stackStatus})
 				}
 			}
 
@@ -729,7 +733,7 @@ func handleDeploymentProgress(payload map[string]any) {
 				}
 				dcs, err := query.ListDeploymentContainers(db.DB, int(deploymentID))
 				if err != nil {
-					log.Printf("failed to list deployment containers for status update: %v", err)
+					logger.Error("deploy", "failed to list deployment containers for status update", logger.F{"deployment_id": int(deploymentID), "error": err})
 				} else if dcs != nil {
 					for _, dc := range *dcs {
 						s := containerStatus
@@ -772,7 +776,7 @@ func handleContainerStatus(workerID int, payload map[string]any) map[string]any 
 
 	c, err := query.GetContainerByName(db.DB, containerName)
 	if err != nil {
-		log.Printf("container status: could not find container %q: %v", containerName, err)
+		logger.Error("container", "could not find container", logger.F{"container_name": containerName, "error": err})
 		return enriched
 	}
 
@@ -789,9 +793,9 @@ func handleContainerStatus(workerID int, payload map[string]any) map[string]any 
 	}
 
 	if _, err := query.UpdateContainer(db.DB, c.ID, req); err != nil {
-		log.Printf("container status: failed to update %q to %s: %v", containerName, dbStatus, err)
+		logger.Error("container", "failed to update status", logger.F{"container_name": containerName, "status": dbStatus, "error": err})
 	} else {
-		log.Printf("container status: %s → %s", containerName, dbStatus)
+		logger.Info("container", "status updated", logger.F{"container_name": containerName, "status": dbStatus})
 
 		// Write a lifecycle entry to lifecycle_logs so it persists in the log viewer.
 		lifecycleMessages := map[string]string{
@@ -815,7 +819,7 @@ func handleContainerStatus(workerID int, payload map[string]any) map[string]any 
 				Message:       msg,
 			}
 			if err := query.CreateLifecycleLog(db.DB, logReq); err != nil {
-				log.Printf("container status: failed to write lifecycle log for %q: %v", containerName, err)
+				logger.Error("container", "failed to write lifecycle log", logger.F{"container_name": containerName, "error": err})
 			}
 		}
 	}
@@ -849,7 +853,7 @@ func handleLifecycleLog(workerID int, payload map[string]any) {
 	}
 
 	if err := query.CreateLifecycleLog(db.DB, logReq); err != nil {
-		log.Printf("lifecycle log: failed to write for container=%q event=%q: %v", containerName, event, err)
+		logger.Error("container", "failed to write lifecycle log", logger.F{"container_name": containerName, "event": event, "error": err})
 	}
 }
 
@@ -863,14 +867,14 @@ func handleContainerHealthStatus(payload map[string]any) {
 
 	c, err := query.GetContainerByName(db.DB, containerName)
 	if err != nil {
-		log.Printf("container health: could not find container %q: %v", containerName, err)
+		logger.Error("container", "could not find container for health update", logger.F{"container_name": containerName, "error": err})
 		return
 	}
 
 	if _, err := query.UpdateContainer(db.DB, c.ID, query.UpdateContainerRequest{HealthStatus: &healthStatus}); err != nil {
-		log.Printf("container health: failed to update %q health_status to %s: %v", containerName, healthStatus, err)
+		logger.Error("container", "failed to update health status", logger.F{"container_name": containerName, "health_status": healthStatus, "error": err})
 	} else {
-		log.Printf("container health: %s → %s", containerName, healthStatus)
+		logger.Info("container", "health status updated", logger.F{"container_name": containerName, "health_status": healthStatus})
 	}
 }
 
@@ -918,9 +922,9 @@ func handleContainerSync(payload map[string]any) {
 	}
 
 	if _, err := query.UpdateContainer(db.DB, c.ID, req); err != nil {
-		log.Printf("container sync: failed to update %q to %s: %v", containerName, latticeStatus, err)
+		logger.Error("container", "sync failed to update", logger.F{"container_name": containerName, "status": latticeStatus, "error": err})
 	} else {
-		log.Printf("container sync: %s → %s (was %s)", containerName, latticeStatus, c.Status)
+		logger.Debug("container", "sync updated", logger.F{"container_name": containerName, "status": latticeStatus, "previous_status": c.Status})
 	}
 }
 
@@ -946,7 +950,7 @@ func handleContainerLog(workerID int, payload map[string]any) {
 		if c, err := query.GetContainerByName(db.DB, name); err == nil {
 			req.ContainerID = &c.ID
 		} else {
-			log.Printf("container log: could not resolve container name %q to ID: %v", name, err)
+			logger.Warn("container", "could not resolve container name to ID", logger.F{"container_name": name, "error": err})
 		}
 	}
 
@@ -960,7 +964,7 @@ func handleContainerLog(workerID int, payload map[string]any) {
 	}
 
 	if err := query.CreateContainerLog(db.DB, req); err != nil {
-		log.Printf("failed to store container log for worker=%d: %v", workerID, err)
+		logger.Error("container", "failed to store container log", logger.F{"worker_id": workerID, "error": err})
 	}
 }
 
@@ -971,7 +975,7 @@ func writeWorkerLifecycleLogs(workerID int, event string, message string) {
 	containers, err := query.ListAllContainers(db.DB, query.ListAllContainersRequest{WorkerID: &workerID})
 	if err != nil || containers == nil {
 		if err != nil {
-			log.Printf("worker lifecycle log: failed to list containers for worker=%d: %v", workerID, err)
+			logger.Error("worker", "failed to list containers for lifecycle log", logger.F{"worker_id": workerID, "error": err})
 		}
 		return
 	}
@@ -986,7 +990,7 @@ func writeWorkerLifecycleLogs(workerID int, event string, message string) {
 			Message:       message,
 		}
 		if err := query.CreateLifecycleLog(db.DB, logReq); err != nil {
-			log.Printf("worker lifecycle log: failed to write log for container %q: %v", cName, err)
+			logger.Error("worker", "failed to write lifecycle log for container", logger.F{"container_name": cName, "worker_id": workerID, "error": err})
 		}
 	}
 }

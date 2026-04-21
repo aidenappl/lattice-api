@@ -8,6 +8,8 @@ import (
 var (
 	Port        = getEnv("PORT", "8000")
 	Environment = getEnv("ENVIRONMENT", "production")
+	LogLevel    = getEnv("LOG_LEVEL", "info")
+	LogFormat   = getEnv("LOG_FORMAT", "text") // "text" or "json"
 	CoreDBDSN   = getEnvOrPanic("DATABASE_DSN")
 
 	// JWT signing key for local auth tokens

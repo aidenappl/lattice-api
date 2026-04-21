@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/structs"
 	"github.com/gorilla/websocket"
 )
@@ -79,7 +79,7 @@ func (h *AdminHub) Broadcast(payload []byte) {
 		select {
 		case session.Send <- payload:
 		default:
-			log.Printf("socket: admin broadcast queue full for session=%s", session.ID)
+			logger.Warn("socket", "admin broadcast queue full", logger.F{"session_id": session.ID})
 		}
 	}
 }
@@ -88,7 +88,7 @@ func (h *AdminHub) Broadcast(payload []byte) {
 func (h *AdminHub) BroadcastJSON(v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		log.Printf("socket: failed to marshal admin broadcast: %v", err)
+		logger.Error("socket", "failed to marshal admin broadcast", logger.F{"error": err})
 		return
 	}
 	h.Broadcast(b)
@@ -133,7 +133,7 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := h.Upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("socket: admin upgrade failed: %v", err)
+		logger.Error("socket", "admin upgrade failed", logger.F{"error": err})
 		return
 	}
 

@@ -6,11 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"log"
 	"net/http"
 	"time"
 
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 )
 
@@ -66,7 +66,7 @@ func Fire(event string, data any) {
 func sendWebhook(url string, secret *string, body []byte) {
 	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
-		log.Printf("[webhook] failed to create request for %s: %v", url, err)
+		logger.Error("webhook", "failed to create request", logger.F{"url": url, "error": err})
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -83,12 +83,12 @@ func sendWebhook(url string, secret *string, body []byte) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("[webhook] delivery failed for %s: %v", url, err)
+		logger.Error("webhook", "delivery failed", logger.F{"url": url, "error": err})
 		return
 	}
 	resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		log.Printf("[webhook] delivery to %s returned %d", url, resp.StatusCode)
+		logger.Warn("webhook", "delivery returned error status", logger.F{"url": url, "status": resp.StatusCode})
 	}
 }

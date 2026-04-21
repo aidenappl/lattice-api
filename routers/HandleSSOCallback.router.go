@@ -1,13 +1,13 @@
 package routers
 
 import (
-	"log"
 	"net/http"
 	"time"
 
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/jwt"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/sso"
 )
@@ -26,7 +26,7 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	// Check for error from provider
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
 		desc := r.URL.Query().Get("error_description")
-		log.Printf("[SSO] provider returned error: %s - %s", errParam, desc)
+		logger.Error("sso", "provider returned error", logger.F{"error": errParam, "description": desc})
 		http.Redirect(w, r, "/login?error=sso_denied", http.StatusFound)
 		return
 	}
@@ -40,7 +40,7 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 
 	tokenResp, err := sso.ExchangeCode(code)
 	if err != nil {
-		log.Printf("[SSO] token exchange failed: %v", err)
+		logger.Error("sso", "token exchange failed", logger.F{"error": err})
 		http.Redirect(w, r, "/login?error=sso_failed", http.StatusFound)
 		return
 	}
@@ -48,7 +48,7 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	// Fetch user info
 	userInfo, err := sso.FetchUserInfo(tokenResp.AccessToken)
 	if err != nil {
-		log.Printf("[SSO] userinfo fetch failed: %v", err)
+		logger.Error("sso", "userinfo fetch failed", logger.F{"error": err})
 		http.Redirect(w, r, "/login?error=sso_failed", http.StatusFound)
 		return
 	}
@@ -56,7 +56,7 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	// Extract user details
 	email := sso.GetUserEmail(userInfo)
 	if email == "" {
-		log.Printf("[SSO] no email in userinfo response")
+		logger.Error("sso", "no email in userinfo response")
 		http.Redirect(w, r, "/login?error=sso_no_email", http.StatusFound)
 		return
 	}
@@ -66,7 +66,7 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	user, err := query.GetUserByEmail(db.DB, email)
 	if err != nil || user == nil {
 		if !ssoCfg().AutoProvision {
-			log.Printf("[SSO] user %s not found and auto-provisioning disabled", email)
+			logger.Info("sso", "user not found and auto-provisioning disabled", logger.F{"email": email})
 			http.Redirect(w, r, "/login?error=sso_no_account", http.StatusFound)
 			return
 		}
@@ -78,11 +78,11 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 			Role:     "viewer",
 		})
 		if err != nil {
-			log.Printf("[SSO] failed to create user for %s: %v", email, err)
+			logger.Error("sso", "failed to create user", logger.F{"email": email, "error": err})
 			http.Redirect(w, r, "/login?error=sso_failed", http.StatusFound)
 			return
 		}
-		log.Printf("[SSO] auto-provisioned user %s (id=%d)", email, user.ID)
+		logger.Info("sso", "auto-provisioned user", logger.F{"email": email, "user_id": user.ID})
 	}
 
 	if !user.Active {
@@ -93,13 +93,13 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	// Issue Lattice JWT tokens
 	accessToken, accessExpiry, err := jwt.NewAccessToken(user.ID)
 	if err != nil {
-		log.Printf("[SSO] failed to create access token: %v", err)
+		logger.Error("sso", "failed to create access token", logger.F{"error": err})
 		http.Redirect(w, r, "/login?error=sso_failed", http.StatusFound)
 		return
 	}
 	refreshToken, refreshExpiry, err := jwt.NewRefreshToken(user.ID)
 	if err != nil {
-		log.Printf("[SSO] failed to create refresh token: %v", err)
+		logger.Error("sso", "failed to create refresh token", logger.F{"error": err})
 		http.Redirect(w, r, "/login?error=sso_failed", http.StatusFound)
 		return
 	}

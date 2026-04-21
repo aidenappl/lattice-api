@@ -3,12 +3,12 @@ package routers
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 
 	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/socket"
@@ -122,7 +122,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		if c.PortMappings != nil {
 			var pm []any
 			if err := json.Unmarshal([]byte(*c.PortMappings), &pm); err != nil {
-				log.Printf("invalid port_mappings JSON for container %s: %v", c.Name, err)
+				logger.Error("deploy", "invalid port_mappings JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				resolved := resolveVarsInValue(pm, mergedEnvVars)
 				spec["port_mappings"] = resolved
@@ -131,7 +131,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		if c.EnvVars != nil {
 			var ev map[string]any
 			if err := json.Unmarshal([]byte(*c.EnvVars), &ev); err != nil {
-				log.Printf("invalid env_vars JSON for container %s: %v", c.Name, err)
+				logger.Error("deploy", "invalid env_vars JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				merged := make(map[string]any, len(ev))
 				for k, v := range ev {
@@ -149,7 +149,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		if c.Volumes != nil {
 			var vol map[string]any
 			if err := json.Unmarshal([]byte(*c.Volumes), &vol); err != nil {
-				log.Printf("invalid volumes JSON for container %s: %v", c.Name, err)
+				logger.Error("deploy", "invalid volumes JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				resolved := resolveVarsInValue(vol, mergedEnvVars)
 				spec["volumes"] = resolved
@@ -164,7 +164,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		if c.Command != nil {
 			var cmd []string
 			if err := json.Unmarshal([]byte(*c.Command), &cmd); err != nil {
-				log.Printf("invalid command JSON for container %s: %v", c.Name, err)
+				logger.Error("deploy", "invalid command JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				spec["command"] = cmd
 			}
@@ -172,7 +172,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		if c.Entrypoint != nil {
 			var ep []string
 			if err := json.Unmarshal([]byte(*c.Entrypoint), &ep); err != nil {
-				log.Printf("invalid entrypoint JSON for container %s: %v", c.Name, err)
+				logger.Error("deploy", "invalid entrypoint JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				spec["entrypoint"] = ep
 			}
@@ -180,7 +180,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		if c.HealthCheck != nil {
 			var hc map[string]any
 			if err := json.Unmarshal([]byte(*c.HealthCheck), &hc); err != nil {
-				log.Printf("invalid health_check JSON for container %s: %v", c.Name, err)
+				logger.Error("deploy", "invalid health_check JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				allEnvVars := make(map[string]any, len(mergedEnvVars))
 				for k, v := range mergedEnvVars {
@@ -225,7 +225,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 					}
 					if len(auth) > 0 {
 						spec["registry_auth"] = auth
-						log.Printf("deploy: auto-matched registry %q for image %s", reg.Name, c.Image)
+						logger.Info("deploy", "auto-matched registry", logger.F{"registry": reg.Name, "image": c.Image})
 					}
 					break
 				}
@@ -255,7 +255,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 			Tag:          c.Tag,
 		})
 		if err != nil {
-			log.Printf("failed to record deployment container %s: %v", c.Name, err)
+			logger.Error("deploy", "failed to record deployment container", logger.F{"container": c.Name, "error": err})
 		}
 	}
 
@@ -309,7 +309,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		Type:    socket.MsgDeploy,
 		Payload: payload,
 	}); err != nil {
-		log.Printf("failed to send deploy command to worker=%d: %v", *stack.WorkerID, err)
+		logger.Error("deploy", "failed to send deploy command to worker", logger.F{"worker_id": *stack.WorkerID, "error": err})
 		_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
 			DeploymentID: deployment.ID,
 			Level:        "error",

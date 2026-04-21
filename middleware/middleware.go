@@ -4,11 +4,11 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"time"
 
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/google/uuid"
 )
 
@@ -63,15 +63,13 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 		}
 
 		start := time.Now()
-		requestID := GetRequestID(r.Context())
-
-		log.Printf("[%s] %s %s", requestID, r.Method, r.RequestURI)
 
 		srw := &statusResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(srw, r)
 
 		duration := time.Since(start)
-		log.Printf("[%s] %d %s %s - %v", requestID, srw.statusCode, r.Method, r.RequestURI, duration)
+		requestID := GetRequestID(r.Context())
+		logger.Request(requestID, r.Method, r.URL.Path, srw.statusCode, duration)
 	})
 }
 

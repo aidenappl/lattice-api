@@ -2,11 +2,11 @@ package routers
 
 import (
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/socket"
 )
@@ -37,7 +37,7 @@ func (h *DeployHandler) startDeploymentMonitor(deploymentID, stackID, workerID i
 func (h *DeployHandler) monitorDeployment(deploymentID, stackID, workerID int, payload map[string]any) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[PANIC] deployment monitor %d: %v", deploymentID, r)
+			logger.Error("panic", fmt.Sprintf("%v", r), logger.F{"goroutine": "deployment-monitor", "deployment_id": deploymentID})
 		}
 	}()
 
@@ -50,7 +50,7 @@ func (h *DeployHandler) monitorDeployment(deploymentID, stackID, workerID int, p
 	for range ticker.C {
 		dep, err := query.GetDeploymentByID(db.DB, deploymentID)
 		if err != nil {
-			log.Printf("deploy-monitor: failed to load deployment=%d: %v", deploymentID, err)
+			logger.Error("deploy", "monitor failed to load deployment", logger.F{"deployment_id": deploymentID, "error": err})
 			continue
 		}
 
