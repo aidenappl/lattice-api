@@ -156,21 +156,28 @@ func generateState() string {
 	return state
 }
 
-// ValidateState checks that a state parameter is valid and not expired, then removes it.
+// ValidateState checks that a state parameter is valid and not expired.
+// Instead of deleting immediately, it shortens the expiry to 30 seconds
+// to tolerate double-callback scenarios (e.g., SSO provider redirect chains).
 func ValidateState(state string) bool {
 	key := "sso_state:" + state
 	val, err := query.GetSetting(db.DB, key)
 	if err != nil || val == "" {
 		return false
 	}
-	// Delete immediately (one-time use)
-	_ = query.DeleteSetting(db.DB, key)
 
 	// Check expiry
 	expiry, err := time.Parse(time.RFC3339, val)
 	if err != nil || time.Now().After(expiry) {
+		// Expired — clean up
+		_ = query.DeleteSetting(db.DB, key)
 		return false
 	}
+
+	// Mark as used by shortening expiry to 30s from now (handles double-callbacks)
+	shortExpiry := time.Now().Add(30 * time.Second).Format(time.RFC3339)
+	_ = query.SetSetting(db.DB, key, shortExpiry)
+
 	return true
 }
 

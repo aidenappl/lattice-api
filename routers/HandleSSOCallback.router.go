@@ -70,6 +70,13 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 
 	tokenResp, err := sso.ExchangeCode(code)
 	if err != nil {
+		// If token exchange fails (e.g., code already used from a double-callback),
+		// check if the user already has a valid session cookie from the first callback.
+		if cookie, cookieErr := r.Cookie("lattice-access-token"); cookieErr == nil && cookie.Value != "" {
+			logger.Info("sso", "token exchange failed but user already has session, redirecting")
+			http.Redirect(w, r, cfg.PostLoginRedirectURL(), http.StatusFound)
+			return
+		}
 		logger.Error("sso", "token exchange failed", logger.F{"error": err})
 		http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
 		return
