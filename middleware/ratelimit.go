@@ -70,12 +70,20 @@ func getClientIP(r *http.Request) string {
 }
 
 // RateLimitMiddleware enforces per-IP rate limits.
-// Auth endpoints: 10 req/min. General admin API: 120 req/min.
+// Auth endpoints: 10 req/min. General admin API: 600 req/min.
 func RateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := getClientIP(r)
 		path := r.URL.Path
 
+		// Skip rate limiting for non-API paths (healthcheck, WS, public routes)
+		if path == "/healthcheck" || strings.HasPrefix(path, "/ws/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		ip := getClientIP(r)
+
+		// Auth endpoints: strict limit (brute-force protection)
 		if path == "/auth/login" || path == "/auth/refresh" {
 			if !authLimiter.allow(ip, 10, time.Minute) {
 				w.Header().Set("Content-Type", "application/json")
@@ -86,10 +94,11 @@ func RateLimitMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
-		if strings.HasPrefix(path, "/admin/") {
-			if !generalLimiter.allow(ip, 120, time.Minute) {
+		// General API: generous limit (normal dashboard use is ~10-15 req per page load)
+		if strings.HasPrefix(path, "/admin/") || strings.HasPrefix(path, "/auth/") {
+			if !generalLimiter.allow(ip, 600, time.Minute) {
 				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("Retry-After", "30")
+				w.Header().Set("Retry-After", "10")
 				w.WriteHeader(http.StatusTooManyRequests)
 				w.Write([]byte(`{"success":false,"error":"rate_limited","error_message":"too many requests, try again later","error_code":4290}`))
 				return

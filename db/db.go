@@ -55,6 +55,18 @@ func Init() {
 	_, _ = db.Exec("ALTER TABLE workers ADD COLUMN pending_action TEXT DEFAULT NULL")
 	_, _ = db.Exec("ALTER TABLE containers ADD COLUMN depends_on TEXT DEFAULT NULL")
 	_, _ = db.Exec("ALTER TABLE stacks ADD COLUMN placement_constraints TEXT DEFAULT NULL")
+
+	// Auto-create webhook_configs table if it doesn't exist
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS webhook_configs (
+		id INT AUTO_INCREMENT PRIMARY KEY,
+		name VARCHAR(255) NOT NULL,
+		url TEXT NOT NULL,
+		events TEXT NOT NULL,
+		active BOOLEAN DEFAULT TRUE,
+		secret VARCHAR(255) DEFAULT NULL,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`)
 }
 
 type Queryable interface {

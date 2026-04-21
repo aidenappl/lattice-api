@@ -19,10 +19,12 @@ import (
 	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/query"
+	"github.com/aidenappl/lattice-api/retention"
 	"github.com/aidenappl/lattice-api/routers"
 	"github.com/aidenappl/lattice-api/socket"
 	"github.com/aidenappl/lattice-api/structs"
 	"github.com/aidenappl/lattice-api/versions"
+	"github.com/aidenappl/lattice-api/webhooks"
 	"github.com/gorilla/mux"
 	"github.com/rs/cors"
 )
@@ -44,6 +46,9 @@ func main() {
 
 	// 1. Database
 	db.Init()
+
+	// Start background data retention cleanup.
+	retention.Start(db.DB)
 	if err := db.PingDB(db.DB); err != nil {
 		log.Fatal("failed to ping db: ", err)
 	}
@@ -116,6 +121,9 @@ func main() {
 			"type":      "worker_disconnected",
 			"worker_id": session.WorkerID,
 		})
+		webhooks.Fire("worker.disconnected", map[string]any{
+			"worker_id": session.WorkerID,
+		})
 	}
 
 	workerHandler.OnMessage = func(session *socket.WorkerSession, msg socket.IncomingMessage) {
@@ -179,6 +187,13 @@ func main() {
 				"worker_id": session.WorkerID,
 				"payload":   enriched,
 			})
+			// Fire webhook on error status or stop/kill actions
+			if action, _ := msg.Payload["action"].(string); action == "stop" || action == "kill" {
+				webhooks.Fire("container.status", enriched)
+			}
+			if status, _ := msg.Payload["status"].(string); status == "error" {
+				webhooks.Fire("container.status", enriched)
+			}
 
 		case socket.MsgContainerHealthStatus:
 			adminHub.BroadcastJSON(map[string]any{
@@ -187,6 +202,9 @@ func main() {
 				"payload":   msg.Payload,
 			})
 			safeGo("container-health", func() { handleContainerHealthStatus(msg.Payload) })
+			if hs, _ := msg.Payload["health_status"].(string); hs == "unhealthy" {
+				webhooks.Fire("container.unhealthy", msg.Payload)
+			}
 
 		case socket.MsgContainerSync:
 			adminHub.BroadcastJSON(map[string]any{
@@ -261,6 +279,11 @@ func main() {
 				"type":      "worker_crash",
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
+			})
+			webhooks.Fire("worker.crash", map[string]any{
+				"worker_id": session.WorkerID,
+				"goroutine": goroutine,
+				"panic":     panicMsg,
 			})
 
 		case socket.MsgListVolumesResponse:
@@ -464,6 +487,13 @@ func main() {
 	admin.HandleFunc("/users/{id}", middleware.RequireAdmin(routers.HandleUpdateUser)).Methods(http.MethodPut)
 	admin.HandleFunc("/users/{id}", middleware.RequireAdmin(routers.HandleDeleteUser)).Methods(http.MethodDelete)
 
+	// Webhooks
+	admin.HandleFunc("/webhooks", routers.HandleListWebhooks).Methods(http.MethodGet)
+	admin.HandleFunc("/webhooks", middleware.RequireAdmin(routers.HandleCreateWebhook)).Methods(http.MethodPost)
+	admin.HandleFunc("/webhooks/{id}", middleware.RequireAdmin(routers.HandleUpdateWebhook)).Methods(http.MethodPut)
+	admin.HandleFunc("/webhooks/{id}", middleware.RequireAdmin(routers.HandleDeleteWebhook)).Methods(http.MethodDelete)
+	admin.HandleFunc("/webhooks/{id}/test", middleware.RequireAdmin(routers.HandleTestWebhook)).Methods(http.MethodPost)
+
 	// Audit log
 	admin.HandleFunc("/audit-log", middleware.RequireAdmin(routers.HandleGetAuditLog)).Methods(http.MethodGet)
 
@@ -644,6 +674,20 @@ func handleDeploymentProgress(payload map[string]any) {
 		Message:      logMsg,
 	}); err != nil {
 		log.Printf("failed to store deployment log: %v", err)
+	}
+
+	// Fire webhooks on deployment terminal states
+	if status == "failed" {
+		webhooks.Fire("deployment.failed", map[string]any{
+			"deployment_id": int(deploymentID),
+			"message":       message,
+		})
+	}
+	if status == "deployed" {
+		webhooks.Fire("deployment.success", map[string]any{
+			"deployment_id": int(deploymentID),
+			"message":       message,
+		})
 	}
 
 	// Update deployment status if it's a terminal/state-change status
