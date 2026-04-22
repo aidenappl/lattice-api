@@ -82,6 +82,15 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Fetch stack-level networks — assigned to every container so Docker DNS works
+	stackNetworks, _ := query.ListNetworksByStack(db.DB, stack.ID)
+	var networkNames []string
+	if stackNetworks != nil {
+		for _, n := range *stackNetworks {
+			networkNames = append(networkNames, n.Name)
+		}
+	}
+
 	// Load global env vars and merge as base layer
 	globalVars, _ := query.ListGlobalEnvVars(db.DB)
 	globalEnvMap := make(map[string]any)
@@ -120,6 +129,11 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 			"tag":            c.Tag,
 			"replicas":       c.Replicas,
 			"restart_policy": c.RestartPolicy,
+		}
+
+		// Assign all stack-level networks to every container so Docker DNS resolves
+		if len(networkNames) > 0 {
+			spec["networks"] = networkNames
 		}
 
 		if c.PortMappings != nil {
