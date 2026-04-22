@@ -17,6 +17,7 @@ import (
 	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/env"
+	"github.com/aidenappl/lattice-api/healthscan"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/mailer"
 	"github.com/aidenappl/lattice-api/middleware"
@@ -85,6 +86,11 @@ func main() {
 	workerHub := socket.NewWorkerHub()
 	adminHub := socket.NewAdminHub()
 
+	// 4b. Health scanner — periodically audits worker/container state
+	scanner := healthscan.New(db.DB, adminHub, workerHub)
+	scanner.Start()
+	routers.HealthScanner = scanner
+
 	workerHandler := socket.NewWorkerHandler(workerHub)
 	workerHandler.AuthFunc = func(r *http.Request) (int, bool) {
 		return middleware.WorkerTokenAuth(r)
@@ -127,6 +133,10 @@ func main() {
 				_ = query.SetWorkerPendingAction(db.DB, session.WorkerID, nil)
 			}
 			handleHeartbeatMetrics(session.WorkerID, msg.Payload)
+			// Feed container state to health scanner
+			if names := healthscan.ParseContainerNames(msg.Payload); len(names) > 0 {
+				scanner.UpdateWorkerContainers(session.WorkerID, names)
+			}
 			adminHub.BroadcastJSON(map[string]any{
 				"type":      "worker_heartbeat",
 				"worker_id": session.WorkerID,
@@ -546,6 +556,7 @@ func main() {
 	// Overview (dashboard)
 	admin.HandleFunc("/overview", routers.HandleGetOverview).Methods(http.MethodGet)
 	admin.HandleFunc("/fleet-metrics", routers.HandleGetFleetMetrics).Methods(http.MethodGet)
+	admin.HandleFunc("/anomalies", routers.HandleGetAnomalies).Methods(http.MethodGet)
 
 	// Versions & updates
 	admin.HandleFunc("/versions", routers.HandleGetVersions).Methods(http.MethodGet)
