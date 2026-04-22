@@ -2,7 +2,24 @@
 set -e
 
 # Lattice Runner installer
-# Usage: curl -fsSL https://lattice-api.appleby.cloud/install/runner | bash
+# Usage: curl -fsSL https://lattice-api.appleby.cloud/install/runner | WORKER_TOKEN=<token> bash
+#   or:  curl -fsSL https://lattice-api.appleby.cloud/install/runner | WORKER_TOKEN=<token> WORKER_NAME=my-worker bash
+#
+# The script auto-elevates to root via sudo, preserving WORKER_TOKEN,
+# WORKER_NAME, and ORCHESTRATOR_URL. No need for `sudo -E`.
+
+# Wrap everything in main() so bash reads the entire script before executing.
+# This is critical for `curl | bash` — without it, sudo re-exec would fail
+# because stdin (the pipe) would already be partially consumed.
+main() {
+
+# ── Auto-elevate to root, preserving env vars ─────────────────────────────
+if [ "$(id -u)" -ne 0 ]; then
+    exec sudo WORKER_TOKEN="${WORKER_TOKEN}" \
+              WORKER_NAME="${WORKER_NAME}" \
+              ORCHESTRATOR_URL="${ORCHESTRATOR_URL}" \
+              bash -c "$(declare -f main); main"
+fi
 
 REPO="aidenappl/lattice-runner"
 INSTALL_DIR="/opt/lattice-runner"
@@ -53,9 +70,9 @@ else
     echo "  Docker:   not found — installing..."
     echo ""
     curl -fsSL https://get.docker.com | sh
-    sudo systemctl enable --now docker
+    systemctl enable --now docker
     # Add current user to docker group so runner doesn't need sudo
-    sudo usermod -aG docker "${USER:-root}" 2>/dev/null || true
+    usermod -aG docker "${SUDO_USER:-root}" 2>/dev/null || true
     echo ""
     echo "  Docker installed: $(docker --version | awk '{print $3}' | tr -d ',')"
 fi
@@ -68,8 +85,8 @@ else
     echo "  Go:       not found — installing go${GO_VERSION}..."
     echo ""
     curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" -o /tmp/go.tar.gz
-    sudo rm -rf /usr/local/go
-    sudo tar -C /usr/local -xzf /tmp/go.tar.gz
+    rm -rf /usr/local/go
+    tar -C /usr/local -xzf /tmp/go.tar.gz
     rm -f /tmp/go.tar.gz
     export PATH="/usr/local/go/bin:$PATH"
     echo "  Go installed: $(go version | awk '{print $3}')"
@@ -80,11 +97,11 @@ fi
 if ! command -v git >/dev/null 2>&1; then
     echo "  Git:      not found — installing..."
     if command -v apt-get >/dev/null 2>&1; then
-        sudo apt-get update -qq && sudo apt-get install -y -qq git
+        apt-get update -qq && apt-get install -y -qq git
     elif command -v yum >/dev/null 2>&1; then
-        sudo yum install -y -q git
+        yum install -y -q git
     elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y -q git
+        dnf install -y -q git
     else
         echo "ERROR: Could not install git. Please install it manually."
         exit 1
@@ -114,14 +131,14 @@ CGO_ENABLED=0 go build -ldflags="-w -s -X main.Version=${LATEST_TAG}" -o "${BINA
 
 # Install binary
 echo "Installing to ${INSTALL_DIR}..."
-sudo mkdir -p "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR"
 # Copy to a temp path then rename atomically — avoids "Text file busy" when upgrading a running binary
-sudo cp "${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}.new"
-sudo chmod +x "${INSTALL_DIR}/${BINARY_NAME}.new"
-sudo mv -f "${INSTALL_DIR}/${BINARY_NAME}.new" "${INSTALL_DIR}/${BINARY_NAME}"
+cp "${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}.new"
+chmod +x "${INSTALL_DIR}/${BINARY_NAME}.new"
+mv -f "${INSTALL_DIR}/${BINARY_NAME}.new" "${INSTALL_DIR}/${BINARY_NAME}"
 
 # Symlink to PATH
-sudo ln -sf "${INSTALL_DIR}/${BINARY_NAME}" /usr/local/bin/lattice-runner
+ln -sf "${INSTALL_DIR}/${BINARY_NAME}" /usr/local/bin/lattice-runner
 
 # Cleanup
 rm -rf "$BUILD_DIR"
@@ -143,19 +160,19 @@ if [ "$IS_UPGRADE" = true ]; then
             ORCHESTRATOR_URL="${ORCHESTRATOR_URL:-wss://lattice-api.appleby.cloud/ws/worker}"
             WORKER_NAME="${WORKER_NAME:-$(hostname)}"
 
-            sudo tee "${INSTALL_DIR}/.env" > /dev/null <<ENVEOF
+            tee "${INSTALL_DIR}/.env" > /dev/null <<ENVEOF
 ORCHESTRATOR_URL=${ORCHESTRATOR_URL}
 WORKER_TOKEN=${WORKER_TOKEN}
 WORKER_NAME=${WORKER_NAME}
 ENVEOF
-            sudo chmod 600 "${INSTALL_DIR}/.env"
+            chmod 600 "${INSTALL_DIR}/.env"
             echo "  Created ${INSTALL_DIR}/.env"
         elif [ ! -f "${INSTALL_DIR}/.env" ]; then
             echo "WARNING: ${INSTALL_DIR}/.env not found and no WORKER_TOKEN provided."
             echo "  Run: sudo lattice-runner setup"
         fi
 
-        sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<SVCEOF
+        tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<SVCEOF
 [Unit]
 Description=Lattice Runner
 After=network.target docker.service
@@ -172,8 +189,8 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 SVCEOF
-        sudo systemctl daemon-reload
-        sudo systemctl enable "$SERVICE_NAME"
+        systemctl daemon-reload
+        systemctl enable "$SERVICE_NAME"
         echo "  Created and enabled ${SERVICE_NAME}.service"
     fi
 
@@ -181,7 +198,7 @@ SVCEOF
     # script (lattice-runner itself) has time to read exit-code 0 and send
     # the success worker_action_status message before systemd kills it.
     echo "Scheduling ${SERVICE_NAME} restart in 3 seconds..."
-    (sleep 3 && sudo systemctl restart "$SERVICE_NAME") &
+    (sleep 3 && systemctl restart "$SERVICE_NAME") &
     echo ""
     echo "Upgrade complete. Runner will restart shortly."
     echo ""
@@ -195,15 +212,15 @@ elif [ -n "$WORKER_TOKEN" ]; then
     ORCHESTRATOR_URL="${ORCHESTRATOR_URL:-wss://lattice-api.appleby.cloud/ws/worker}"
     WORKER_NAME="${WORKER_NAME:-$(hostname)}"
 
-    sudo tee "${INSTALL_DIR}/.env" > /dev/null <<ENVEOF
+    tee "${INSTALL_DIR}/.env" > /dev/null <<ENVEOF
 ORCHESTRATOR_URL=${ORCHESTRATOR_URL}
 WORKER_TOKEN=${WORKER_TOKEN}
 WORKER_NAME=${WORKER_NAME}
 ENVEOF
-    sudo chmod 600 "${INSTALL_DIR}/.env"
+    chmod 600 "${INSTALL_DIR}/.env"
 
     # Install systemd service
-    sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<SVCEOF
+    tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<SVCEOF
 [Unit]
 Description=Lattice Runner
 After=network.target docker.service
@@ -221,9 +238,9 @@ RestartSec=5
 WantedBy=multi-user.target
 SVCEOF
 
-    sudo systemctl daemon-reload
-    sudo systemctl enable "$SERVICE_NAME"
-    sudo systemctl start "$SERVICE_NAME"
+    systemctl daemon-reload
+    systemctl enable "$SERVICE_NAME"
+    systemctl start "$SERVICE_NAME"
 
     echo "Lattice Runner installed and started."
     echo ""
@@ -232,5 +249,9 @@ SVCEOF
     echo ""
 else
     # ── Interactive fresh install: run setup wizard ─────────────────────────
-    sudo lattice-runner setup
+    lattice-runner setup
 fi
+
+} # end main
+
+main "$@"
