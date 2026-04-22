@@ -582,6 +582,9 @@ func main() {
 	admin.HandleFunc("/notification-prefs", middleware.RequireAdmin(routers.HandleGetNotificationPrefs)).Methods(http.MethodGet)
 	admin.HandleFunc("/notification-prefs", middleware.RequireAdmin(routers.HandleUpdateNotificationPrefs)).Methods(http.MethodPut)
 
+	// Search
+	admin.HandleFunc("/search", routers.HandleSearch).Methods(http.MethodGet)
+
 	// Overview (dashboard)
 	admin.HandleFunc("/overview", routers.HandleGetOverview).Methods(http.MethodGet)
 	admin.HandleFunc("/fleet-metrics", routers.HandleGetFleetMetrics).Methods(http.MethodGet)
