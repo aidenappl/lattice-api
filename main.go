@@ -628,6 +628,25 @@ func main() {
 	logger.Info("server", "stopped")
 }
 
+// stripDeploySuffix removes a 6-char alphanumeric deploy suffix from a container name.
+// e.g., "hillview-auth-api-x7k2m9" -> "hillview-auth-api"
+func stripDeploySuffix(name string) string {
+	idx := strings.LastIndex(name, "-")
+	if idx == -1 || idx == len(name)-1 {
+		return name
+	}
+	suffix := name[idx+1:]
+	if len(suffix) != 6 {
+		return name
+	}
+	for _, c := range suffix {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+			return name
+		}
+	}
+	return name[:idx]
+}
+
 func safeGo(name string, fn func()) {
 	go func() {
 		defer func() {
@@ -824,7 +843,11 @@ func handleContainerStatus(workerID int, payload map[string]any) map[string]any 
 		return enriched
 	}
 
-	c, err := query.GetContainerByName(db.DB, containerName)
+	lookupName := containerName
+	if canonical := stripDeploySuffix(containerName); canonical != containerName {
+		lookupName = canonical
+	}
+	c, err := query.GetContainerByName(db.DB, lookupName)
 	if err != nil {
 		logger.Error("container", "could not find container", logger.F{"container_name": containerName, "error": err})
 		return enriched
@@ -897,7 +920,11 @@ func handleLifecycleLog(workerID int, payload map[string]any) {
 
 	if containerName != "" {
 		logReq.ContainerName = &containerName
-		if c, err := query.GetContainerByName(db.DB, containerName); err == nil {
+		lookupName := containerName
+		if canonical := stripDeploySuffix(containerName); canonical != containerName {
+			lookupName = canonical
+		}
+		if c, err := query.GetContainerByName(db.DB, lookupName); err == nil {
 			logReq.ContainerID = &c.ID
 		}
 	}
@@ -915,7 +942,11 @@ func handleContainerHealthStatus(payload map[string]any) {
 		return
 	}
 
-	c, err := query.GetContainerByName(db.DB, containerName)
+	lookupName := containerName
+	if canonical := stripDeploySuffix(containerName); canonical != containerName {
+		lookupName = canonical
+	}
+	c, err := query.GetContainerByName(db.DB, lookupName)
 	if err != nil {
 		logger.Error("container", "could not find container for health update", logger.F{"container_name": containerName, "error": err})
 		return
@@ -939,8 +970,14 @@ func handleContainerSync(payload map[string]any) {
 
 	c, err := query.GetContainerByName(db.DB, containerName)
 	if err != nil {
-		// Container not managed by Lattice — ignore
-		return
+		// Try stripping a 6-char deploy suffix (e.g., "myapp-x7k2m9" -> "myapp")
+		if canonical := stripDeploySuffix(containerName); canonical != containerName {
+			c, err = query.GetContainerByName(db.DB, canonical)
+		}
+		if err != nil {
+			// Container not managed by Lattice — ignore
+			return
+		}
 	}
 
 	req := query.UpdateContainerRequest{}
