@@ -99,17 +99,20 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := sso.GetUserName(userInfo)
+	picture := sso.GetUserPicture(userInfo)
 
 	// Extract the stable subject identifier (OIDC "sub" claim)
 	subject := sso.GetUserIdentifier(userInfo)
 
-	// Find user: try sso_subject first (stable), fall back to email
+	// Find user: try sso_subject first (stable), then email+auth_type=sso
+	// This allows the same email to have separate local and SSO accounts.
 	var user *structs.User
 	if subject != "" {
 		user, _ = query.GetUserBySSOSubject(db.DB, subject)
 	}
 	if user == nil {
-		user, _ = query.GetUserByEmail(db.DB, email)
+		// Look for an existing SSO account with this email (not local accounts)
+		user, _ = query.GetUserByEmailAndAuthType(db.DB, email, "sso")
 	}
 
 	if user == nil {
@@ -120,11 +123,12 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		// Auto-create with pending role (requires admin approval)
 		user, err = query.CreateUser(db.DB, query.CreateUserRequest{
-			Email:      email,
-			Name:       &name,
-			AuthType:   "sso",
-			SSOSubject: &subject,
-			Role:       "pending",
+			Email:           email,
+			Name:            &name,
+			AuthType:        "sso",
+			SSOSubject:      &subject,
+			ProfileImageURL: &picture,
+			Role:            "pending",
 		})
 		if err != nil {
 			logger.Error("sso", "failed to create user", logger.F{"email": email, "error": err})
@@ -136,6 +140,11 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		// Backfill sso_subject for existing users who logged in before this was added
 		_ = query.UpdateUserSSOSubject(db.DB, user.ID, subject)
 		logger.Info("sso", "backfilled sso_subject", logger.F{"user_id": user.ID, "sso_subject": subject})
+	}
+
+	// Update profile image on each login (it might change at the provider)
+	if picture != "" {
+		_, _ = query.UpdateUser(db.DB, user.ID, query.UpdateUserRequest{ProfileImageURL: &picture})
 	}
 
 	if !user.Active {

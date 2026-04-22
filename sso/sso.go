@@ -433,6 +433,19 @@ func GetUserName(userInfo map[string]any) string {
 	return ""
 }
 
+// GetUserPicture extracts a profile image URL from userinfo, trying common field names.
+func GetUserPicture(userInfo map[string]any) string {
+	for _, field := range []string{"picture", "avatar_url", "photo", "profile_image_url", "image"} {
+		if val, ok := userInfo[field]; ok {
+			s := fmt.Sprint(val)
+			if s != "" && s != "<nil>" && (strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")) {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
 // GetUserEmail extracts email from userinfo, trying common field names.
 // Some providers use "preferred_username" or "upn" instead of "email".
 func GetUserEmail(userInfo map[string]any) string {

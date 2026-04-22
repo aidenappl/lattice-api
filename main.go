@@ -395,6 +395,7 @@ func main() {
 	authRouter := r.PathPrefix("/auth").Subrouter()
 	authRouter.Use(middleware.DualAuthMiddleware)
 	authRouter.HandleFunc("/self", routers.HandleAuthSelf).Methods(http.MethodGet)
+	authRouter.HandleFunc("/self", routers.HandleUpdateSelf).Methods(http.MethodPut)
 	authRouter.HandleFunc("/logout", routers.HandleLogout).Methods(http.MethodPost)
 
 	// Admin routes (protected)

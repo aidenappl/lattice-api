@@ -9,6 +9,7 @@ type User struct {
 	AuthType     string    `json:"auth_type"`
 	PasswordHash *string   `json:"-"`
 	SSOSubject   *string   `json:"sso_subject,omitempty"`
+	ProfileImageURL *string `json:"profile_image_url"`
 	Role         string    `json:"role"`
 	Active       bool      `json:"active"`
 	UpdatedAt    time.Time `json:"updated_at"`

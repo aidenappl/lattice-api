@@ -12,6 +12,7 @@ import (
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/socket"
+	"github.com/aidenappl/lattice-api/structs"
 	"github.com/aidenappl/lattice-api/tools"
 	"github.com/gorilla/mux"
 )
@@ -39,11 +40,6 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if stack.Status == "deploying" {
-		responder.SendError(w, http.StatusConflict, "deployment already in progress for this stack")
-		return
-	}
-
 	if stack.WorkerID == nil {
 		responder.SendError(w, http.StatusBadRequest, "stack has no worker assigned")
 		return
@@ -51,6 +47,18 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 
 	if !h.WorkerHub.IsConnected(*stack.WorkerID) {
 		responder.SendError(w, http.StatusBadRequest, "worker is not connected")
+		return
+	}
+
+	// If ?container=name is specified, only recreate that single container
+	// instead of doing a full stack deployment.
+	if containerName := r.URL.Query().Get("container"); containerName != "" {
+		h.handleSingleContainerDeploy(w, r, stack, containerName, dt)
+		return
+	}
+
+	if stack.Status == "deploying" {
+		responder.SendError(w, http.StatusConflict, "deployment already in progress for this stack")
 		return
 	}
 
@@ -331,4 +339,84 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 	h.startDeploymentMonitor(deployment.ID, stack.ID, *stack.WorkerID, payload)
 
 	responder.NewCreated(w, deployment, "deployment created and sent to worker")
+}
+
+// handleSingleContainerDeploy recreates a single container by name within a stack.
+// Used when the deploy token URL includes ?container=name.
+func (h *DeployHandler) handleSingleContainerDeploy(w http.ResponseWriter, r *http.Request, stack *structs.Stack, containerName string, dt *structs.DeployToken) {
+	// Find the container in this stack
+	containers, err := query.ListContainersByStack(db.DB, stack.ID)
+	if err != nil || containers == nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to list containers")
+		return
+	}
+
+	var target *structs.Container
+	for _, c := range *containers {
+		if c.Name == containerName {
+			target = &c
+			break
+		}
+	}
+	if target == nil {
+		responder.SendError(w, http.StatusNotFound, fmt.Sprintf("container %q not found in stack %q", containerName, stack.Name))
+		return
+	}
+
+	// Build the recreate payload (same as HandleRecreateContainer)
+	payload := map[string]any{
+		"container_name": target.Name,
+		"container_id":   target.ID,
+		"image":          target.Image,
+		"tag":            target.Tag,
+	}
+
+	// Include registry auth so the runner can pull before recreating
+	if target.RegistryID != nil {
+		reg, regErr := query.GetRegistryByID(db.DB, *target.RegistryID)
+		if regErr == nil && reg != nil && reg.Username != nil && reg.Password != nil {
+			payload["auth"] = map[string]any{
+				"username": *reg.Username,
+				"password": *reg.Password,
+			}
+		}
+	} else {
+		allRegistries, _ := query.ListRegistries(db.DB)
+		if allRegistries != nil {
+			for _, reg := range *allRegistries {
+				regHost := strings.TrimPrefix(strings.TrimPrefix(reg.URL, "https://"), "http://")
+				regHost = strings.TrimSuffix(regHost, "/")
+				if strings.HasPrefix(target.Image, regHost+"/") || target.Image == regHost {
+					if reg.Username != nil && reg.Password != nil {
+						payload["auth"] = map[string]any{
+							"username": *reg.Username,
+							"password": *reg.Password,
+						}
+					}
+					break
+				}
+			}
+		}
+	}
+
+	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.Envelope{
+		Type:    socket.MsgRecreate,
+		Payload: payload,
+	}); err != nil {
+		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send recreate command: %v", err))
+		return
+	}
+
+	logger.Info("deploy", "single container deploy triggered via token", logger.F{
+		"stack":     stack.Name,
+		"container": containerName,
+		"token":     dt.Name,
+	})
+
+	logAudit(r, "deploy_container", "container", intPtr(target.ID), strPtr(fmt.Sprintf("via deploy token %q", dt.Name)))
+
+	responder.New(w, map[string]any{
+		"container": containerName,
+		"action":    "recreate",
+	}, fmt.Sprintf("recreate command sent to %s", containerName))
 }

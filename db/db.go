@@ -65,6 +65,13 @@ func Init() {
 	_, _ = db.Exec("ALTER TABLE users MODIFY COLUMN auth_type VARCHAR(20) NOT NULL DEFAULT 'local'")
 	_, _ = db.Exec("ALTER TABLE users MODIFY COLUMN role VARCHAR(20) NOT NULL DEFAULT 'viewer'")
 
+	// Allow same email with different auth types (drop unique on email, add composite unique)
+	_, _ = db.Exec("ALTER TABLE users DROP INDEX email")
+	_, _ = db.Exec("ALTER TABLE users ADD UNIQUE INDEX idx_users_email_auth (email, auth_type)")
+
+	// Add profile image URL column
+	_, _ = db.Exec("ALTER TABLE users ADD COLUMN profile_image_url TEXT DEFAULT NULL")
+
 	// Auto-create global_env_vars table if it doesn't exist
 	_, _ = db.Exec("CREATE TABLE IF NOT EXISTS global_env_vars (" +
 		"id INT AUTO_INCREMENT PRIMARY KEY," +

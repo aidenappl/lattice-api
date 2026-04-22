@@ -31,13 +31,14 @@ func HandleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := query.GetUserByEmail(db.DB, body.Email)
-	if err != nil {
+	// Look up specifically the local account for this email
+	user, err := query.GetUserByEmailAndAuthType(db.DB, body.Email, "local")
+	if err != nil || user == nil {
 		responder.SendError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 
-	if user.AuthType != "local" || user.PasswordHash == nil {
+	if user.PasswordHash == nil {
 		responder.SendError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}

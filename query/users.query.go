@@ -15,6 +15,7 @@ var userColumns = []string{
 	"users.auth_type",
 	"users.password_hash",
 	"users.sso_subject",
+	"users.profile_image_url",
 	"users.role",
 	"users.active",
 	"users.updated_at",
@@ -30,6 +31,7 @@ func scanUser(row scanner) (*structs.User, error) {
 		&u.AuthType,
 		&u.PasswordHash,
 		&u.SSOSubject,
+		&u.ProfileImageURL,
 		&u.Role,
 		&u.Active,
 		&u.UpdatedAt,
@@ -118,6 +120,22 @@ func GetUserByEmail(engine db.Queryable, email string) (*structs.User, error) {
 	return u, nil
 }
 
+// GetUserByEmailAndAuthType finds a user by email filtered to a specific auth_type.
+// Allows multiple users with the same email but different auth types.
+func GetUserByEmailAndAuthType(engine db.Queryable, email, authType string) (*structs.User, error) {
+	q := sq.Select(userColumns...).From("users").Where(sq.Eq{"users.email": email, "users.auth_type": authType})
+	qStr, args, err := q.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build sql query: %w", err)
+	}
+	row := engine.QueryRow(qStr, args...)
+	u, err := scanUser(row)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan user: %w", err)
+	}
+	return u, nil
+}
+
 func GetUserBySSOSubject(engine db.Queryable, subject string) (*structs.User, error) {
 	q := sq.Select(userColumns...).From("users").Where(sq.Eq{"users.sso_subject": subject})
 	qStr, args, err := q.ToSql()
@@ -144,18 +162,19 @@ func CountUsers(engine db.Queryable) (int, error) {
 }
 
 type CreateUserRequest struct {
-	Email        string
-	Name         *string
-	AuthType     string
-	PasswordHash *string
-	SSOSubject   *string
-	Role         string
+	Email           string
+	Name            *string
+	AuthType        string
+	PasswordHash    *string
+	SSOSubject      *string
+	ProfileImageURL *string
+	Role            string
 }
 
 func CreateUser(engine db.Queryable, req CreateUserRequest) (*structs.User, error) {
 	q := sq.Insert("users").
-		Columns("email", "name", "auth_type", "password_hash", "sso_subject", "role").
-		Values(req.Email, req.Name, req.AuthType, req.PasswordHash, req.SSOSubject, req.Role)
+		Columns("email", "name", "auth_type", "password_hash", "sso_subject", "profile_image_url", "role").
+		Values(req.Email, req.Name, req.AuthType, req.PasswordHash, req.SSOSubject, req.ProfileImageURL, req.Role)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
@@ -176,25 +195,16 @@ func CreateUser(engine db.Queryable, req CreateUserRequest) (*structs.User, erro
 }
 
 type UpdateUserRequest struct {
-	Name   *string
-	Role   *string
-	Active *bool
+	Name            *string
+	Role            *string
+	Active          *bool
+	PasswordHash    *string
+	ProfileImageURL *string
 }
 
 func DeleteUser(engine db.Queryable, id int) error {
-	q := sq.Update("users").Set("active", false).Where(sq.Eq{"id": id})
-
-	qStr, args, err := q.ToSql()
-	if err != nil {
-		return fmt.Errorf("failed to build sql query: %w", err)
-	}
-
-	_, err = engine.Exec(qStr, args...)
-	if err != nil {
-		return fmt.Errorf("failed to execute sql query: %w", err)
-	}
-
-	return nil
+	_, err := engine.Exec("DELETE FROM users WHERE id = ?", id)
+	return err
 }
 
 func UpdateUser(engine db.Queryable, id int, req UpdateUserRequest) (*structs.User, error) {
@@ -211,6 +221,14 @@ func UpdateUser(engine db.Queryable, id int, req UpdateUserRequest) (*structs.Us
 	}
 	if req.Active != nil {
 		q = q.Set("active", *req.Active)
+		hasUpdate = true
+	}
+	if req.PasswordHash != nil {
+		q = q.Set("password_hash", *req.PasswordHash)
+		hasUpdate = true
+	}
+	if req.ProfileImageURL != nil {
+		q = q.Set("profile_image_url", *req.ProfileImageURL)
 		hasUpdate = true
 	}
 

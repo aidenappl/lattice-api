@@ -25,7 +25,7 @@ func HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if user.ID == id {
-		responder.SendError(w, http.StatusBadRequest, "cannot deactivate yourself")
+		responder.SendError(w, http.StatusBadRequest, "cannot delete yourself")
 		return
 	}
 
