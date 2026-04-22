@@ -100,6 +100,8 @@ func main() {
 	workerHandler.OnConnect = func(session *socket.WorkerSession) {
 		logger.Info("worker", "connected", logger.F{"worker_id": session.WorkerID})
 		_ = query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "online")
+		// Cancel any pending disconnect alert (worker reconnected within grace period)
+		mailer.CancelDisconnectAlert(session.WorkerID)
 		adminHub.BroadcastJSON(map[string]any{
 			"type":      "worker_connected",
 			"worker_id": session.WorkerID,
@@ -114,11 +116,22 @@ func main() {
 			"type":      "worker_disconnected",
 			"worker_id": session.WorkerID,
 		})
+		// Fetch worker name for richer notifications
+		workerName := fmt.Sprintf("Worker %d", session.WorkerID)
+		if w, wErr := query.GetWorkerByID(db.DB, session.WorkerID); wErr == nil {
+			workerName = w.Name
+		}
 		webhooks.Fire("worker.disconnected", map[string]any{
-			"worker_id": session.WorkerID,
+			"worker_id":   session.WorkerID,
+			"worker_name": workerName,
 		})
-		mailer.Notify("worker.disconnected", "Worker Disconnected",
-			fmt.Sprintf("Worker %d went offline.", session.WorkerID))
+		// Schedule disconnect alert with configurable grace period
+		wID := session.WorkerID
+		wName := workerName
+		mailer.ScheduleDisconnectAlert(wID, func() {
+			mailer.Notify("worker.disconnected", "Worker Disconnected",
+				fmt.Sprintf("%s has gone offline.\n\nThe WebSocket connection to this worker was lost. This could be caused by a network interruption, a restart, or a crash.\n\nCheck the worker status in the Lattice dashboard for more details.", wName))
+		})
 	}
 
 	//  Handle incoming messages from workers. These include heartbeats, container status updates, deployment progress, and more. We process some messages synchronously (like heartbeats and lifecycle logs) to ensure the database is updated before broadcasting to the frontend, while others are processed asynchronously to optimize for lower latency.
@@ -202,11 +215,17 @@ func main() {
 				"payload":   msg.Payload,
 			})
 			safeGo("container-health", func() { handleContainerHealthStatus(msg.Payload) })
-			if hs, _ := msg.Payload["health_status"].(string); hs == "unhealthy" {
+			hs, _ := msg.Payload["health_status"].(string)
+			cName, _ := msg.Payload["container_name"].(string)
+			if hs == "unhealthy" {
 				webhooks.Fire("container.unhealthy", msg.Payload)
-				cName, _ := msg.Payload["container_name"].(string)
-				mailer.Notify("container.unhealthy", "Container Unhealthy",
-					fmt.Sprintf("Container %s is unhealthy.", cName))
+				// Only alert after consecutive threshold is reached
+				if mailer.TrackUnhealthy(cName) && mailer.ShouldAlert("container.unhealthy", cName) {
+					mailer.Notify("container.unhealthy", "Container Unhealthy",
+						fmt.Sprintf("Container <strong>%s</strong> is failing its health check.\n\nThe container's health status has changed to unhealthy. This typically means the health check command is returning a non-zero exit code.\n\nReview the container logs and health check configuration in the Lattice dashboard.", cName))
+				}
+			} else if hs == "healthy" && cName != "" {
+				mailer.ClearUnhealthy(cName)
 			}
 
 		case socket.MsgContainerSync:
@@ -304,8 +323,14 @@ func main() {
 				"goroutine": goroutine,
 				"panic":     panicMsg,
 			})
-			mailer.Notify("worker.crash", "Worker Crashed",
-				fmt.Sprintf("Worker %d crashed.\nGoroutine: %s\nPanic: %s", session.WorkerID, goroutine, panicMsg))
+			workerCrashName := fmt.Sprintf("Worker %d", session.WorkerID)
+			if w, wErr := query.GetWorkerByID(db.DB, session.WorkerID); wErr == nil {
+				workerCrashName = w.Name
+			}
+			if mailer.ShouldAlert("worker.crash", fmt.Sprintf("%d", session.WorkerID)) {
+				mailer.Notify("worker.crash", "Worker Crashed",
+					fmt.Sprintf("<strong>%s</strong> experienced an unrecoverable panic.\n\n<strong>Goroutine:</strong> %s\n<strong>Panic:</strong> %s\n\nThe runner process has crashed and will need to be restarted. If the runner is configured as a systemd service, it should restart automatically.", workerCrashName, goroutine, panicMsg))
+			}
 
 		case socket.MsgListVolumesResponse:
 			adminHub.BroadcastJSON(map[string]any{
@@ -553,6 +578,10 @@ func main() {
 	admin.HandleFunc("/smtp-config", middleware.RequireAdmin(routers.HandleUpdateSMTPConfig)).Methods(http.MethodPut)
 	admin.HandleFunc("/smtp-config/test", middleware.RequireAdmin(routers.HandleTestSMTP)).Methods(http.MethodPost)
 
+	// Notification preferences
+	admin.HandleFunc("/notification-prefs", middleware.RequireAdmin(routers.HandleGetNotificationPrefs)).Methods(http.MethodGet)
+	admin.HandleFunc("/notification-prefs", middleware.RequireAdmin(routers.HandleUpdateNotificationPrefs)).Methods(http.MethodPut)
+
 	// Overview (dashboard)
 	admin.HandleFunc("/overview", routers.HandleGetOverview).Methods(http.MethodGet)
 	admin.HandleFunc("/fleet-metrics", routers.HandleGetFleetMetrics).Methods(http.MethodGet)
@@ -758,16 +787,28 @@ func handleDeploymentProgress(payload map[string]any) {
 			"deployment_id": int(deploymentID),
 			"message":       message,
 		})
+		stackLabel := fmt.Sprintf("Deployment #%d", int(deploymentID))
+		if dep, dErr := query.GetDeploymentByID(db.DB, int(deploymentID)); dErr == nil {
+			if s, sErr := query.GetStackByID(db.DB, dep.StackID); sErr == nil {
+				stackLabel = fmt.Sprintf("<strong>%s</strong> (Deployment #%d)", s.Name, int(deploymentID))
+			}
+		}
 		mailer.Notify("deployment.failed", "Deployment Failed",
-			fmt.Sprintf("Deployment %d failed: %s", int(deploymentID), message))
+			fmt.Sprintf("%s has failed.\n\n<strong>Error:</strong> %s\n\nAny successfully updated containers have been rolled back to their previous state. Review the deployment logs in the Lattice dashboard for details.", stackLabel, message))
 	}
 	if status == "deployed" {
 		webhooks.Fire("deployment.success", map[string]any{
 			"deployment_id": int(deploymentID),
 			"message":       message,
 		})
+		stackLabel := fmt.Sprintf("Deployment #%d", int(deploymentID))
+		if dep, dErr := query.GetDeploymentByID(db.DB, int(deploymentID)); dErr == nil {
+			if s, sErr := query.GetStackByID(db.DB, dep.StackID); sErr == nil {
+				stackLabel = fmt.Sprintf("<strong>%s</strong> (Deployment #%d)", s.Name, int(deploymentID))
+			}
+		}
 		mailer.Notify("deployment.success", "Deployment Successful",
-			fmt.Sprintf("Deployment %d completed successfully.", int(deploymentID)))
+			fmt.Sprintf("%s deployed successfully.\n\nAll containers have been updated and are running.", stackLabel))
 	}
 
 	// Update deployment status if it's a terminal/state-change status
