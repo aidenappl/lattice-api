@@ -53,40 +53,50 @@ func LoadConfig() *SMTPConfig {
 }
 
 // Send sends an email notification asynchronously.
+func doSend(subject, body string) error {
+	cfg := LoadConfig()
+	if !cfg.Enabled || cfg.Host == "" || cfg.Recipients == "" {
+		return fmt.Errorf("SMTP not configured or disabled")
+	}
+
+	recipients := strings.Split(cfg.Recipients, ",")
+	for i := range recipients {
+		recipients[i] = strings.TrimSpace(recipients[i])
+	}
+
+	from := cfg.FromEmail
+	if cfg.FromName != "" {
+		from = fmt.Sprintf("%s <%s>", cfg.FromName, cfg.FromEmail)
+	}
+
+	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
+		from,
+		strings.Join(recipients, ", "),
+		subject,
+		body,
+	)
+
+	addr := cfg.Host + ":" + cfg.Port
+	var auth smtp.Auth
+	if cfg.Username != "" {
+		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
+	}
+
+	return smtp.SendMail(addr, auth, cfg.FromEmail, recipients, []byte(msg))
+}
+
+// SendSync sends an email synchronously and returns any error.
+func SendSync(subject, body string) error {
+	return doSend(subject, body)
+}
+
+// Send sends an email asynchronously (fire-and-forget).
 func Send(subject, body string) {
 	go func() {
-		cfg := LoadConfig()
-		if !cfg.Enabled || cfg.Host == "" || cfg.Recipients == "" {
-			return
-		}
-
-		recipients := strings.Split(cfg.Recipients, ",")
-		for i := range recipients {
-			recipients[i] = strings.TrimSpace(recipients[i])
-		}
-
-		from := cfg.FromEmail
-		if cfg.FromName != "" {
-			from = fmt.Sprintf("%s <%s>", cfg.FromName, cfg.FromEmail)
-		}
-
-		msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
-			from,
-			strings.Join(recipients, ", "),
-			subject,
-			body,
-		)
-
-		addr := cfg.Host + ":" + cfg.Port
-		var auth smtp.Auth
-		if cfg.Username != "" {
-			auth = smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
-		}
-
-		if err := smtp.SendMail(addr, auth, cfg.FromEmail, recipients, []byte(msg)); err != nil {
+		if err := doSend(subject, body); err != nil {
 			logger.Error("mailer", "failed to send email", logger.F{"error": err, "subject": subject})
 		} else {
-			logger.Info("mailer", "email sent", logger.F{"subject": subject, "recipients": len(recipients)})
+			logger.Info("mailer", "email sent", logger.F{"subject": subject})
 		}
 	}()
 }

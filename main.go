@@ -524,6 +524,7 @@ func main() {
 	// SMTP Configuration
 	admin.HandleFunc("/smtp-config", middleware.RequireAdmin(routers.HandleGetSMTPConfig)).Methods(http.MethodGet)
 	admin.HandleFunc("/smtp-config", middleware.RequireAdmin(routers.HandleUpdateSMTPConfig)).Methods(http.MethodPut)
+	admin.HandleFunc("/smtp-config/test", middleware.RequireAdmin(routers.HandleTestSMTP)).Methods(http.MethodPost)
 
 	// Overview (dashboard)
 	admin.HandleFunc("/overview", routers.HandleGetOverview).Methods(http.MethodGet)

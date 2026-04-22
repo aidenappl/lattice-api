@@ -94,3 +94,14 @@ func HandleUpdateSMTPConfig(w http.ResponseWriter, r *http.Request) {
 
 	responder.New(w, nil, "SMTP configuration updated")
 }
+
+// HandleTestSMTP sends a test email using the current SMTP configuration.
+// POST /admin/smtp-config/test
+func HandleTestSMTP(w http.ResponseWriter, r *http.Request) {
+	err := mailer.SendSync("[Lattice] Test Email", "This is a test email from Lattice. If you received this, your SMTP configuration is working correctly.")
+	if err != nil {
+		responder.SendError(w, http.StatusBadRequest, "SMTP test failed: "+err.Error())
+		return
+	}
+	responder.New(w, nil, "test email sent successfully")
+}
