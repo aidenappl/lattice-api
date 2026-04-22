@@ -858,6 +858,11 @@ func handleContainerStatus(workerID int, payload map[string]any) map[string]any 
 	enriched["container_state"] = dbStatus
 
 	req := query.UpdateContainerRequest{Status: &dbStatus}
+	// Track when container started running
+	if dbStatus == "running" {
+		now := time.Now().UTC()
+		req.StartedAt = &now
+	}
 	// On start/recreate/restart, reset health_status to "starting" if the container has a healthcheck.
 	if (action == "start" || action == "recreate" || action == "restart") && c.HealthCheck != nil {
 		hs := "starting"
@@ -986,6 +991,11 @@ func handleContainerSync(payload map[string]any) {
 	if c.Status != latticeStatus {
 		req.Status = &latticeStatus
 		changed = true
+		// Track when container started running
+		if latticeStatus == "running" && c.Status != "running" {
+			now := time.Now().UTC()
+			req.StartedAt = &now
+		}
 	}
 
 	// If the container is no longer running (and not just paused), clear any stale health status.

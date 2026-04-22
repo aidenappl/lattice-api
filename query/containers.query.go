@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"time"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/aidenappl/lattice-api/db"
@@ -29,6 +30,7 @@ var containerColumns = []string{
 	"containers.registry_id",
 	"containers.depends_on",
 	"containers.active",
+	"containers.started_at",
 	"containers.updated_at",
 	"containers.inserted_at",
 }
@@ -56,6 +58,7 @@ func scanContainer(row scanner) (*structs.Container, error) {
 		&c.RegistryID,
 		&c.DependsOn,
 		&c.Active,
+		&c.StartedAt,
 		&c.UpdatedAt,
 		&c.InsertedAt,
 	)
@@ -231,6 +234,7 @@ type UpdateContainerRequest struct {
 	HealthStatus  *string
 	RegistryID    *int
 	DependsOn     *string
+	StartedAt     *time.Time
 	Active        *bool
 }
 
@@ -304,6 +308,10 @@ func UpdateContainer(engine db.Queryable, id int, req UpdateContainerRequest) (*
 	}
 	if req.DependsOn != nil {
 		q = q.Set("depends_on", *req.DependsOn)
+		hasUpdate = true
+	}
+	if req.StartedAt != nil {
+		q = q.Set("started_at", *req.StartedAt)
 		hasUpdate = true
 	}
 	if req.Active != nil {

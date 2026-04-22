@@ -22,7 +22,8 @@ type Container struct {
 	HealthStatus  string    `json:"health_status"`
 	RegistryID    *int      `json:"registry_id"`
 	DependsOn     *string   `json:"depends_on"`
-	Active        bool      `json:"active"`
-	UpdatedAt     time.Time `json:"updated_at"`
-	InsertedAt    time.Time `json:"inserted_at"`
+	Active        bool       `json:"active"`
+	StartedAt     *time.Time `json:"started_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	InsertedAt    time.Time  `json:"inserted_at"`
 }

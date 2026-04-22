@@ -54,6 +54,9 @@ func Init() {
 	// Auto-add columns if they don't exist (ignore error if already present)
 	_, _ = db.Exec("ALTER TABLE workers ADD COLUMN pending_action TEXT DEFAULT NULL")
 	_, _ = db.Exec("ALTER TABLE containers ADD COLUMN depends_on TEXT DEFAULT NULL")
+	_, _ = db.Exec("ALTER TABLE containers ADD COLUMN started_at DATETIME DEFAULT NULL")
+	// Backfill started_at for running containers that don't have it set
+	_, _ = db.Exec("UPDATE containers SET started_at = updated_at WHERE status = 'running' AND started_at IS NULL")
 	_, _ = db.Exec("ALTER TABLE stacks ADD COLUMN placement_constraints TEXT DEFAULT NULL")
 
 	// Rename forta_id -> sso_subject (Forta removal migration)
