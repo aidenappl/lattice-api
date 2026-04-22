@@ -7,26 +7,28 @@ import (
 	"time"
 )
 
-type visitor struct {
-	count       int
-	windowStart time.Time
+type tokenBucket struct {
+	tokens     float64
+	maxTokens  float64
+	refillRate float64 // tokens per second
+	lastRefill time.Time
 }
 
 type rateLimiter struct {
-	mu       sync.Mutex
-	visitors map[string]*visitor
+	mu      sync.Mutex
+	buckets map[string]*tokenBucket
 }
 
 func newRateLimiter() *rateLimiter {
-	rl := &rateLimiter{visitors: make(map[string]*visitor)}
+	rl := &rateLimiter{buckets: make(map[string]*tokenBucket)}
 	go func() {
 		for {
 			time.Sleep(5 * time.Minute)
 			rl.mu.Lock()
 			now := time.Now()
-			for ip, v := range rl.visitors {
-				if now.Sub(v.windowStart) > 2*time.Minute {
-					delete(rl.visitors, ip)
+			for ip, b := range rl.buckets {
+				if now.Sub(b.lastRefill) > 5*time.Minute {
+					delete(rl.buckets, ip)
 				}
 			}
 			rl.mu.Unlock()
@@ -35,18 +37,37 @@ func newRateLimiter() *rateLimiter {
 	return rl
 }
 
-func (rl *rateLimiter) allow(ip string, limit int, window time.Duration) bool {
+// allow checks if a request is allowed under the token bucket rate limit.
+// rps = requests per second (sustained), burst = max burst size.
+func (rl *rateLimiter) allow(ip string, rps float64, burst int) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
 	now := time.Now()
-	v, exists := rl.visitors[ip]
-	if !exists || now.Sub(v.windowStart) > window {
-		rl.visitors[ip] = &visitor{count: 1, windowStart: now}
+	b, exists := rl.buckets[ip]
+	if !exists {
+		rl.buckets[ip] = &tokenBucket{
+			tokens:     float64(burst) - 1,
+			maxTokens:  float64(burst),
+			refillRate: rps,
+			lastRefill: now,
+		}
 		return true
 	}
-	v.count++
-	return v.count <= limit
+
+	// Refill tokens based on elapsed time
+	elapsed := now.Sub(b.lastRefill).Seconds()
+	b.tokens += elapsed * b.refillRate
+	if b.tokens > b.maxTokens {
+		b.tokens = b.maxTokens
+	}
+	b.lastRefill = now
+
+	if b.tokens >= 1 {
+		b.tokens--
+		return true
+	}
+	return false
 }
 
 var (
@@ -69,8 +90,8 @@ func getClientIP(r *http.Request) string {
 	return host
 }
 
-// RateLimitMiddleware enforces per-IP rate limits.
-// Auth endpoints: 10 req/min. General admin API: 600 req/min.
+// RateLimitMiddleware enforces per-IP rate limits using token buckets.
+// Auth endpoints: 1 req/s, burst 5. General API: 30 req/s, burst 60.
 func RateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -78,40 +99,31 @@ func RateLimitMiddleware(next http.Handler) http.Handler {
 		// Skip rate limiting for non-API paths
 		if path == "/healthcheck" || strings.HasPrefix(path, "/ws/") ||
 			path == "/auth/sso/config" || path == "/auth/sso/login" ||
-			path == "/version" || path == "/install/runner" {
+			path == "/auth/sso/callback" || path == "/version" ||
+			path == "/install/runner" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		ip := getClientIP(r)
 
-		// Deploy token endpoints: strict limit (brute-force protection)
-		if strings.HasPrefix(path, "/api/deploy/") {
-			if !authLimiter.allow(ip, 10, time.Minute) {
+		// Deploy token + auth endpoints: 1 rps, burst 5
+		if strings.HasPrefix(path, "/api/deploy/") ||
+			path == "/auth/login" || path == "/auth/refresh" {
+			if !authLimiter.allow(ip, 1, 5) {
 				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("Retry-After", "60")
+				w.Header().Set("Retry-After", "5")
 				w.WriteHeader(http.StatusTooManyRequests)
 				w.Write([]byte(`{"success":false,"error":"rate_limited","error_message":"too many requests, try again later","error_code":4290}`))
 				return
 			}
 		}
 
-		// Auth endpoints: strict limit (brute-force protection)
-		if path == "/auth/login" || path == "/auth/refresh" || path == "/auth/sso/callback" {
-			if !authLimiter.allow(ip, 20, time.Minute) {
-				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("Retry-After", "60")
-				w.WriteHeader(http.StatusTooManyRequests)
-				w.Write([]byte(`{"success":false,"error":"rate_limited","error_message":"too many requests, try again later","error_code":4290}`))
-				return
-			}
-		}
-
-		// General API: generous limit (normal dashboard use is ~10-15 req per page load)
+		// General API: 30 rps, burst 60
 		if strings.HasPrefix(path, "/admin/") || strings.HasPrefix(path, "/auth/") {
-			if !generalLimiter.allow(ip, 600, time.Minute) {
+			if !generalLimiter.allow(ip, 30, 60) {
 				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set("Retry-After", "10")
+				w.Header().Set("Retry-After", "2")
 				w.WriteHeader(http.StatusTooManyRequests)
 				w.Write([]byte(`{"success":false,"error":"rate_limited","error_message":"too many requests, try again later","error_code":4290}`))
 				return
