@@ -162,6 +162,36 @@ func main() {
 			dockerVersion, _ := msg.Payload["docker_version"].(string)
 			ipAddress, _ := msg.Payload["ip_address"].(string)
 			runnerVersion, _ := msg.Payload["runner_version"].(string)
+
+			// Resolve pending upgrade action on reconnect
+			if runnerVersion != "" {
+				if worker, err := query.GetWorkerByID(db.DB, session.WorkerID); err == nil && worker.PendingAction != nil {
+					var pa map[string]string
+					if json.Unmarshal([]byte(*worker.PendingAction), &pa) == nil && pa["action"] == "upgrade_runner" {
+						oldVersion := ""
+						if worker.RunnerVersion != nil {
+							oldVersion = *worker.RunnerVersion
+						}
+						_ = query.SetWorkerPendingAction(db.DB, session.WorkerID, nil)
+						status := "success"
+						message := fmt.Sprintf("upgraded to %s", runnerVersion)
+						if runnerVersion == oldVersion {
+							status = "failed"
+							message = "runner restarted with same version"
+						}
+						adminHub.BroadcastJSON(map[string]any{
+							"type":      "worker_action_status",
+							"worker_id": session.WorkerID,
+							"payload": map[string]any{
+								"action":  "upgrade_runner",
+								"status":  status,
+								"message": message,
+							},
+						})
+					}
+				}
+			}
+
 			_ = query.UpdateWorkerInfo(db.DB, session.WorkerID, osStr, arch, dockerVersion, ipAddress, runnerVersion)
 
 		case socket.MsgDeploymentProgress:
