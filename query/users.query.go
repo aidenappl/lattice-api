@@ -118,6 +118,25 @@ func GetUserByEmail(engine db.Queryable, email string) (*structs.User, error) {
 	return u, nil
 }
 
+func GetUserBySSOSubject(engine db.Queryable, subject string) (*structs.User, error) {
+	q := sq.Select(userColumns...).From("users").Where(sq.Eq{"users.sso_subject": subject})
+	qStr, args, err := q.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build sql query: %w", err)
+	}
+	row := engine.QueryRow(qStr, args...)
+	u, err := scanUser(row)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan user: %w", err)
+	}
+	return u, nil
+}
+
+func UpdateUserSSOSubject(engine db.Queryable, userID int, subject string) error {
+	_, err := engine.Exec("UPDATE users SET sso_subject = ? WHERE id = ?", subject, userID)
+	return err
+}
+
 func CountUsers(engine db.Queryable) (int, error) {
 	var count int
 	err := engine.QueryRow("SELECT COUNT(*) FROM users").Scan(&count)
@@ -129,13 +148,14 @@ type CreateUserRequest struct {
 	Name         *string
 	AuthType     string
 	PasswordHash *string
+	SSOSubject   *string
 	Role         string
 }
 
 func CreateUser(engine db.Queryable, req CreateUserRequest) (*structs.User, error) {
 	q := sq.Insert("users").
-		Columns("email", "name", "auth_type", "password_hash", "role").
-		Values(req.Email, req.Name, req.AuthType, req.PasswordHash, req.Role)
+		Columns("email", "name", "auth_type", "password_hash", "sso_subject", "role").
+		Values(req.Email, req.Name, req.AuthType, req.PasswordHash, req.SSOSubject, req.Role)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/sso"
+	"github.com/aidenappl/lattice-api/structs"
 )
 
 // userInfoKeys returns a comma-separated list of keys from a userinfo map,
@@ -99,9 +100,19 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	name := sso.GetUserName(userInfo)
 
-	// Find or create user
-	user, err := query.GetUserByEmail(db.DB, email)
-	if err != nil || user == nil {
+	// Extract the stable subject identifier (OIDC "sub" claim)
+	subject := sso.GetUserIdentifier(userInfo)
+
+	// Find user: try sso_subject first (stable), fall back to email
+	var user *structs.User
+	if subject != "" {
+		user, _ = query.GetUserBySSOSubject(db.DB, subject)
+	}
+	if user == nil {
+		user, _ = query.GetUserByEmail(db.DB, email)
+	}
+
+	if user == nil {
 		if !cfg.AutoProvision {
 			logger.Info("sso", "user not found and auto-provisioning disabled", logger.F{"email": email})
 			http.Redirect(w, r, loginErrorURL("sso_no_account"), http.StatusFound)
@@ -109,17 +120,22 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		// Auto-create with pending role (requires admin approval)
 		user, err = query.CreateUser(db.DB, query.CreateUserRequest{
-			Email:    email,
-			Name:     &name,
-			AuthType: "sso",
-			Role:     "pending",
+			Email:      email,
+			Name:       &name,
+			AuthType:   "sso",
+			SSOSubject: &subject,
+			Role:       "pending",
 		})
 		if err != nil {
 			logger.Error("sso", "failed to create user", logger.F{"email": email, "error": err})
 			http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
 			return
 		}
-		logger.Info("sso", "auto-provisioned user", logger.F{"email": email, "user_id": user.ID})
+		logger.Info("sso", "auto-provisioned user", logger.F{"email": email, "user_id": user.ID, "sso_subject": subject})
+	} else if user.SSOSubject == nil && subject != "" {
+		// Backfill sso_subject for existing users who logged in before this was added
+		_ = query.UpdateUserSSOSubject(db.DB, user.ID, subject)
+		logger.Info("sso", "backfilled sso_subject", logger.F{"user_id": user.ID, "sso_subject": subject})
 	}
 
 	if !user.Active {

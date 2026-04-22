@@ -61,8 +61,9 @@ func Init() {
 	// If forta_id doesn't exist, add sso_subject directly
 	_, _ = db.Exec("ALTER TABLE users ADD COLUMN sso_subject VARCHAR(255) DEFAULT NULL")
 
-	// Expand auth_type to support "sso" (may be an ENUM limited to 'local','oauth')
+	// Expand auth_type and role columns to support new values (may be ENUMs)
 	_, _ = db.Exec("ALTER TABLE users MODIFY COLUMN auth_type VARCHAR(20) NOT NULL DEFAULT 'local'")
+	_, _ = db.Exec("ALTER TABLE users MODIFY COLUMN role VARCHAR(20) NOT NULL DEFAULT 'viewer'")
 
 	// Auto-create global_env_vars table if it doesn't exist
 	_, _ = db.Exec("CREATE TABLE IF NOT EXISTS global_env_vars (" +
