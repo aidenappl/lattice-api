@@ -18,6 +18,7 @@ import (
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/logger"
+	"github.com/aidenappl/lattice-api/mailer"
 	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/retention"
@@ -110,6 +111,8 @@ func main() {
 		webhooks.Fire("worker.disconnected", map[string]any{
 			"worker_id": session.WorkerID,
 		})
+		mailer.Notify("worker.disconnected", "Worker Disconnected",
+			fmt.Sprintf("Worker %d went offline.", session.WorkerID))
 	}
 
 	//  Handle incoming messages from workers. These include heartbeats, container status updates, deployment progress, and more. We process some messages synchronously (like heartbeats and lifecycle logs) to ensure the database is updated before broadcasting to the frontend, while others are processed asynchronously to optimize for lower latency.
@@ -191,6 +194,9 @@ func main() {
 			safeGo("container-health", func() { handleContainerHealthStatus(msg.Payload) })
 			if hs, _ := msg.Payload["health_status"].(string); hs == "unhealthy" {
 				webhooks.Fire("container.unhealthy", msg.Payload)
+				cName, _ := msg.Payload["container_name"].(string)
+				mailer.Notify("container.unhealthy", "Container Unhealthy",
+					fmt.Sprintf("Container %s is unhealthy.", cName))
 			}
 
 		case socket.MsgContainerSync:
@@ -272,6 +278,8 @@ func main() {
 				"goroutine": goroutine,
 				"panic":     panicMsg,
 			})
+			mailer.Notify("worker.crash", "Worker Crashed",
+				fmt.Sprintf("Worker %d crashed.\nGoroutine: %s\nPanic: %s", session.WorkerID, goroutine, panicMsg))
 
 		case socket.MsgListVolumesResponse:
 			adminHub.BroadcastJSON(map[string]any{
@@ -513,6 +521,10 @@ func main() {
 	admin.HandleFunc("/sso-config", middleware.RequireAdmin(routers.HandleGetSSOConfig)).Methods(http.MethodGet)
 	admin.HandleFunc("/sso-config", middleware.RequireAdmin(routers.HandleUpdateSSOConfig)).Methods(http.MethodPut)
 
+	// SMTP Configuration
+	admin.HandleFunc("/smtp-config", middleware.RequireAdmin(routers.HandleGetSMTPConfig)).Methods(http.MethodGet)
+	admin.HandleFunc("/smtp-config", middleware.RequireAdmin(routers.HandleUpdateSMTPConfig)).Methods(http.MethodPut)
+
 	// Overview (dashboard)
 	admin.HandleFunc("/overview", routers.HandleGetOverview).Methods(http.MethodGet)
 	admin.HandleFunc("/fleet-metrics", routers.HandleGetFleetMetrics).Methods(http.MethodGet)
@@ -692,18 +704,22 @@ func handleDeploymentProgress(payload map[string]any) {
 		logger.Error("deploy", "failed to store deployment log", logger.F{"error": err})
 	}
 
-	// Fire webhooks on deployment terminal states
+	// Fire webhooks and email notifications on deployment terminal states
 	if status == "failed" {
 		webhooks.Fire("deployment.failed", map[string]any{
 			"deployment_id": int(deploymentID),
 			"message":       message,
 		})
+		mailer.Notify("deployment.failed", "Deployment Failed",
+			fmt.Sprintf("Deployment %d failed: %s", int(deploymentID), message))
 	}
 	if status == "deployed" {
 		webhooks.Fire("deployment.success", map[string]any{
 			"deployment_id": int(deploymentID),
 			"message":       message,
 		})
+		mailer.Notify("deployment.success", "Deployment Successful",
+			fmt.Sprintf("Deployment %d completed successfully.", int(deploymentID)))
 	}
 
 	// Update deployment status if it's a terminal/state-change status

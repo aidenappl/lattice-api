@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/logger"
+	"github.com/aidenappl/lattice-api/mailer"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/registry"
 	"github.com/aidenappl/lattice-api/webhooks"
@@ -128,6 +130,8 @@ func poll() {
 						"tag":        currentTag,
 						"message":    "New image version detected. Use a deploy token to trigger deployment.",
 					})
+					mailer.Notify("image.auto_deploy_requested", "Auto-Deploy Triggered",
+						fmt.Sprintf("New image version detected for %s:%s in stack %q. Auto-deploy requested.", repo, currentTag, stack.Name))
 				}
 			}
 			lastKnownDigests[cacheKey] = digest
