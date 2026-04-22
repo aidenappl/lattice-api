@@ -44,6 +44,7 @@ const (
 	MsgListNetworks   = "list_networks"
 	MsgCreateNetwork  = "create_network"
 	MsgRemoveNetwork  = "remove_network"
+	MsgForceRemove    = "force_remove"
 	MsgDeploymentPing = "deployment_ping"
 )
 

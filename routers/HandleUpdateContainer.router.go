@@ -41,6 +41,17 @@ func HandleUpdateContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If renaming, ensure new name is unique across all stacks
+	if body.Name != nil {
+		if exists, err := query.ContainerNameExists(db.DB, *body.Name, &id); err != nil {
+			responder.QueryError(w, err, "failed to check container name")
+			return
+		} else if exists {
+			responder.SendError(w, http.StatusConflict, "a container with the name '"+*body.Name+"' already exists")
+			return
+		}
+	}
+
 	container, err := query.UpdateContainer(db.DB, id, query.UpdateContainerRequest{
 		Name:          body.Name,
 		Image:         body.Image,

@@ -205,6 +205,22 @@ func main() {
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
+			// Detect orphaned containers from failed deploys
+			if containerName, _ := msg.Payload["container_name"].(string); containerName != "" {
+				if strings.Contains(containerName, "-retired-") ||
+					strings.HasSuffix(containerName, "-lattice-retired") ||
+					strings.HasSuffix(containerName, "-lattice-updating") {
+					latticeStatus, _ := msg.Payload["status"].(string)
+					adminHub.BroadcastJSON(map[string]any{
+						"type":      "orphaned_container",
+						"worker_id": session.WorkerID,
+						"payload": map[string]any{
+							"container_name": containerName,
+							"status":         latticeStatus,
+						},
+					})
+				}
+			}
 			safeGo("container-sync", func() { handleContainerSync(msg.Payload) })
 
 		case socket.MsgContainerLogs:
@@ -424,6 +440,7 @@ func main() {
 	admin.HandleFunc("/workers/{id}/upgrade", middleware.RequireAdmin(workerActionHandler.HandleUpgradeRunner)).Methods(http.MethodPost)
 	admin.HandleFunc("/workers/{id}/stop-all", middleware.RequireEditor(workerActionHandler.HandleStopAllContainers)).Methods(http.MethodPost)
 	admin.HandleFunc("/workers/{id}/start-all", middleware.RequireEditor(workerActionHandler.HandleStartAllContainers)).Methods(http.MethodPost)
+	admin.HandleFunc("/workers/{id}/force-remove", middleware.RequireEditor(containerActionHandler.HandleForceRemoveContainer)).Methods(http.MethodPost)
 	admin.HandleFunc("/workers/{id}/volumes", volumeHandler.HandleListVolumes).Methods(http.MethodGet)
 	admin.HandleFunc("/workers/{id}/volumes", middleware.RequireEditor(volumeHandler.HandleCreateVolume)).Methods(http.MethodPost)
 	admin.HandleFunc("/workers/{id}/volumes/{name}", middleware.RequireEditor(volumeHandler.HandleDeleteVolume)).Methods(http.MethodDelete)

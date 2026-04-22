@@ -137,6 +137,15 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 			containerName = svc.ContainerName
 		}
 
+		// Check for name conflicts with existing containers in other stacks
+		if exists, err := query.ContainerNameExists(tx, containerName, nil); err != nil {
+			responder.QueryError(w, err, "failed to check container name")
+			return
+		} else if exists {
+			responder.SendError(w, http.StatusConflict, fmt.Sprintf("container name '%s' is already in use by another stack", containerName))
+			return
+		}
+
 		req := query.CreateContainerRequest{
 			StackID:  stack.ID,
 			Name:     containerName,

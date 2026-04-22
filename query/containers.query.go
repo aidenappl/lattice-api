@@ -353,3 +353,23 @@ func GetContainerByName(engine db.Queryable, name string) (*structs.Container, e
 
 	return c, nil
 }
+
+// ContainerNameExists checks if an active container with the given name exists,
+// optionally excluding a specific container ID (for updates/renames).
+func ContainerNameExists(engine db.Queryable, name string, excludeID *int) (bool, error) {
+	q := sq.Select("COUNT(*)").From("containers").
+		Where(sq.Eq{"name": name}).
+		Where(sq.Eq{"active": true})
+	if excludeID != nil {
+		q = q.Where(sq.NotEq{"id": *excludeID})
+	}
+	qStr, args, err := q.ToSql()
+	if err != nil {
+		return false, err
+	}
+	var count int
+	if err := engine.QueryRow(qStr, args...).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
