@@ -84,6 +84,15 @@ func HandleSyncCompose(w http.ResponseWriter, r *http.Request) {
 
 		req := query.UpdateContainerRequest{}
 
+		// Network aliases — when container_name differs from the compose service
+		// key, the service key must be added as a Docker network alias so other
+		// containers can resolve it by service name (as docker-compose does).
+		if svc.ContainerName != "" && svc.ContainerName != svcKey {
+			aliasJSON, _ := json.Marshal([]string{svcKey})
+			aliasStr := string(aliasJSON)
+			req.NetworkAliases = &aliasStr
+		}
+
 		// Health check — normalize Test to ["CMD-SHELL", "command"] format
 		if svc.Healthcheck != nil && !svc.Healthcheck.Disable {
 			svc.Healthcheck.Test = normalizeHealthTest(svc.Healthcheck.Test)

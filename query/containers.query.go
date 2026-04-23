@@ -29,6 +29,7 @@ var containerColumns = []string{
 	"containers.health_status",
 	"containers.registry_id",
 	"containers.depends_on",
+	"containers.network_aliases",
 	"containers.active",
 	"containers.started_at",
 	"containers.updated_at",
@@ -57,6 +58,7 @@ func scanContainer(row scanner) (*structs.Container, error) {
 		&c.HealthStatus,
 		&c.RegistryID,
 		&c.DependsOn,
+		&c.NetworkAliases,
 		&c.Active,
 		&c.StartedAt,
 		&c.UpdatedAt,
@@ -187,16 +189,17 @@ type CreateContainerRequest struct {
 	Command       *string
 	Entrypoint    *string
 	HealthCheck   *string
-	RegistryID    *int
-	DependsOn     *string
+	RegistryID       *int
+	DependsOn        *string
+	NetworkAliases   *string
 }
 
 func CreateContainer(engine db.Queryable, req CreateContainerRequest) (*structs.Container, error) {
 	q := sq.Insert("containers").
 		Columns("stack_id", "name", "image", "tag", "port_mappings", "env_vars", "volumes",
-			"cpu_limit", "memory_limit", "replicas", "restart_policy", "command", "entrypoint", "health_check", "registry_id", "depends_on").
+			"cpu_limit", "memory_limit", "replicas", "restart_policy", "command", "entrypoint", "health_check", "registry_id", "depends_on", "network_aliases").
 		Values(req.StackID, req.Name, req.Image, req.Tag, req.PortMappings, req.EnvVars, req.Volumes,
-			req.CPULimit, req.MemoryLimit, req.Replicas, req.RestartPolicy, req.Command, req.Entrypoint, req.HealthCheck, req.RegistryID, req.DependsOn)
+			req.CPULimit, req.MemoryLimit, req.Replicas, req.RestartPolicy, req.Command, req.Entrypoint, req.HealthCheck, req.RegistryID, req.DependsOn, req.NetworkAliases)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
@@ -233,9 +236,10 @@ type UpdateContainerRequest struct {
 	HealthCheck   *string
 	HealthStatus  *string
 	RegistryID    *int
-	DependsOn     *string
-	StartedAt     *time.Time
-	Active        *bool
+	DependsOn        *string
+	NetworkAliases   *string
+	StartedAt        *time.Time
+	Active           *bool
 }
 
 func UpdateContainer(engine db.Queryable, id int, req UpdateContainerRequest) (*structs.Container, error) {
@@ -308,6 +312,10 @@ func UpdateContainer(engine db.Queryable, id int, req UpdateContainerRequest) (*
 	}
 	if req.DependsOn != nil {
 		q = q.Set("depends_on", *req.DependsOn)
+		hasUpdate = true
+	}
+	if req.NetworkAliases != nil {
+		q = q.Set("network_aliases", *req.NetworkAliases)
 		hasUpdate = true
 	}
 	if req.StartedAt != nil {

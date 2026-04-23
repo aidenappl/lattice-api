@@ -120,6 +120,9 @@ func Init() {
 		inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 	)`)
 
+	// Add network_aliases column for compose service name DNS resolution
+	_, _ = db.Exec("ALTER TABLE containers ADD COLUMN network_aliases TEXT DEFAULT NULL AFTER depends_on")
+
 	// Auto-create settings table if it doesn't exist
 	_, _ = db.Exec("CREATE TABLE IF NOT EXISTS settings (" +
 		"`key` VARCHAR(255) PRIMARY KEY," +

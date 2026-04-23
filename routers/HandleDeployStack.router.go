@@ -16,6 +16,7 @@ import (
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/socket"
 	"github.com/gorilla/mux"
+	"gopkg.in/yaml.v3"
 )
 
 type DeployHandler struct {
@@ -119,6 +120,27 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 	// Load all registries for auto-matching by image hostname
 	allRegistries, _ := query.ListRegistries(db.DB)
 
+	// Build a compose-derived alias map so containers created before the
+	// network_aliases column was added still get the correct DNS aliases.
+	// Maps container name -> []string of compose service keys.
+	composeAliases := make(map[string][]string)
+	if stack.ComposeYAML != nil && *stack.ComposeYAML != "" {
+		var compose composeFile
+		if yaml.Unmarshal([]byte(*stack.ComposeYAML), &compose) == nil {
+			for svcKey, svc := range compose.Services {
+				cName := svcKey
+				if svc.ContainerName != "" {
+					cName = svc.ContainerName
+				}
+				// If the container name differs from the service key, the service
+				// key needs to be a DNS alias (docker-compose does this automatically).
+				if cName != svcKey {
+					composeAliases[cName] = append(composeAliases[cName], svcKey)
+				}
+			}
+		}
+	}
+
 	// Build container specs with registry auth resolved
 	containerSpecs := make([]map[string]any, 0, len(*containers))
 	for _, c := range *containers {
@@ -134,6 +156,31 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		// Assign all stack-level networks to every container so Docker DNS resolves
 		if len(networkNames) > 0 {
 			spec["networks"] = networkNames
+		}
+
+		// Network aliases — merge from DB column and compose-derived map.
+		// This ensures containers get their compose service names as DNS aliases
+		// even if they were imported before the network_aliases column existed.
+		var aliases []string
+		if c.NetworkAliases != nil {
+			_ = json.Unmarshal([]byte(*c.NetworkAliases), &aliases)
+		}
+		if composeAlias, ok := composeAliases[c.Name]; ok {
+			for _, a := range composeAlias {
+				found := false
+				for _, existing := range aliases {
+					if existing == a {
+						found = true
+						break
+					}
+				}
+				if !found {
+					aliases = append(aliases, a)
+				}
+			}
+		}
+		if len(aliases) > 0 {
+			spec["network_aliases"] = aliases
 		}
 
 		if c.PortMappings != nil {

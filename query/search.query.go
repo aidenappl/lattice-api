@@ -2,7 +2,9 @@ package query
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/aidenappl/lattice-api/db"
@@ -45,109 +47,228 @@ func escapeLike(s string) string {
 	return s
 }
 
-func Search(engine db.Queryable, q string, limit int) (*SearchResults, error) {
-	if limit <= 0 || limit > 10 {
-		limit = 5
+// matchScore returns a relevance score for how well name matches query.
+// Lower is better: 0 = exact, 1 = prefix, 2 = word-boundary, 3 = substring.
+func matchScore(name, query string) int {
+	lower := strings.ToLower(name)
+	lq := strings.ToLower(query)
+	if lower == lq {
+		return 0
 	}
+	if strings.HasPrefix(lower, lq) {
+		return 1
+	}
+	for _, sep := range []string{"-", "_", ".", " ", "/"} {
+		if strings.Contains(lower, sep+lq) {
+			return 2
+		}
+	}
+	return 3
+}
+
+// bestScore returns the best (lowest) match score across multiple fields.
+func bestScore(query string, fields ...string) int {
+	best := 4
+	for _, f := range fields {
+		if f == "" {
+			continue
+		}
+		if s := matchScore(f, query); s < best {
+			best = s
+		}
+	}
+	return best
+}
+
+func Search(engine db.Queryable, q string, limit int) (*SearchResults, error) {
+	if limit <= 0 || limit > 20 {
+		limit = 8
+	}
+	// Fetch more than needed so we can re-rank and truncate
+	fetchLimit := limit * 3
 
 	pattern := "%" + escapeLike(q) + "%"
 	results := &SearchResults{}
 
-	// Workers — match on name or hostname
-	wQuery, wArgs, err := sq.Select("id", "name", "hostname", "status").
-		From("workers").
-		Where(sq.Eq{"active": true}).
-		Where(sq.Or{
-			sq.Like{"name": pattern},
-			sq.Like{"hostname": pattern},
-		}).
-		OrderBy("name ASC").
-		Limit(uint64(limit)).
-		ToSql()
-	if err != nil {
-		return nil, fmt.Errorf("failed to build workers search query: %w", err)
-	}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
 
-	wRows, err := engine.Query(wQuery, wArgs...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to search workers: %w", err)
-	}
-	defer wRows.Close()
-
-	for wRows.Next() {
-		var w SearchWorker
-		if err := wRows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Status); err != nil {
-			return nil, fmt.Errorf("failed to scan worker search result: %w", err)
+	setErr := func(err error) {
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
 		}
-		results.Workers = append(results.Workers, w)
+		mu.Unlock()
 	}
-	if err := wRows.Err(); err != nil {
-		return nil, err
-	}
+
+	wg.Add(3)
+
+	// Workers — match on name, hostname, or IP
+	go func() {
+		defer wg.Done()
+		query, args, err := sq.Select("id", "name", "hostname", "status").
+			From("workers").
+			Where(sq.Eq{"active": true}).
+			Where(sq.Or{
+				sq.Like{"name": pattern},
+				sq.Like{"hostname": pattern},
+				sq.Like{"COALESCE(ip_address, '')": pattern},
+			}).
+			Limit(uint64(fetchLimit)).
+			ToSql()
+		if err != nil {
+			setErr(fmt.Errorf("workers search query: %w", err))
+			return
+		}
+		rows, err := engine.Query(query, args...)
+		if err != nil {
+			setErr(fmt.Errorf("workers search: %w", err))
+			return
+		}
+		defer rows.Close()
+		var workers []SearchWorker
+		for rows.Next() {
+			var w SearchWorker
+			if err := rows.Scan(&w.ID, &w.Name, &w.Hostname, &w.Status); err != nil {
+				setErr(fmt.Errorf("scan worker: %w", err))
+				return
+			}
+			workers = append(workers, w)
+		}
+		if err := rows.Err(); err != nil {
+			setErr(err)
+			return
+		}
+		sort.Slice(workers, func(i, j int) bool {
+			is := bestScore(q, workers[i].Name, workers[i].Hostname)
+			js := bestScore(q, workers[j].Name, workers[j].Hostname)
+			if is != js {
+				return is < js
+			}
+			return len(workers[i].Name) < len(workers[j].Name)
+		})
+		if len(workers) > limit {
+			workers = workers[:limit]
+		}
+		mu.Lock()
+		results.Workers = workers
+		mu.Unlock()
+	}()
 
 	// Stacks — match on name or description
-	sQuery, sArgs, err := sq.Select("id", "name", "description", "status").
-		From("stacks").
-		Where(sq.Eq{"active": true}).
-		Where(sq.Or{
-			sq.Like{"name": pattern},
-			sq.Like{"COALESCE(description, '')": pattern},
-		}).
-		OrderBy("name ASC").
-		Limit(uint64(limit)).
-		ToSql()
-	if err != nil {
-		return nil, fmt.Errorf("failed to build stacks search query: %w", err)
-	}
-
-	sRows, err := engine.Query(sQuery, sArgs...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to search stacks: %w", err)
-	}
-	defer sRows.Close()
-
-	for sRows.Next() {
-		var s SearchStack
-		if err := sRows.Scan(&s.ID, &s.Name, &s.Description, &s.Status); err != nil {
-			return nil, fmt.Errorf("failed to scan stack search result: %w", err)
+	go func() {
+		defer wg.Done()
+		query, args, err := sq.Select("id", "name", "description", "status").
+			From("stacks").
+			Where(sq.Eq{"active": true}).
+			Where(sq.Or{
+				sq.Like{"name": pattern},
+				sq.Like{"COALESCE(description, '')": pattern},
+			}).
+			Limit(uint64(fetchLimit)).
+			ToSql()
+		if err != nil {
+			setErr(fmt.Errorf("stacks search query: %w", err))
+			return
 		}
-		results.Stacks = append(results.Stacks, s)
-	}
-	if err := sRows.Err(); err != nil {
-		return nil, err
-	}
-
-	// Containers — match on name or image
-	cQuery, cArgs, err := sq.Select("id", "stack_id", "name", "image", "tag", "status").
-		From("containers").
-		Where(sq.Eq{"active": true}).
-		Where(sq.Or{
-			sq.Like{"name": pattern},
-			sq.Like{"image": pattern},
-		}).
-		OrderBy("name ASC").
-		Limit(uint64(limit)).
-		ToSql()
-	if err != nil {
-		return nil, fmt.Errorf("failed to build containers search query: %w", err)
-	}
-
-	cRows, err := engine.Query(cQuery, cArgs...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to search containers: %w", err)
-	}
-	defer cRows.Close()
-
-	for cRows.Next() {
-		var c SearchContainer
-		if err := cRows.Scan(&c.ID, &c.StackID, &c.Name, &c.Image, &c.Tag, &c.Status); err != nil {
-			return nil, fmt.Errorf("failed to scan container search result: %w", err)
+		rows, err := engine.Query(query, args...)
+		if err != nil {
+			setErr(fmt.Errorf("stacks search: %w", err))
+			return
 		}
-		results.Containers = append(results.Containers, c)
-	}
-	if err := cRows.Err(); err != nil {
-		return nil, err
-	}
+		defer rows.Close()
+		var stacks []SearchStack
+		for rows.Next() {
+			var s SearchStack
+			if err := rows.Scan(&s.ID, &s.Name, &s.Description, &s.Status); err != nil {
+				setErr(fmt.Errorf("scan stack: %w", err))
+				return
+			}
+			stacks = append(stacks, s)
+		}
+		if err := rows.Err(); err != nil {
+			setErr(err)
+			return
+		}
+		sort.Slice(stacks, func(i, j int) bool {
+			di, dj := "", ""
+			if stacks[i].Description != nil {
+				di = *stacks[i].Description
+			}
+			if stacks[j].Description != nil {
+				dj = *stacks[j].Description
+			}
+			is := bestScore(q, stacks[i].Name, di)
+			js := bestScore(q, stacks[j].Name, dj)
+			if is != js {
+				return is < js
+			}
+			return len(stacks[i].Name) < len(stacks[j].Name)
+		})
+		if len(stacks) > limit {
+			stacks = stacks[:limit]
+		}
+		mu.Lock()
+		results.Stacks = stacks
+		mu.Unlock()
+	}()
 
+	// Containers — match on name, image, or tag
+	go func() {
+		defer wg.Done()
+		query, args, err := sq.Select("id", "stack_id", "name", "image", "tag", "status").
+			From("containers").
+			Where(sq.Eq{"active": true}).
+			Where(sq.Or{
+				sq.Like{"name": pattern},
+				sq.Like{"image": pattern},
+				sq.Like{"tag": pattern},
+			}).
+			Limit(uint64(fetchLimit)).
+			ToSql()
+		if err != nil {
+			setErr(fmt.Errorf("containers search query: %w", err))
+			return
+		}
+		rows, err := engine.Query(query, args...)
+		if err != nil {
+			setErr(fmt.Errorf("containers search: %w", err))
+			return
+		}
+		defer rows.Close()
+		var containers []SearchContainer
+		for rows.Next() {
+			var c SearchContainer
+			if err := rows.Scan(&c.ID, &c.StackID, &c.Name, &c.Image, &c.Tag, &c.Status); err != nil {
+				setErr(fmt.Errorf("scan container: %w", err))
+				return
+			}
+			containers = append(containers, c)
+		}
+		if err := rows.Err(); err != nil {
+			setErr(err)
+			return
+		}
+		sort.Slice(containers, func(i, j int) bool {
+			is := bestScore(q, containers[i].Name, containers[i].Image, containers[i].Tag)
+			js := bestScore(q, containers[j].Name, containers[j].Image, containers[j].Tag)
+			if is != js {
+				return is < js
+			}
+			return len(containers[i].Name) < len(containers[j].Name)
+		})
+		if len(containers) > limit {
+			containers = containers[:limit]
+		}
+		mu.Lock()
+		results.Containers = containers
+		mu.Unlock()
+	}()
+
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
 	return results, nil
 }

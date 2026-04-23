@@ -145,6 +145,16 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 			Replicas: 1,
 		}
 
+		// When container_name differs from the compose service key, store the
+		// service key as a network alias so Docker DNS can resolve it (compose
+		// does this automatically; Lattice deploys via Docker API and must set
+		// aliases explicitly).
+		if svc.ContainerName != "" && svc.ContainerName != name {
+			aliasJSON, _ := json.Marshal([]string{name})
+			aliasStr := string(aliasJSON)
+			req.NetworkAliases = &aliasStr
+		}
+
 		if svc.Restart != "" {
 			req.RestartPolicy = &svc.Restart
 		}

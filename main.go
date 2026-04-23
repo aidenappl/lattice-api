@@ -200,6 +200,24 @@ func main() {
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
+			// Mirror per-container deployment steps as lifecycle_log entries
+			// so they appear in each container's log stream.
+			if cn, _ := msg.Payload["container_name"].(string); cn != "" {
+				if message, _ := msg.Payload["message"].(string); message != "" {
+					canonical := stripDeploySuffix(cn)
+					lcPayload := map[string]any{
+						"container_name": canonical,
+						"event":          "deploy",
+						"message":        message,
+					}
+					handleLifecycleLog(session.WorkerID, lcPayload)
+					adminHub.BroadcastJSON(map[string]any{
+						"type":      "lifecycle_log",
+						"worker_id": session.WorkerID,
+						"payload":   lcPayload,
+					})
+				}
+			}
 			handleDeploymentProgress(msg.Payload)
 
 		case socket.MsgDeploymentStatus:
