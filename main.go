@@ -142,8 +142,6 @@ func main() {
 			// Persist runner_version if included so it stays current after upgrades.
 			if rv, ok := msg.Payload["runner_version"].(string); ok && rv != "" {
 				_ = query.UpdateWorkerRunnerVersion(db.DB, session.WorkerID, rv)
-				// Clear any pending upgrade action — runner is alive and reporting its version
-				_ = query.SetWorkerPendingAction(db.DB, session.WorkerID, nil)
 			}
 			handleHeartbeatMetrics(session.WorkerID, msg.Payload)
 			// Feed container state to health scanner
