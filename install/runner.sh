@@ -29,8 +29,8 @@ SERVICE_NAME="lattice-runner"
 
 # Known SHA256 checksums for Go tarball verification
 declare -A GO_CHECKSUMS=(
-    ["amd64"]="e12e05b1e40e84ec20284a585aea2e62a0e10f0e38275a5b698637a6a8d8ac22"
-    ["arm64"]="a55a3e04a3f1fa4eb8e3c1c68da1ca97c826a4adaa02c1b3b5baa3bd0e4ff542"
+    ["amd64"]="2852af0cb20a13139b3448992e69b868e50ed0f8a1e5940ee1de9e19a123b613"
+    ["arm64"]="05de75d6994a2783699815ee553bd5a9327d8b79991de36e38b66862782f54ae"
 )
 
 # Secure cleanup on exit
@@ -76,7 +76,7 @@ esac
 log "Platform: ${OS}/${ARCH}"
 
 # Ensure common paths are available (curl|bash doesn't source profile.d)
-for p in /usr/local/go/bin /usr/lib/go/bin /snap/bin "$HOME/go/bin"; do
+for p in /usr/local/go/bin /usr/lib/go/bin /snap/bin "${HOME:-/root}/go/bin"; do
     [ -d "$p" ] && export PATH="$p:$PATH"
 done
 
