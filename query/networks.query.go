@@ -103,3 +103,8 @@ func DeleteNetworksByStack(engine db.Queryable, stackID int) error {
 	_, err := engine.Exec("DELETE FROM networks WHERE stack_id = ?", stackID)
 	return err
 }
+
+func DeleteNetworkByID(engine db.Queryable, id int) error {
+	_, err := engine.Exec("DELETE FROM networks WHERE id = ?", id)
+	return err
+}

@@ -537,6 +537,7 @@ func main() {
 	admin.HandleFunc("/workers/{id}/volumes", middleware.RequireEditor(volumeHandler.HandleCreateVolume)).Methods(http.MethodPost)
 	admin.HandleFunc("/workers/{id}/volumes/{name}", middleware.RequireEditor(volumeHandler.HandleDeleteVolume)).Methods(http.MethodDelete)
 	admin.HandleFunc("/networks", routers.HandleListAllNetworks).Methods(http.MethodGet)
+	admin.HandleFunc("/networks/{id}", middleware.RequireEditor(routers.HandleDeleteNetworkByID)).Methods(http.MethodDelete)
 	admin.HandleFunc("/workers/{id}/networks", networkHandler.HandleListNetworks).Methods(http.MethodGet)
 	admin.HandleFunc("/workers/{id}/networks", middleware.RequireEditor(networkHandler.HandleCreateNetwork)).Methods(http.MethodPost)
 	admin.HandleFunc("/workers/{id}/networks/{name}", middleware.RequireEditor(networkHandler.HandleDeleteNetwork)).Methods(http.MethodDelete)

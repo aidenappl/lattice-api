@@ -129,3 +129,21 @@ func (h *NetworkHandler) HandleDeleteNetwork(w http.ResponseWriter, r *http.Requ
 	logAudit(r, "delete network", "network", intPtr(workerID), strPtr(networkName))
 	responder.New(w, nil, "remove_network command sent to worker")
 }
+
+// HandleDeleteNetworkByID removes a network DB record by its ID.
+// Used for cleaning up orphaned network records (e.g. when the parent stack was deleted).
+func HandleDeleteNetworkByID(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		responder.SendError(w, http.StatusBadRequest, "invalid network id")
+		return
+	}
+
+	if err := query.DeleteNetworkByID(db.DB, id); err != nil {
+		responder.QueryError(w, err, "failed to delete network")
+		return
+	}
+
+	logAudit(r, "delete network record", "network", intPtr(id), nil)
+	responder.New(w, nil, "network record deleted")
+}
