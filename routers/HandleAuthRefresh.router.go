@@ -17,16 +17,24 @@ func HandleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := jwt.ValidateRefreshToken(cookie.Value)
-	if err != nil {
+	claims, err := jwt.ValidateToken(cookie.Value)
+	if err != nil || claims.Type != "refresh" {
 		responder.SendError(w, http.StatusUnauthorized, "invalid refresh token")
 		return
 	}
 
-	user, err := query.GetUserByID(db.DB, userID)
+	user, err := query.GetUserByID(db.DB, claims.UserID)
 	if err != nil || user == nil || !user.Active {
 		responder.SendError(w, http.StatusUnauthorized, "user not found or inactive")
 		return
+	}
+
+	// Reject refresh tokens issued before the revocation timestamp
+	if user.TokensRevokedAt != nil && claims.IssuedAt != nil {
+		if claims.IssuedAt.Time.Before(*user.TokensRevokedAt) {
+			responder.SendError(w, http.StatusUnauthorized, "token has been revoked")
+			return
+		}
 	}
 
 	accessToken, accessExpiry, err := jwt.NewAccessToken(user.ID)

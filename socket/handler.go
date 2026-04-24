@@ -48,7 +48,7 @@ const (
 	pongWait       = 90 * time.Second
 	pingPeriod     = (pongWait * 8) / 10 // ~72s
 	maxMessageSize = 64 * 1024
-	sendBufferSize = 64
+	sendBufferSize = 128
 )
 
 // WorkerHandler handles WebSocket connections from workers.

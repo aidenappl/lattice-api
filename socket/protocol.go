@@ -63,6 +63,12 @@ const (
 	MsgExecOutput = "exec_output"
 )
 
+// Admin client -> API message types
+const (
+	MsgSubscribe   = "subscribe"
+	MsgUnsubscribe = "unsubscribe"
+)
+
 // Envelope is the standard message sent orchestrator -> worker.
 type Envelope struct {
 	Type      string         `json:"type"`

@@ -18,6 +18,7 @@ var userColumns = []string{
 	"users.profile_image_url",
 	"users.role",
 	"users.active",
+	"users.tokens_revoked_at",
 	"users.updated_at",
 	"users.inserted_at",
 }
@@ -34,6 +35,7 @@ func scanUser(row scanner) (*structs.User, error) {
 		&u.ProfileImageURL,
 		&u.Role,
 		&u.Active,
+		&u.TokensRevokedAt,
 		&u.UpdatedAt,
 		&u.InsertedAt,
 	)
@@ -204,6 +206,13 @@ type UpdateUserRequest struct {
 
 func DeleteUser(engine db.Queryable, id int) error {
 	_, err := engine.Exec("UPDATE users SET active = 0 WHERE id = ?", id)
+	return err
+}
+
+// RevokeUserTokens sets the tokens_revoked_at timestamp to now, invalidating
+// all JWTs issued before this moment.
+func RevokeUserTokens(engine db.Queryable, id int) error {
+	_, err := engine.Exec("UPDATE users SET tokens_revoked_at = NOW() WHERE id = ?", id)
 	return err
 }
 

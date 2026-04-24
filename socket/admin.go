@@ -22,6 +22,52 @@ type AdminSession struct {
 
 	cancel context.CancelFunc
 	once   sync.Once
+
+	// Topic-based filtering: if non-empty, only messages matching a
+	// subscribed topic are delivered. Empty means "receive everything".
+	mu            sync.Mutex
+	subscriptions map[string]bool
+}
+
+// Subscribe registers interest in a topic (e.g. "worker:3", "stack:5").
+func (s *AdminSession) Subscribe(topics []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.subscriptions == nil {
+		s.subscriptions = make(map[string]bool)
+	}
+	for _, t := range topics {
+		s.subscriptions[t] = true
+	}
+}
+
+// Unsubscribe removes interest in topics. Pass nil to clear all.
+func (s *AdminSession) Unsubscribe(topics []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if topics == nil {
+		s.subscriptions = nil
+		return
+	}
+	for _, t := range topics {
+		delete(s.subscriptions, t)
+	}
+}
+
+// matchesTopic returns true if the session should receive a message with the
+// given topics. Returns true if session has no subscriptions (receive-all).
+func (s *AdminSession) matchesTopic(topics []string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.subscriptions) == 0 {
+		return true
+	}
+	for _, t := range topics {
+		if s.subscriptions[t] {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *AdminSession) Close() {
@@ -99,6 +145,34 @@ func (h *AdminHub) BroadcastJSON(v any) {
 		return
 	}
 	h.Broadcast(b)
+}
+
+// BroadcastFiltered sends a message only to sessions subscribed to at least
+// one of the given topics. Sessions with no subscriptions receive everything.
+func (h *AdminHub) BroadcastFiltered(payload []byte, topics []string) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for _, session := range h.sessions {
+		if !session.matchesTopic(topics) {
+			continue
+		}
+		select {
+		case session.Send <- payload:
+		default:
+			logger.Warn("socket", "admin broadcast queue full", logger.F{"session_id": session.ID})
+		}
+	}
+}
+
+// BroadcastFilteredJSON marshals v and sends to sessions matching the topics.
+func (h *AdminHub) BroadcastFilteredJSON(v any, topics []string) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		logger.Error("socket", "failed to marshal admin broadcast", logger.F{"error": err})
+		return
+	}
+	h.BroadcastFiltered(b, topics)
 }
 
 // AdminHandler handles WebSocket connections from admin frontend clients.

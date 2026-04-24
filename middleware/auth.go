@@ -126,14 +126,21 @@ func WorkerTokenAuth(r *http.Request) (int, bool) {
 }
 
 func validateLatticeToken(tokenStr string) *structs.User {
-	userID, err := jwt.ValidateAccessToken(tokenStr)
-	if err != nil {
+	claims, err := jwt.ValidateToken(tokenStr)
+	if err != nil || claims.Type != "access" {
 		return nil
 	}
 
-	user, err := query.GetUserByID(db.DB, userID)
+	user, err := query.GetUserByID(db.DB, claims.UserID)
 	if err != nil || user == nil || !user.Active {
 		return nil
+	}
+
+	// Reject tokens issued before the revocation timestamp
+	if user.TokensRevokedAt != nil && claims.IssuedAt != nil {
+		if claims.IssuedAt.Time.Before(*user.TokensRevokedAt) {
+			return nil
+		}
 	}
 
 	return user

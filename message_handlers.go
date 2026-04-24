@@ -191,7 +191,7 @@ func handleContainerMetrics(workerID int, payload map[string]any) {
 		if canonical := stripDeploySuffix(name); canonical != name {
 			lookupName = canonical
 		}
-		if c, err := query.GetContainerByName(db.DB, lookupName); err == nil {
+		if c, err := containerNameCache.GetContainerByName(lookupName); err == nil {
 			cmReq.ContainerID = &c.ID
 		}
 
@@ -390,7 +390,7 @@ func handleContainerStatus(workerID int, payload map[string]any) map[string]any 
 	if canonical := stripDeploySuffix(containerName); canonical != containerName {
 		lookupName = canonical
 	}
-	c, err := query.GetContainerByName(db.DB, lookupName)
+	c, err := containerNameCache.GetContainerByName(lookupName)
 	if err != nil {
 		logger.Error("container", "could not find container", logger.F{"container_name": containerName, "error": err})
 		return enriched
@@ -472,7 +472,7 @@ func handleLifecycleLog(workerID int, payload map[string]any) {
 		if canonical := stripDeploySuffix(containerName); canonical != containerName {
 			lookupName = canonical
 		}
-		if c, err := query.GetContainerByName(db.DB, lookupName); err == nil {
+		if c, err := containerNameCache.GetContainerByName(lookupName); err == nil {
 			logReq.ContainerID = &c.ID
 		}
 	}
@@ -494,7 +494,7 @@ func handleContainerHealthStatus(payload map[string]any) {
 	if canonical := stripDeploySuffix(containerName); canonical != containerName {
 		lookupName = canonical
 	}
-	c, err := query.GetContainerByName(db.DB, lookupName)
+	c, err := containerNameCache.GetContainerByName(lookupName)
 	if err != nil {
 		logger.Error("container", "could not find container for health update", logger.F{"container_name": containerName, "error": err})
 		return
@@ -516,11 +516,11 @@ func handleContainerSync(payload map[string]any) {
 		return
 	}
 
-	c, err := query.GetContainerByName(db.DB, containerName)
+	c, err := containerNameCache.GetContainerByName(containerName)
 	if err != nil {
 		// Try stripping a 6-char deploy suffix (e.g., "myapp-x7k2m9" -> "myapp")
 		if canonical := stripDeploySuffix(containerName); canonical != containerName {
-			c, err = query.GetContainerByName(db.DB, canonical)
+			c, err = containerNameCache.GetContainerByName(canonical)
 		}
 		if err != nil {
 			// Container not managed by Lattice — ignore
@@ -587,7 +587,7 @@ func handleContainerLog(workerID int, payload map[string]any) {
 	// Resolve container_name to container_id and always store the name
 	if name, ok := payload["container_name"].(string); ok && name != "" {
 		req.ContainerName = &name
-		if c, err := query.GetContainerByName(db.DB, name); err == nil {
+		if c, err := containerNameCache.GetContainerByName(name); err == nil {
 			req.ContainerID = &c.ID
 		} else {
 			logger.Warn("container", "could not resolve container name to ID", logger.F{"container_name": name, "error": err})

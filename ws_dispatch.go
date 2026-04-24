@@ -338,6 +338,30 @@ func configureAdminHandler(ah *socket.AdminHandler, workerHub *socket.WorkerHub)
 
 	ah.OnMessage = func(session *socket.AdminSession, msg socket.IncomingMessage) {
 		switch msg.Type {
+		case socket.MsgSubscribe:
+			if topics, ok := msg.Payload["topics"].([]any); ok {
+				strs := make([]string, 0, len(topics))
+				for _, t := range topics {
+					if s, ok := t.(string); ok {
+						strs = append(strs, s)
+					}
+				}
+				session.Subscribe(strs)
+			}
+
+		case socket.MsgUnsubscribe:
+			if topics, ok := msg.Payload["topics"].([]any); ok {
+				strs := make([]string, 0, len(topics))
+				for _, t := range topics {
+					if s, ok := t.(string); ok {
+						strs = append(strs, s)
+					}
+				}
+				session.Unsubscribe(strs)
+			} else {
+				session.Unsubscribe(nil)
+			}
+
 		case socket.MsgExecStart, socket.MsgExecInput, socket.MsgExecResize, socket.MsgExecClose:
 			workerIDFloat, _ := msg.Payload["worker_id"].(float64)
 			workerID := int(workerIDFloat)

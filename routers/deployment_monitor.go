@@ -16,7 +16,11 @@ const (
 	deployStallTimeout   = 45 * time.Second
 	deployMaxRetryCount  = 3
 	deployMaxRuntime     = 30 * time.Minute
+	maxConcurrentDeploys = 10
 )
+
+// deployMonitorSem limits concurrent deployment monitor goroutines.
+var deployMonitorSem = make(chan struct{}, maxConcurrentDeploys)
 
 func copyPayload(payload map[string]any) map[string]any {
 	out := make(map[string]any, len(payload))
@@ -32,7 +36,17 @@ func isMonitorGeneratedLog(msg string) bool {
 }
 
 func (h *DeployHandler) startDeploymentMonitor(deploymentID, stackID, workerID int, payload map[string]any) {
-	go h.monitorDeployment(deploymentID, stackID, workerID, copyPayload(payload))
+	p := copyPayload(payload)
+	go func() {
+		select {
+		case deployMonitorSem <- struct{}{}:
+			defer func() { <-deployMonitorSem }()
+			h.monitorDeployment(deploymentID, stackID, workerID, p)
+		default:
+			logger.Warn("deploy", "too many concurrent deployment monitors, skipping monitor",
+				logger.F{"deployment_id": deploymentID, "max": maxConcurrentDeploys})
+		}
+	}()
 }
 
 func (h *DeployHandler) monitorDeployment(deploymentID, stackID, workerID int, payload map[string]any) {

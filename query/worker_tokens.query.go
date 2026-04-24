@@ -39,7 +39,8 @@ func ListWorkerTokens(engine db.Queryable, workerID int) (*[]structs.WorkerToken
 		From("worker_tokens").
 		Where(sq.Eq{"worker_tokens.worker_id": workerID}).
 		Where(sq.Eq{"worker_tokens.active": true}).
-		OrderBy("worker_tokens.id DESC")
+		OrderBy("worker_tokens.id DESC").
+		Limit(uint64(db.MAX_LIMIT))
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

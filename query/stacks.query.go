@@ -186,6 +186,10 @@ func UpdateStack(engine db.Queryable, id int, req UpdateStackRequest) (*structs.
 	}
 	if req.Status != nil {
 		q = q.Set("status", *req.Status)
+		// Clear the deploy claim timestamp when leaving the deploying state
+		if *req.Status != "deploying" {
+			q = q.Set("deploy_claimed_at", nil)
+		}
 		hasUpdate = true
 	}
 	if req.DeploymentStrategy != nil {
@@ -231,11 +235,15 @@ func UpdateStack(engine db.Queryable, id int, req UpdateStackRequest) (*structs.
 }
 
 // ClaimStackForDeploy atomically transitions a stack to "deploying" if it is
-// not already in that state. Returns true if the claim was acquired, false if
-// the stack is already deploying (another deploy won the race).
+// not already in that state, or if the existing claim is stale (older than 30
+// minutes). Sets deploy_claimed_at to track when the claim was acquired.
+// Returns true if the claim was acquired, false if the stack is already
+// deploying with an active (non-stale) claim.
 func ClaimStackForDeploy(engine db.Queryable, id int) (bool, error) {
 	result, err := engine.Exec(
-		"UPDATE stacks SET status = 'deploying' WHERE id = ? AND active = 1 AND status != 'deploying'",
+		`UPDATE stacks SET status = 'deploying', deploy_claimed_at = NOW()
+		 WHERE id = ? AND active = 1
+		   AND (status != 'deploying' OR deploy_claimed_at IS NULL OR deploy_claimed_at < NOW() - INTERVAL 30 MINUTE)`,
 		id,
 	)
 	if err != nil {
