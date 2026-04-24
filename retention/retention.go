@@ -2,12 +2,17 @@ package retention
 
 import (
 	"database/sql"
+	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/aidenappl/lattice-api/logger"
 )
 
 const batchSize = 10000
+
+// validIdentifier ensures table/column names are safe SQL identifiers.
+var validIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 // Start launches a background goroutine that periodically purges old logs and metrics.
 // Runs every hour.
@@ -51,8 +56,14 @@ func run(db *sql.DB) {
 
 // purge deletes rows older than the retention interval in batches to avoid
 // holding long table locks. Loops until fewer than batchSize rows are deleted.
+// All arguments must be safe SQL identifiers or interval literals — they are
+// validated before use but should only ever be hardcoded constants.
 func purge(db *sql.DB, table, column, interval string) {
-	query := "DELETE FROM " + table + " WHERE " + column + " < NOW() - INTERVAL " + interval + " LIMIT " + "10000"
+	if !validIdentifier.MatchString(table) || !validIdentifier.MatchString(column) {
+		logger.Error("retention", "invalid table/column name", logger.F{"table": table, "column": column})
+		return
+	}
+	query := fmt.Sprintf("DELETE FROM %s WHERE %s < NOW() - INTERVAL %s LIMIT %d", table, column, interval, batchSize)
 	var totalDeleted int64
 
 	for {

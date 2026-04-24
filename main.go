@@ -49,6 +49,9 @@ func main() {
 	routers.InstallScript = installRunnerScript
 	routers.APIVersion = Version
 
+	// 0. Validate security configuration before proceeding
+	env.ValidateSecurityDefaults()
+
 	// Start background polling for latest GitHub releases.
 	versions.Start()
 
@@ -472,6 +475,7 @@ func main() {
 	r.Use(middleware.MuxHeaderMiddleware)
 	r.Use(middleware.SecurityHeadersMiddleware)
 	r.Use(middleware.CSRFMiddleware)
+	r.Use(middleware.MaxBodySize(1 << 20)) // 1MB default body limit (compose import has its own higher limit)
 
 	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("Lattice API"))
@@ -480,7 +484,7 @@ func main() {
 	// Version (public)
 	r.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"version":"%s"}`, Version)
+		_ = json.NewEncoder(w).Encode(map[string]string{"version": Version})
 	}).Methods(http.MethodGet)
 
 	// Install script (public)
@@ -602,7 +606,7 @@ func main() {
 	admin.HandleFunc("/users/{id}", middleware.RequireAdmin(routers.HandleDeleteUser)).Methods(http.MethodDelete)
 
 	// Webhooks
-	admin.HandleFunc("/webhooks", routers.HandleListWebhooks).Methods(http.MethodGet)
+	admin.HandleFunc("/webhooks", middleware.RequireAdmin(routers.HandleListWebhooks)).Methods(http.MethodGet)
 	admin.HandleFunc("/webhooks", middleware.RequireAdmin(routers.HandleCreateWebhook)).Methods(http.MethodPost)
 	admin.HandleFunc("/webhooks/{id}", middleware.RequireAdmin(routers.HandleUpdateWebhook)).Methods(http.MethodPut)
 	admin.HandleFunc("/webhooks/{id}", middleware.RequireAdmin(routers.HandleDeleteWebhook)).Methods(http.MethodDelete)

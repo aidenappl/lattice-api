@@ -1,6 +1,8 @@
 package routers
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -58,9 +60,18 @@ func (h *WorkerActionHandler) sendWorkerAction(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	payload := map[string]any{}
+
+	// For upgrade_runner, include the SHA256 hash of the embedded install script
+	// so the runner can verify integrity of the downloaded script before executing.
+	if action == socket.MsgUpgradeRunner && InstallScript != nil {
+		hash := sha256.Sum256(InstallScript)
+		payload["expected_hash"] = hex.EncodeToString(hash[:])
+	}
+
 	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.Envelope{
 		Type:    action,
-		Payload: map[string]any{},
+		Payload: payload,
 	}); err != nil {
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send %s command: %v", label, err))
 		return

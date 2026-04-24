@@ -145,8 +145,14 @@ func renderEmail(subject, body string) string {
 		iconEmoji = "⚠️"
 	}
 
-	// Convert newlines in body to HTML line breaks
-	htmlBody := strings.ReplaceAll(body, "\n", "<br>")
+	// HTML-escape body content then convert newlines to line breaks.
+	// This prevents HTML injection from user-controlled data like
+	// container names or error messages in notification bodies.
+	escaped := strings.ReplaceAll(body, "&", "&amp;")
+	escaped = strings.ReplaceAll(escaped, "<", "&lt;")
+	escaped = strings.ReplaceAll(escaped, ">", "&gt;")
+	escaped = strings.ReplaceAll(escaped, "\"", "&quot;")
+	htmlBody := strings.ReplaceAll(escaped, "\n", "<br>")
 
 	// Strip [Lattice] prefix from display title
 	displayTitle := strings.TrimPrefix(subject, "[Lattice] ")

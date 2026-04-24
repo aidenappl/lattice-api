@@ -57,6 +57,58 @@ var (
 	RegistryPassword      = getEnv("REGISTRY_PASSWORD", "")
 )
 
+// weakJWTKeys is a blocklist of known-insecure default signing keys that must
+// not be used in production.
+var weakJWTKeys = map[string]bool{
+	"change-me-to-a-random-secret":               true,
+	"dev-jwt-signing-key-change-in-production":    true,
+	"changeme":                                    true,
+	"secret":                                      true,
+}
+
+// ValidateSecurityDefaults checks that critical security configuration is not
+// left at insecure defaults. Panics in production, warns in development.
+func ValidateSecurityDefaults() {
+	isProd := Environment == "production"
+
+	// JWT signing key strength
+	if len(JWTSigningKey) < 32 {
+		msg := fmt.Sprintf("JWT_SIGNING_KEY is too short (%d chars, minimum 32). Generate one with: openssl rand -hex 32", len(JWTSigningKey))
+		if isProd {
+			panic(msg)
+		}
+		fmt.Printf("⚠️  WARNING: %s\n", msg)
+	}
+	if weakJWTKeys[JWTSigningKey] {
+		msg := "JWT_SIGNING_KEY is a known default value. Generate a secure key with: openssl rand -hex 32"
+		if isProd {
+			panic(msg)
+		}
+		fmt.Printf("⚠️  WARNING: %s\n", msg)
+	}
+
+	// Bootstrap admin password
+	if LatticeAdminPassword != "" && len(LatticeAdminPassword) < 8 {
+		msg := "LATTICE_ADMIN_PASSWORD is too short (minimum 8 characters)"
+		if isProd {
+			panic(msg)
+		}
+		fmt.Printf("⚠️  WARNING: %s\n", msg)
+	}
+	if LatticeAdminPassword == "changeme" || LatticeAdminPassword == "password" {
+		msg := "LATTICE_ADMIN_PASSWORD is a known weak default. Set a strong password."
+		if isProd {
+			panic(msg)
+		}
+		fmt.Printf("⚠️  WARNING: %s\n", msg)
+	}
+
+	// Encryption key format (if provided)
+	if EncryptionKey != "" && len(EncryptionKey) != 64 {
+		fmt.Printf("⚠️  WARNING: ENCRYPTION_KEY should be exactly 64 hex characters (32 bytes). Current length: %d\n", len(EncryptionKey))
+	}
+}
+
 func getEnv(key string, fallback string) string {
 	if v, ok := os.LookupEnv(key); ok {
 		return v

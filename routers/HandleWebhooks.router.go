@@ -3,12 +3,12 @@ package routers
 import (
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"strconv"
 
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
+	"github.com/aidenappl/lattice-api/tools"
 	"github.com/aidenappl/lattice-api/webhooks"
 	"github.com/gorilla/mux"
 )
@@ -51,9 +51,9 @@ func HandleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate URL
-	if _, err := url.ParseRequestURI(body.URL); err != nil {
-		responder.SendError(w, http.StatusBadRequest, "invalid webhook URL")
+	// Validate URL (SSRF protection: block internal/private IPs)
+	if err := tools.ValidateExternalURL(body.URL); err != nil {
+		responder.SendError(w, http.StatusBadRequest, "invalid webhook URL: "+err.Error())
 		return
 	}
 
@@ -100,10 +100,10 @@ func HandleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate URL if provided
+	// Validate URL if provided (SSRF protection)
 	if body.URL != nil {
-		if _, err := url.ParseRequestURI(*body.URL); err != nil {
-			responder.SendError(w, http.StatusBadRequest, "invalid webhook URL")
+		if err := tools.ValidateExternalURL(*body.URL); err != nil {
+			responder.SendError(w, http.StatusBadRequest, "invalid webhook URL: "+err.Error())
 			return
 		}
 	}

@@ -8,15 +8,29 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/responder"
 )
 
+// safeServiceName validates that a Docker service name contains only safe characters.
+var safeServiceName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
 func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 	if env.DockerComposeDir == "" {
 		responder.SendError(w, http.StatusBadRequest, "self-update not configured: DOCKER_COMPOSE_DIR is not set")
+		return
+	}
+
+	// Validate service name and compose dir to prevent command injection
+	if !safeServiceName.MatchString(env.APIServiceName) {
+		responder.SendError(w, http.StatusInternalServerError, "invalid API_SERVICE_NAME configuration")
+		return
+	}
+	if !filepath.IsAbs(env.DockerComposeDir) {
+		responder.SendError(w, http.StatusInternalServerError, "DOCKER_COMPOSE_DIR must be an absolute path")
 		return
 	}
 
@@ -93,6 +107,15 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 	if env.DockerComposeDir == "" {
 		responder.SendError(w, http.StatusBadRequest, "self-update not configured: DOCKER_COMPOSE_DIR is not set")
+		return
+	}
+
+	if !safeServiceName.MatchString(env.WebServiceName) {
+		responder.SendError(w, http.StatusInternalServerError, "invalid WEB_SERVICE_NAME configuration")
+		return
+	}
+	if !filepath.IsAbs(env.DockerComposeDir) {
+		responder.SendError(w, http.StatusInternalServerError, "DOCKER_COMPOSE_DIR must be an absolute path")
 		return
 	}
 

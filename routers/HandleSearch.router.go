@@ -16,6 +16,10 @@ func HandleSearch(w http.ResponseWriter, r *http.Request) {
 		responder.New(w, &query.SearchResults{}, "search results")
 		return
 	}
+	// Truncate long search queries to prevent excessive LIKE pattern matching
+	if len(q) > 200 {
+		q = q[:200]
+	}
 
 	limit := 8
 	if v := r.URL.Query().Get("limit"); v != "" {

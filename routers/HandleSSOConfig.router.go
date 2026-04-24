@@ -10,6 +10,7 @@ import (
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/sso"
+	"github.com/aidenappl/lattice-api/tools"
 )
 
 // HandleGetSSOConfig returns the full SSO configuration (with client_secret masked).
@@ -81,6 +82,16 @@ func HandleUpdateSSOConfig(w http.ResponseWriter, r *http.Request) {
 				v = "true"
 			}
 			_ = query.SetSetting(db.DB, key, v)
+		}
+	}
+
+	// Validate SSO endpoint URLs to prevent SSRF
+	for _, u := range []*string{body.TokenURL, body.UserInfoURL, body.AuthorizeURL, body.LogoutURL} {
+		if u != nil && *u != "" {
+			if err := tools.ValidateExternalURL(*u); err != nil {
+				responder.SendError(w, http.StatusBadRequest, "invalid SSO URL: "+err.Error())
+				return
+			}
 		}
 	}
 
