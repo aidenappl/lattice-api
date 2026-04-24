@@ -129,6 +129,40 @@ func ListContainerMetrics(engine db.Queryable, req ListContainerMetricsRequest) 
 	return metrics, rows.Err()
 }
 
+// GetLatestWorkerContainerMetrics returns the most recent metrics row for each
+// container on a given worker, giving an instant snapshot of resource usage.
+func GetLatestWorkerContainerMetrics(engine db.Queryable, workerID int) ([]structs.ContainerMetrics, error) {
+	// Use a self-join to pick the MAX(id) per container_name for this worker,
+	// then fetch the full row. This avoids a correlated subquery per row.
+	q := `SELECT cm.id, cm.worker_id, cm.container_id, cm.container_name,
+	             cm.cpu_percent, cm.mem_usage_mb, cm.mem_limit_mb, cm.mem_percent,
+	             cm.recorded_at
+	      FROM container_metrics cm
+	      INNER JOIN (
+	          SELECT container_name, MAX(id) AS max_id
+	          FROM container_metrics
+	          WHERE worker_id = ?
+	          GROUP BY container_name
+	      ) latest ON cm.id = latest.max_id
+	      ORDER BY cm.container_name`
+
+	rows, err := engine.Query(q, workerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query latest worker container metrics: %w", err)
+	}
+	defer rows.Close()
+
+	var metrics []structs.ContainerMetrics
+	for rows.Next() {
+		m, err := scanContainerMetrics(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan container metrics: %w", err)
+		}
+		metrics = append(metrics, *m)
+	}
+	return metrics, rows.Err()
+}
+
 // GetLatestContainerMetrics returns the most recent metrics for a container.
 func GetLatestContainerMetrics(engine db.Queryable, containerID int) (*structs.ContainerMetrics, error) {
 	q := sq.Select(containerMetricsColumns...).

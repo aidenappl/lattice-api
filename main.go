@@ -90,6 +90,7 @@ func main() {
 	admin.HandleFunc("/workers/{id}/tokens", routers.HandleGetWorkerTokens).Methods(http.MethodGet)
 	admin.HandleFunc("/workers/{id}/tokens", middleware.RequireEditor(routers.HandleCreateWorkerToken)).Methods(http.MethodPost)
 	admin.HandleFunc("/workers/{id}/metrics", routers.HandleGetWorkerMetrics).Methods(http.MethodGet)
+	admin.HandleFunc("/workers/{id}/container-stats", routers.HandleGetWorkerContainerStats).Methods(http.MethodGet)
 	admin.HandleFunc("/workers/{id}/reboot", middleware.RequireAdmin(app.workerActionHandler.HandleRebootWorker)).Methods(http.MethodPost)
 	admin.HandleFunc("/workers/{id}/upgrade", middleware.RequireAdmin(app.workerActionHandler.HandleUpgradeRunner)).Methods(http.MethodPost)
 	admin.HandleFunc("/workers/{id}/stop-all", middleware.RequireEditor(app.workerActionHandler.HandleStopAllContainers)).Methods(http.MethodPost)
