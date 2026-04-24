@@ -41,9 +41,15 @@ func (h *WorkerActionHandler) sendWorkerAction(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	_, err = query.GetWorkerByID(db.DB, workerID)
+	worker, err := query.GetWorkerByID(db.DB, workerID)
 	if err != nil {
 		responder.NotFound(w)
+		return
+	}
+
+	// Prevent duplicate upgrade/reboot commands if an action is already in progress
+	if (action == socket.MsgUpgradeRunner || action == socket.MsgRebootOS) && worker.PendingAction != nil {
+		responder.SendError(w, http.StatusConflict, "an action is already in progress for this worker")
 		return
 	}
 

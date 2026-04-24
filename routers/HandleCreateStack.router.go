@@ -35,6 +35,14 @@ func HandleCreateStack(w http.ResponseWriter, r *http.Request) {
 		body.DeploymentStrategy = "rolling"
 	}
 
+	if exists, err := query.StackNameExists(db.DB, body.Name, nil); err != nil {
+		responder.QueryError(w, err, "failed to check stack name")
+		return
+	} else if exists {
+		responder.SendError(w, http.StatusConflict, "a stack with that name already exists")
+		return
+	}
+
 	stack, err := query.CreateStack(db.DB, query.CreateStackRequest{
 		Name:               body.Name,
 		Description:        body.Description,

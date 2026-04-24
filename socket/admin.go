@@ -34,6 +34,8 @@ func (s *AdminSession) Close() {
 	})
 }
 
+const MaxAdminSessions = 50
+
 // AdminHub broadcasts events to connected admin frontend clients.
 type AdminHub struct {
 	mu       sync.RWMutex
@@ -47,10 +49,15 @@ func NewAdminHub() *AdminHub {
 	}
 }
 
-func (h *AdminHub) Register(session *AdminSession) {
+func (h *AdminHub) Register(session *AdminSession) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if len(h.sessions) >= MaxAdminSessions {
+		logger.Warn("socket", "admin connection rejected, max sessions reached", logger.F{"max": MaxAdminSessions})
+		return fmt.Errorf("maximum admin connections reached (%d)", MaxAdminSessions)
+	}
 	h.sessions[session.ID] = session
+	return nil
 }
 
 func (h *AdminHub) Unregister(id string) {
@@ -152,7 +159,17 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		cancel:      cancel,
 	}
 
-	h.Hub.Register(session)
+	if err := h.Hub.Register(session); err != nil {
+		logger.Warn("socket", "admin connection rejected", logger.F{"session_id": id, "error": err})
+		_ = conn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "max connections reached"),
+			time.Now().Add(writeWait),
+		)
+		conn.Close()
+		cancel()
+		return
+	}
 
 	go h.writePump(ctx, session)
 	go h.readPump(ctx, session)

@@ -43,7 +43,13 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if stack.Status == "deploying" {
+	// Atomically claim the stack for deployment — prevents concurrent deploys.
+	claimed, err := query.ClaimStackForDeploy(db.DB, stack.ID)
+	if err != nil {
+		responder.QueryError(w, err, "failed to claim stack for deploy")
+		return
+	}
+	if !claimed {
 		responder.SendError(w, http.StatusConflict, "deployment already in progress for this stack")
 		return
 	}
@@ -307,8 +313,16 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		containerSpecs = append(containerSpecs, spec)
 	}
 
-	// Create deployment record
-	deployment, err := query.CreateDeployment(db.DB, query.CreateDeploymentRequest{
+	// Create deployment record and container records in a transaction so
+	// partial failures don't leave orphaned state.
+	tx, txErr := db.BeginTx()
+	if txErr != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback()
+
+	deployment, err := query.CreateDeployment(tx, query.CreateDeploymentRequest{
 		StackID:     stack.ID,
 		Strategy:    stack.DeploymentStrategy,
 		TriggeredBy: &user.ID,
@@ -318,23 +332,23 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Record deployment containers
 	for _, c := range *containers {
-		_, err := query.CreateDeploymentContainer(db.DB, query.CreateDeploymentContainerRequest{
+		_, err := query.CreateDeploymentContainer(tx, query.CreateDeploymentContainerRequest{
 			DeploymentID: deployment.ID,
 			ContainerID:  c.ID,
 			Image:        c.Image,
 			Tag:          c.Tag,
 		})
 		if err != nil {
-			logger.Error("deploy", "failed to record deployment container", logger.F{"container": c.Name, "error": err})
+			responder.QueryError(w, err, fmt.Sprintf("failed to record deployment container %s", c.Name))
+			return
 		}
 	}
 
-	deployingStatus := "deploying"
-	_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{
-		Status: &deployingStatus,
-	})
+	if err := tx.Commit(); err != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to commit deployment")
+		return
+	}
 
 	// Log deployment initiation
 	_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{

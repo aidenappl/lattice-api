@@ -7,6 +7,8 @@ import (
 	"github.com/aidenappl/lattice-api/logger"
 )
 
+const batchSize = 10000
+
 // Start launches a background goroutine that periodically purges old logs and metrics.
 // Runs every hour.
 func Start(db *sql.DB) {
@@ -27,39 +29,48 @@ func run(db *sql.DB) {
 	logger.Info("retention", "starting cleanup")
 
 	// Container logs: keep 7 days
-	if result, err := db.Exec("DELETE FROM container_logs WHERE recorded_at < NOW() - INTERVAL 7 DAY"); err != nil {
-		logger.Error("retention", "container_logs cleanup error", logger.F{"error": err})
-	} else if rows, _ := result.RowsAffected(); rows > 0 {
-		logger.Info("retention", "deleted old container log rows", logger.F{"rows": rows})
-	}
+	purge(db, "container_logs", "recorded_at", "7 DAY")
 
 	// Lifecycle logs: keep 14 days
-	if result, err := db.Exec("DELETE FROM lifecycle_logs WHERE recorded_at < NOW() - INTERVAL 14 DAY"); err != nil {
-		logger.Error("retention", "lifecycle_logs cleanup error", logger.F{"error": err})
-	} else if rows, _ := result.RowsAffected(); rows > 0 {
-		logger.Info("retention", "deleted old lifecycle log rows", logger.F{"rows": rows})
-	}
+	purge(db, "lifecycle_logs", "recorded_at", "14 DAY")
 
 	// Worker metrics: keep 30 days
-	if result, err := db.Exec("DELETE FROM worker_metrics WHERE recorded_at < NOW() - INTERVAL 30 DAY"); err != nil {
-		logger.Error("retention", "worker_metrics cleanup error", logger.F{"error": err})
-	} else if rows, _ := result.RowsAffected(); rows > 0 {
-		logger.Info("retention", "deleted old metric rows", logger.F{"rows": rows})
-	}
+	purge(db, "worker_metrics", "recorded_at", "30 DAY")
+
+	// Container metrics: keep 7 days (high volume, shorter retention)
+	purge(db, "container_metrics", "recorded_at", "7 DAY")
 
 	// Deployment logs: keep 90 days
-	if result, err := db.Exec("DELETE FROM deployment_logs WHERE recorded_at < NOW() - INTERVAL 90 DAY"); err != nil {
-		logger.Error("retention", "deployment_logs cleanup error", logger.F{"error": err})
-	} else if rows, _ := result.RowsAffected(); rows > 0 {
-		logger.Info("retention", "deleted old deployment log rows", logger.F{"rows": rows})
-	}
+	purge(db, "deployment_logs", "recorded_at", "90 DAY")
 
 	// Audit log: keep 180 days
-	if result, err := db.Exec("DELETE FROM audit_log WHERE inserted_at < NOW() - INTERVAL 180 DAY"); err != nil {
-		logger.Error("retention", "audit_log cleanup error", logger.F{"error": err})
-	} else if rows, _ := result.RowsAffected(); rows > 0 {
-		logger.Info("retention", "deleted old audit log rows", logger.F{"rows": rows})
-	}
+	purge(db, "audit_log", "inserted_at", "180 DAY")
 
 	logger.Info("retention", "cleanup complete")
+}
+
+// purge deletes rows older than the retention interval in batches to avoid
+// holding long table locks. Loops until fewer than batchSize rows are deleted.
+func purge(db *sql.DB, table, column, interval string) {
+	query := "DELETE FROM " + table + " WHERE " + column + " < NOW() - INTERVAL " + interval + " LIMIT " + "10000"
+	var totalDeleted int64
+
+	for {
+		result, err := db.Exec(query)
+		if err != nil {
+			logger.Error("retention", table+" cleanup error", logger.F{"error": err})
+			return
+		}
+		affected, _ := result.RowsAffected()
+		totalDeleted += affected
+		if affected < batchSize {
+			break
+		}
+		// Brief pause between batches to avoid lock contention
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if totalDeleted > 0 {
+		logger.Info("retention", "deleted old "+table+" rows", logger.F{"rows": totalDeleted})
+	}
 }

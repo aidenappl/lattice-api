@@ -46,8 +46,20 @@ func (h *ContainerActionHandler) HandleDeleteStack(w http.ResponseWriter, r *htt
 		}
 	}
 
-	if err := query.DeleteStack(db.DB, id); err != nil {
+	tx, txErr := db.BeginTx()
+	if txErr != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback()
+
+	if err := query.DeleteStack(tx, id); err != nil {
 		responder.QueryError(w, err, "failed to delete stack")
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to commit delete")
 		return
 	}
 

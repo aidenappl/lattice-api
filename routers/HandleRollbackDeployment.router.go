@@ -37,13 +37,25 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// Guard: prevent rolling back an already-rolled-back deployment
+	if target.Status == "rolled_back" {
+		responder.SendError(w, http.StatusConflict, "deployment has already been rolled back")
+		return
+	}
+
 	stack, err := query.GetStackByID(db.DB, target.StackID)
 	if err != nil {
 		responder.NotFound(w)
 		return
 	}
 
-	if stack.Status == "deploying" {
+	// Atomically claim the stack for deployment — prevents concurrent rollbacks/deploys.
+	claimed, claimErr := query.ClaimStackForDeploy(db.DB, stack.ID)
+	if claimErr != nil {
+		responder.QueryError(w, claimErr, "failed to claim stack for rollback")
+		return
+	}
+	if !claimed {
 		responder.SendError(w, http.StatusConflict, "deployment already in progress for this stack")
 		return
 	}
@@ -240,8 +252,15 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Create a new deployment record for this rollback.
-	rollbackDeployment, err := query.CreateDeployment(db.DB, query.CreateDeploymentRequest{
+	// Create rollback deployment and container records in a transaction.
+	tx, txErr := db.BeginTx()
+	if txErr != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback()
+
+	rollbackDeployment, err := query.CreateDeployment(tx, query.CreateDeploymentRequest{
 		StackID:     stack.ID,
 		Strategy:    stack.DeploymentStrategy,
 		TriggeredBy: &user.ID,
@@ -251,21 +270,23 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Record the containers being rolled back to.
 	for _, dc := range *prevContainers {
-		_, err := query.CreateDeploymentContainer(db.DB, query.CreateDeploymentContainerRequest{
+		_, err := query.CreateDeploymentContainer(tx, query.CreateDeploymentContainerRequest{
 			DeploymentID: rollbackDeployment.ID,
 			ContainerID:  dc.ContainerID,
 			Image:        dc.Image,
 			Tag:          dc.Tag,
 		})
 		if err != nil {
-			log.Printf("rollback: failed to record deployment container %d: %v", dc.ContainerID, err)
+			responder.QueryError(w, err, fmt.Sprintf("failed to record deployment container %d", dc.ContainerID))
+			return
 		}
 	}
 
-	deployingStatus := "deploying"
-	_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{Status: &deployingStatus})
+	if err := tx.Commit(); err != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to commit rollback deployment")
+		return
+	}
 
 	_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
 		DeploymentID: rollbackDeployment.ID,

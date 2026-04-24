@@ -34,6 +34,14 @@ func HandleCreateWorker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if exists, err := query.WorkerNameExists(db.DB, body.Name, nil); err != nil {
+		responder.QueryError(w, err, "failed to check worker name")
+		return
+	} else if exists {
+		responder.SendError(w, http.StatusConflict, "a worker with that name already exists")
+		return
+	}
+
 	worker, err := query.CreateWorker(db.DB, query.CreateWorkerRequest{
 		Name:      body.Name,
 		Hostname:  body.Hostname,

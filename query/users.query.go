@@ -203,7 +203,7 @@ type UpdateUserRequest struct {
 }
 
 func DeleteUser(engine db.Queryable, id int) error {
-	_, err := engine.Exec("DELETE FROM users WHERE id = ?", id)
+	_, err := engine.Exec("UPDATE users SET active = 0 WHERE id = ?", id)
 	return err
 }
 

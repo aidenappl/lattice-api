@@ -12,9 +12,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const MaxWorkerSessions = 500
+
 var (
 	ErrWorkerNotConnected = errors.New("worker is not connected")
 	ErrSendQueueFull      = errors.New("worker send queue is full")
+	ErrMaxConnections     = errors.New("maximum connections reached")
 )
 
 // WorkerSession represents a single connected worker.
@@ -25,8 +28,9 @@ type WorkerSession struct {
 	ConnectedAt time.Time
 	Send        chan []byte
 
-	cancel context.CancelFunc
-	once   sync.Once
+	cancel         context.CancelFunc
+	once           sync.Once
+	DisconnectOnce sync.Once
 }
 
 func (s *WorkerSession) Close() {
@@ -51,16 +55,21 @@ func NewWorkerHub() *WorkerHub {
 	}
 }
 
-func (h *WorkerHub) Register(session *WorkerSession) {
+func (h *WorkerHub) Register(session *WorkerSession) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	// Allow re-registration of existing worker (replaces old session)
 	if old, ok := h.sessions[session.WorkerID]; ok {
 		old.Close()
+	} else if len(h.sessions) >= MaxWorkerSessions {
+		log.Printf("socket: worker=%d rejected, max connections reached (%d)", session.WorkerID, MaxWorkerSessions)
+		return ErrMaxConnections
 	}
 
 	h.sessions[session.WorkerID] = session
 	log.Printf("socket: worker=%d registered (total=%d)", session.WorkerID, len(h.sessions))
+	return nil
 }
 
 func (h *WorkerHub) Unregister(workerID int) {

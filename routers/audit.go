@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/middleware"
@@ -22,17 +23,24 @@ func logAudit(r *http.Request, action, resourceType string, resourceID *int, det
 	ip := r.RemoteAddr
 
 	go func() {
-		err := query.CreateAuditLog(db.DB, query.CreateAuditLogRequest{
+		req := query.CreateAuditLogRequest{
 			UserID:       userID,
 			Action:       action,
 			ResourceType: resourceType,
 			ResourceID:   resourceID,
 			Details:      details,
 			IPAddress:    &ip,
-		})
-		if err != nil {
-			log.Printf("audit log error: %v", err)
 		}
+		var err error
+		for attempt := 0; attempt < 3; attempt++ {
+			err = query.CreateAuditLog(db.DB, req)
+			if err == nil {
+				return
+			}
+			log.Printf("audit log error (attempt %d/3): %v", attempt+1, err)
+			time.Sleep(500 * time.Millisecond)
+		}
+		log.Printf("audit log failed after 3 attempts: %v", err)
 	}()
 }
 

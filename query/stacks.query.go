@@ -230,12 +230,84 @@ func UpdateStack(engine db.Queryable, id int, req UpdateStackRequest) (*structs.
 	return GetStackByID(engine, id)
 }
 
-func DeleteStack(engine db.Queryable, id int) error {
+// ClaimStackForDeploy atomically transitions a stack to "deploying" if it is
+// not already in that state. Returns true if the claim was acquired, false if
+// the stack is already deploying (another deploy won the race).
+func ClaimStackForDeploy(engine db.Queryable, id int) (bool, error) {
+	result, err := engine.Exec(
+		"UPDATE stacks SET status = 'deploying' WHERE id = ? AND active = 1 AND status != 'deploying'",
+		id,
+	)
+	if err != nil {
+		return false, fmt.Errorf("failed to claim stack for deploy: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
+}
+
+// StackNameExists checks if an active stack with the given name exists,
+// optionally excluding a specific stack ID (for updates/renames).
+func StackNameExists(engine db.Queryable, name string, excludeID *int) (bool, error) {
+	q := sq.Select("COUNT(*)").From("stacks").
+		Where(sq.Eq{"name": name}).
+		Where(sq.Eq{"active": true})
+	if excludeID != nil {
+		q = q.Where(sq.NotEq{"id": *excludeID})
+	}
+	qStr, args, err := q.ToSql()
+	if err != nil {
+		return false, err
+	}
+	var count int
+	err = engine.QueryRow(qStr, args...).Scan(&count)
+	return count > 0, err
+}
+
+// WorkerNameExists checks if an active worker with the given name exists,
+// optionally excluding a specific worker ID.
+func WorkerNameExists(engine db.Queryable, name string, excludeID *int) (bool, error) {
+	q := sq.Select("COUNT(*)").From("workers").
+		Where(sq.Eq{"name": name}).
+		Where(sq.Eq{"active": true})
+	if excludeID != nil {
+		q = q.Where(sq.NotEq{"id": *excludeID})
+	}
+	qStr, args, err := q.ToSql()
+	if err != nil {
+		return false, err
+	}
+	var count int
+	err = engine.QueryRow(qStr, args...).Scan(&count)
+	return count > 0, err
+}
+
+// RegistryNameExists checks if an active registry with the given name exists,
+// optionally excluding a specific registry ID.
+func RegistryNameExists(engine db.Queryable, name string, excludeID *int) (bool, error) {
+	q := sq.Select("COUNT(*)").From("registries").
+		Where(sq.Eq{"name": name}).
+		Where(sq.Eq{"active": true})
+	if excludeID != nil {
+		q = q.Where(sq.NotEq{"id": *excludeID})
+	}
+	qStr, args, err := q.ToSql()
+	if err != nil {
+		return false, err
+	}
+	var count int
+	err = engine.QueryRow(qStr, args...).Scan(&count)
+	return count > 0, err
+}
+
+func DeleteStack(tx db.Queryable, id int) error {
 	// Soft-delete the stack's containers first to prevent orphaned active containers
 	// with the same name from interfering with future stacks.
-	if _, err := engine.Exec("UPDATE containers SET active = 0 WHERE stack_id = ?", id); err != nil {
+	if _, err := tx.Exec("UPDATE containers SET active = 0 WHERE stack_id = ?", id); err != nil {
 		return fmt.Errorf("failed to deactivate containers for stack %d: %w", id, err)
 	}
-	_, err := engine.Exec("UPDATE stacks SET active = 0 WHERE id = ?", id)
+	_, err := tx.Exec("UPDATE stacks SET active = 0 WHERE id = ?", id)
 	return err
 }

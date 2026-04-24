@@ -75,13 +75,19 @@ var (
 	generalLimiter = newRateLimiter()
 )
 
+// getClientIP extracts the client IP address for rate limiting.
+// Trust model: we trust the LAST entry in X-Forwarded-For (the IP added by our
+// closest reverse proxy) rather than the first (which can be spoofed by the client).
+// X-Real-IP is preferred when set, as it is typically written by a trusted proxy.
+// If neither header is present, we fall back to RemoteAddr.
 func getClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.SplitN(xff, ",", 2)
-		return strings.TrimSpace(parts[0])
-	}
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
+		return strings.TrimSpace(xri)
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		// Use the last entry — it's the one added by our closest trusted proxy.
+		return strings.TrimSpace(parts[len(parts)-1])
 	}
 	host := r.RemoteAddr
 	if idx := strings.LastIndex(host, ":"); idx != -1 {

@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	deployPingInterval  = 15 * time.Second
-	deployStallTimeout  = 45 * time.Second
-	deployMaxRetryCount = 3
+	deployPingInterval   = 15 * time.Second
+	deployStallTimeout   = 45 * time.Second
+	deployMaxRetryCount  = 3
+	deployMaxRuntime     = 30 * time.Minute
 )
 
 func copyPayload(payload map[string]any) map[string]any {
@@ -44,10 +45,30 @@ func (h *DeployHandler) monitorDeployment(deploymentID, stackID, workerID int, p
 	ticker := time.NewTicker(deployPingInterval)
 	defer ticker.Stop()
 
+	// Guard against goroutine leak: if the deployment never reaches a terminal
+	// state, force-fail it after deployMaxRuntime.
+	maxTimer := time.NewTimer(deployMaxRuntime)
+	defer maxTimer.Stop()
+
 	attempt := 1
 	lastProgressAt := time.Now().UTC()
 
-	for range ticker.C {
+	for {
+		select {
+		case <-maxTimer.C:
+			logger.Warn("deploy", "deployment monitor exceeded maximum runtime, marking as failed",
+				logger.F{"deployment_id": deploymentID, "max_runtime": deployMaxRuntime.String()})
+			_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+				DeploymentID: deploymentID,
+				Level:        "error",
+				Message:      fmt.Sprintf("Deployment monitor timed out after %s with no terminal state", deployMaxRuntime),
+			})
+			failedStatus := "failed"
+			_, _ = query.UpdateStack(db.DB, stackID, query.UpdateStackRequest{Status: &failedStatus})
+			_ = query.UpdateDeploymentStatus(db.DB, deploymentID, "failed")
+			return
+		case <-ticker.C:
+		}
 		dep, err := query.GetDeploymentByID(db.DB, deploymentID)
 		if err != nil {
 			logger.Error("deploy", "monitor failed to load deployment", logger.F{"deployment_id": deploymentID, "error": err})
@@ -110,9 +131,17 @@ func (h *DeployHandler) monitorDeployment(deploymentID, stackID, workerID int, p
 			Message:      fmt.Sprintf("Deployment marked failed after %d stalled attempts with no progress", deployMaxRetryCount),
 		})
 
-		failedStatus := "failed"
-		_, _ = query.UpdateStack(db.DB, stackID, query.UpdateStackRequest{Status: &failedStatus})
-		_ = query.UpdateDeploymentStatus(db.DB, deploymentID, "failed")
+		tx, txErr := db.BeginTx()
+		if txErr != nil {
+			logger.Error("deploy", "monitor failed to start transaction", logger.F{"deployment_id": deploymentID, "error": txErr})
+			return
+		}
+		defer tx.Rollback()
+		if err := query.UpdateDeploymentAndStackStatus(tx, deploymentID, "failed", stackID, "failed"); err != nil {
+			logger.Error("deploy", "monitor failed to update status", logger.F{"deployment_id": deploymentID, "error": err})
+			return
+		}
+		_ = tx.Commit()
 		return
 	}
 }

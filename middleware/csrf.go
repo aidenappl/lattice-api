@@ -74,7 +74,7 @@ func setCSRFCookie(w http.ResponseWriter) {
 		Domain:   env.CookieDomain,
 		HttpOnly: false, // JavaScript needs to read this
 		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
 	})
 }
 

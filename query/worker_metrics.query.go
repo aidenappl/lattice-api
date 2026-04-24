@@ -29,8 +29,13 @@ var metricsColumns = []string{
 	"worker_metrics.container_running_count",
 	"worker_metrics.network_rx_bytes",
 	"worker_metrics.network_tx_bytes",
+	"worker_metrics.network_rx_rate",
+	"worker_metrics.network_tx_rate",
 	"worker_metrics.uptime_seconds",
 	"worker_metrics.process_count",
+	"worker_metrics.runner_goroutines",
+	"worker_metrics.runner_heap_mb",
+	"worker_metrics.runner_sys_mb",
 	"worker_metrics.recorded_at",
 }
 
@@ -55,8 +60,13 @@ func scanMetrics(row scanner) (*structs.WorkerMetrics, error) {
 		&m.ContainerRunningCount,
 		&m.NetworkRxBytes,
 		&m.NetworkTxBytes,
+		&m.NetworkRxRate,
+		&m.NetworkTxRate,
 		&m.UptimeSeconds,
 		&m.ProcessCount,
+		&m.RunnerGoroutines,
+		&m.RunnerHeapMB,
+		&m.RunnerSysMB,
 		&m.RecordedAt,
 	)
 	return &m, err
@@ -144,8 +154,13 @@ type CreateMetricsRequest struct {
 	ContainerRunningCount *int
 	NetworkRxBytes        *int64
 	NetworkTxBytes        *int64
+	NetworkRxRate         *float64
+	NetworkTxRate         *float64
 	UptimeSeconds         *float64
 	ProcessCount          *int
+	RunnerGoroutines      *int
+	RunnerHeapMB          *float64
+	RunnerSysMB           *float64
 }
 
 func CreateMetrics(engine db.Queryable, req CreateMetricsRequest) error {
@@ -157,7 +172,9 @@ func CreateMetrics(engine db.Queryable, req CreateMetricsRequest) error {
 			"disk_used_mb", "disk_total_mb",
 			"container_count", "container_running_count",
 			"network_rx_bytes", "network_tx_bytes",
-			"uptime_seconds", "process_count").
+			"network_rx_rate", "network_tx_rate",
+			"uptime_seconds", "process_count",
+			"runner_goroutines", "runner_heap_mb", "runner_sys_mb").
 		Values(req.WorkerID, req.CPUPercent, req.CPUCores,
 			req.LoadAvg1, req.LoadAvg5, req.LoadAvg15,
 			req.MemoryUsedMB, req.MemoryTotalMB, req.MemoryFreeMB,
@@ -165,7 +182,9 @@ func CreateMetrics(engine db.Queryable, req CreateMetricsRequest) error {
 			req.DiskUsedMB, req.DiskTotalMB,
 			req.ContainerCount, req.ContainerRunningCount,
 			req.NetworkRxBytes, req.NetworkTxBytes,
-			req.UptimeSeconds, req.ProcessCount)
+			req.NetworkRxRate, req.NetworkTxRate,
+			req.UptimeSeconds, req.ProcessCount,
+			req.RunnerGoroutines, req.RunnerHeapMB, req.RunnerSysMB)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
@@ -213,159 +232,101 @@ type FleetMetricsPoint struct {
 	Timestamp      time.Time `json:"timestamp"`
 	CPUAvg         float64   `json:"cpu_avg"`
 	MemoryAvg      float64   `json:"memory_avg"`
-	NetworkRxTotal int64     `json:"network_rx_total"`
-	NetworkTxTotal int64     `json:"network_tx_total"`
+	NetworkRxRate  float64   `json:"network_rx_rate"`
+	NetworkTxRate  float64   `json:"network_tx_rate"`
 	ContainerCount int       `json:"container_count"`
 	RunningCount   int       `json:"running_count"`
+	OnlineWorkers  int       `json:"online_workers"`
 }
 
-// GetFleetMetricsHistory returns aggregated fleet metrics sampled at intervals.
-// It groups all metrics within each interval bucket and averages CPU/memory,
-// sums network bytes and container counts across workers.
+// GetFleetMetricsHistory returns aggregated fleet metrics bucketed by time interval.
+// Aggregation is done in SQL: each bucket averages CPU/memory per worker first,
+// then averages across workers for fleet-wide values. Network uses pre-computed
+// rates (bytes/sec) instead of cumulative byte counters.
 func GetFleetMetricsHistory(engine db.Queryable, since time.Time, points int) ([]FleetMetricsPoint, error) {
 	duration := time.Since(since)
-	interval := duration / time.Duration(points)
-	if interval < time.Minute {
-		interval = time.Minute
+	intervalSec := int(duration.Seconds()) / points
+	if intervalSec < 60 {
+		intervalSec = 60
 	}
 
-	// Get raw metrics since the cutoff, ordered by time.
-	// Include worker_id so we can aggregate per-worker then sum across the fleet.
+	// Two-level aggregation in SQL:
+	// Inner query: per-worker per-bucket averages
+	// Outer query: fleet-wide averages across workers per bucket
 	rawSQL := `
-		SELECT worker_id, recorded_at, cpu_percent, memory_used_mb, memory_total_mb,
-		       network_rx_bytes, network_tx_bytes, container_count, container_running_count
-		FROM worker_metrics
-		WHERE recorded_at >= ?
-		ORDER BY recorded_at ASC
+		SELECT
+			bucket_ts,
+			AVG(worker_cpu_avg) AS cpu_avg,
+			AVG(worker_mem_avg) AS memory_avg,
+			SUM(worker_rx_rate) AS network_rx_rate,
+			SUM(worker_tx_rate) AS network_tx_rate,
+			SUM(worker_containers) AS container_count,
+			SUM(worker_running) AS running_count,
+			COUNT(*) AS online_workers
+		FROM (
+			SELECT
+				worker_id,
+				FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP(recorded_at) / ?) * ?) AS bucket_ts,
+				AVG(cpu_percent) AS worker_cpu_avg,
+				AVG(CASE WHEN memory_total_mb > 0 THEN (memory_used_mb / memory_total_mb) * 100 ELSE NULL END) AS worker_mem_avg,
+				AVG(COALESCE(network_rx_rate, 0)) AS worker_rx_rate,
+				AVG(COALESCE(network_tx_rate, 0)) AS worker_tx_rate,
+				MAX(container_count) AS worker_containers,
+				MAX(container_running_count) AS worker_running
+			FROM worker_metrics
+			WHERE recorded_at >= ?
+			GROUP BY worker_id, bucket_ts
+		) per_worker
+		GROUP BY bucket_ts
+		ORDER BY bucket_ts ASC
 	`
-	rows, err := engine.Query(rawSQL, since)
+
+	rows, err := engine.Query(rawSQL, intervalSec, intervalSec, since)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query fleet history: %w", err)
 	}
 	defer rows.Close()
 
-	type rawRow struct {
-		workerID      int
-		recordedAt    time.Time
-		cpuPercent    *float64
-		memUsed       *float64
-		memTotal      *float64
-		netRx         *int64
-		netTx         *int64
-		containerCnt  *int
-		runningCnt    *int
-	}
-
-	var rawRows []rawRow
+	var result []FleetMetricsPoint
 	for rows.Next() {
-		var r rawRow
-		if err := rows.Scan(&r.workerID, &r.recordedAt, &r.cpuPercent, &r.memUsed, &r.memTotal,
-			&r.netRx, &r.netTx, &r.containerCnt, &r.runningCnt); err != nil {
+		var pt FleetMetricsPoint
+		var cpuAvg, memAvg, rxRate, txRate *float64
+		var containerCnt, runningCnt, onlineWorkers *int
+
+		if err := rows.Scan(&pt.Timestamp, &cpuAvg, &memAvg, &rxRate, &txRate,
+			&containerCnt, &runningCnt, &onlineWorkers); err != nil {
 			return nil, fmt.Errorf("failed to scan fleet history: %w", err)
 		}
-		rawRows = append(rawRows, r)
+		if cpuAvg != nil {
+			pt.CPUAvg = *cpuAvg
+		}
+		if memAvg != nil {
+			pt.MemoryAvg = *memAvg
+		}
+		if rxRate != nil {
+			pt.NetworkRxRate = *rxRate
+		}
+		if txRate != nil {
+			pt.NetworkTxRate = *txRate
+		}
+		if containerCnt != nil {
+			pt.ContainerCount = *containerCnt
+		}
+		if runningCnt != nil {
+			pt.RunningCount = *runningCnt
+		}
+		if onlineWorkers != nil {
+			pt.OnlineWorkers = *onlineWorkers
+		}
+		result = append(result, pt)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	if len(rawRows) == 0 {
+	if result == nil {
 		return []FleetMetricsPoint{}, nil
 	}
-
-	// Bucket into intervals.
-	// Within each bucket, aggregate per-worker first (average each worker's
-	// heartbeats), then combine across workers: average CPU/memory, sum
-	// containers/network. This produces fleet-wide totals that match the
-	// real-time WebSocket aggregation.
-	result := make([]FleetMetricsPoint, 0, points)
-	bucketStart := since
-	ri := 0
-
-	type workerBucket struct {
-		cpuSum, memSum     float64
-		cpuN, memN         int
-		netRx, netTx       int64
-		containerCnt       int
-		runningCnt         int
-		rows               int
-	}
-
-	for i := 0; i < points; i++ {
-		bucketEnd := bucketStart.Add(interval)
-		workers := make(map[int]*workerBucket)
-
-		for ri < len(rawRows) && rawRows[ri].recordedAt.Before(bucketEnd) {
-			r := rawRows[ri]
-			wb, ok := workers[r.workerID]
-			if !ok {
-				wb = &workerBucket{}
-				workers[r.workerID] = wb
-			}
-			if r.cpuPercent != nil {
-				wb.cpuSum += *r.cpuPercent
-				wb.cpuN++
-			}
-			if r.memUsed != nil && r.memTotal != nil && *r.memTotal > 0 {
-				wb.memSum += (*r.memUsed / *r.memTotal) * 100
-				wb.memN++
-			}
-			if r.netRx != nil {
-				wb.netRx = *r.netRx // use latest value per worker
-			}
-			if r.netTx != nil {
-				wb.netTx = *r.netTx
-			}
-			if r.containerCnt != nil {
-				wb.containerCnt = *r.containerCnt // use latest
-			}
-			if r.runningCnt != nil {
-				wb.runningCnt = *r.runningCnt // use latest
-			}
-			wb.rows++
-			ri++
-		}
-
-		if len(workers) > 0 {
-			var cpuTotal, memTotal float64
-			var cpuWorkers, memWorkers int
-			var netRxTotal, netTxTotal int64
-			var containerTotal, runningTotal int
-
-			for _, wb := range workers {
-				if wb.cpuN > 0 {
-					cpuTotal += wb.cpuSum / float64(wb.cpuN) // per-worker avg
-					cpuWorkers++
-				}
-				if wb.memN > 0 {
-					memTotal += wb.memSum / float64(wb.memN) // per-worker avg
-					memWorkers++
-				}
-				netRxTotal += wb.netRx
-				netTxTotal += wb.netTx
-				containerTotal += wb.containerCnt // sum across fleet
-				runningTotal += wb.runningCnt     // sum across fleet
-			}
-
-			pt := FleetMetricsPoint{
-				Timestamp:      bucketStart.Add(interval / 2),
-				NetworkRxTotal: netRxTotal,
-				NetworkTxTotal: netTxTotal,
-				ContainerCount: containerTotal,
-				RunningCount:   runningTotal,
-			}
-			if cpuWorkers > 0 {
-				pt.CPUAvg = cpuTotal / float64(cpuWorkers) // fleet average
-			}
-			if memWorkers > 0 {
-				pt.MemoryAvg = memTotal / float64(memWorkers) // fleet average
-			}
-			result = append(result, pt)
-		}
-
-		bucketStart = bucketEnd
-	}
-
 	return result, nil
 }
 

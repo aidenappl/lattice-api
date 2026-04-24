@@ -21,9 +21,26 @@ type WorkerMetrics struct {
 	ContainerRunningCount *int      `json:"container_running_count"`
 	NetworkRxBytes        *int64    `json:"network_rx_bytes"`
 	NetworkTxBytes        *int64    `json:"network_tx_bytes"`
+	NetworkRxRate         *float64  `json:"network_rx_rate"`
+	NetworkTxRate         *float64  `json:"network_tx_rate"`
 	UptimeSeconds         *float64  `json:"uptime_seconds"`
 	ProcessCount          *int      `json:"process_count"`
+	RunnerGoroutines      *int      `json:"runner_goroutines"`
+	RunnerHeapMB          *float64  `json:"runner_heap_mb"`
+	RunnerSysMB           *float64  `json:"runner_sys_mb"`
 	RecordedAt            time.Time `json:"recorded_at"`
+}
+
+type ContainerMetrics struct {
+	ID            int       `json:"id"`
+	WorkerID      int       `json:"worker_id"`
+	ContainerID   *int      `json:"container_id"`
+	ContainerName string    `json:"container_name"`
+	CPUPercent    *float64  `json:"cpu_percent"`
+	MemUsageMB    *float64  `json:"mem_usage_mb"`
+	MemLimitMB    *float64  `json:"mem_limit_mb"`
+	MemPercent    *float64  `json:"mem_percent"`
+	RecordedAt    time.Time `json:"recorded_at"`
 }
 
 type ContainerEvent struct {

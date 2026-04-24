@@ -113,7 +113,7 @@ func Search(engine db.Queryable, q string, limit int) (*SearchResults, error) {
 			Where(sq.Or{
 				sq.Like{"name": pattern},
 				sq.Like{"hostname": pattern},
-				sq.Like{"COALESCE(ip_address, '')": pattern},
+				sq.Expr("ip_address IS NOT NULL AND ip_address LIKE ?", pattern),
 			}).
 			Limit(uint64(fetchLimit)).
 			ToSql()
@@ -164,7 +164,7 @@ func Search(engine db.Queryable, q string, limit int) (*SearchResults, error) {
 			Where(sq.Eq{"active": true}).
 			Where(sq.Or{
 				sq.Like{"name": pattern},
-				sq.Like{"COALESCE(description, '')": pattern},
+				sq.Expr("description IS NOT NULL AND description LIKE ?", pattern),
 			}).
 			Limit(uint64(fetchLimit)).
 			ToSql()

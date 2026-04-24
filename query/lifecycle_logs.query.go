@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -116,6 +117,11 @@ func CreateLifecycleLog(engine db.Queryable, req CreateLifecycleLogRequest) erro
 	if err != nil {
 		return fmt.Errorf("failed to build sql query: %w", err)
 	}
+
+	// INSERT IGNORE discards rows that violate the unique index on
+	// (container_id, worker_id, event, recorded_at), preventing message
+	// replays from creating duplicate lifecycle entries.
+	qStr = strings.Replace(qStr, "INSERT INTO", "INSERT IGNORE INTO", 1)
 
 	_, err = engine.Exec(qStr, args...)
 	return err

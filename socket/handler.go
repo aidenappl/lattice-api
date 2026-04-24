@@ -116,7 +116,17 @@ func (h *WorkerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		cancel:      cancel,
 	}
 
-	h.Hub.Register(session)
+	if err := h.Hub.Register(session); err != nil {
+		logger.Warn("socket", "worker connection rejected", logger.F{"worker_id": workerID, "error": err})
+		_ = conn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "max connections reached"),
+			time.Now().Add(writeWait),
+		)
+		conn.Close()
+		cancel()
+		return
+	}
 
 	if h.OnConnect != nil {
 		h.OnConnect(session)
@@ -139,9 +149,11 @@ func (h *WorkerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		<-ctx.Done()
-		if h.OnDisconnect != nil {
-			h.OnDisconnect(session, nil)
-		}
+		session.DisconnectOnce.Do(func() {
+			if h.OnDisconnect != nil {
+				h.OnDisconnect(session, nil)
+			}
+		})
 		h.Hub.removeIfMatch(session)
 	}()
 }

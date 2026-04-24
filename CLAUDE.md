@@ -36,7 +36,8 @@ query/                   # 16 query files — squirrel-based SQL builders, all a
   registries.query.go    # Registry CRUD
   users.query.go         # User CRUD, lookup by email/forta_id
   worker_tokens.query.go # Token generation/validation
-  worker_metrics.query.go # Metrics storage/retrieval
+  worker_metrics.query.go # Worker metrics storage/retrieval, fleet aggregation (DB-bucketed)
+  container_metrics.query.go # Per-container CPU/memory metrics (batch insert, time-range queries)
   container_logs.query.go # Log persistence with dedup via unique index on recorded_at
   lifecycle_logs.query.go # Lifecycle event logging
   audit_log.query.go     # Audit trail (CreateAuditLog exists but is NOT called anywhere yet)
@@ -100,6 +101,7 @@ All `/admin/*` routes are protected by `DualAuthMiddleware`.
 - `GET/PUT/DELETE /admin/containers/{id}` — get/update/delete
 - `GET /admin/containers/{id}/logs` — container logs
 - `GET /admin/containers/{id}/lifecycle` — lifecycle logs
+- `GET /admin/containers/{id}/metrics` — container resource metrics history
 - `POST /admin/containers/{id}/{action}` — start, stop, kill, restart, pause, unpause, remove, recreate
 
 ### Deployments

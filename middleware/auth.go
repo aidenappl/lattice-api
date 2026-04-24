@@ -99,12 +99,15 @@ func RequireEditor(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// WorkerTokenAuth validates a worker API token from the query string or header.
-// Returns the worker_id on success, or writes an error response and returns 0.
+// WorkerTokenAuth validates a worker API token from the X-Worker-Token header.
+// Query parameter auth is only allowed for WebSocket upgrade requests because
+// WebSocket clients cannot set custom headers during the HTTP upgrade handshake.
+// Returns the worker_id on success.
 func WorkerTokenAuth(r *http.Request) (int, bool) {
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		token = r.Header.Get("X-Worker-Token")
+	token := r.Header.Get("X-Worker-Token")
+	// Allow query param only for WebSocket upgrades (clients can't set headers)
+	if token == "" && strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		token = r.URL.Query().Get("token")
 	}
 	if token == "" {
 		return 0, false

@@ -35,6 +35,14 @@ func HandleCreateRegistry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if exists, err := query.RegistryNameExists(db.DB, body.Name, nil); err != nil {
+		responder.QueryError(w, err, "failed to check registry name")
+		return
+	} else if exists {
+		responder.SendError(w, http.StatusConflict, "a registry with that name already exists")
+		return
+	}
+
 	// Validate connectivity if credentials are provided
 	if body.Username != nil && body.Password != nil {
 		client := registry.NewClient(body.URL, *body.Username, *body.Password)

@@ -11,7 +11,7 @@ import (
 func HandleGetOverview(w http.ResponseWriter, r *http.Request) {
 	activeTrue := true
 
-	allWorkers, err := query.ListWorkers(db.DB, query.ListWorkersRequest{Limit: 10000})
+	allWorkers, err := query.ListWorkers(db.DB, query.ListWorkersRequest{Limit: db.MAX_LIMIT})
 	if err != nil {
 		responder.QueryError(w, err, "failed to count workers")
 		return
@@ -21,14 +21,14 @@ func HandleGetOverview(w http.ResponseWriter, r *http.Request) {
 	onlineWorkers, err := query.ListWorkers(db.DB, query.ListWorkersRequest{
 		Status: &onlineStatus,
 		Active: &activeTrue,
-		Limit:  10000,
+		Limit:  db.MAX_LIMIT,
 	})
 	if err != nil {
 		responder.QueryError(w, err, "failed to count online workers")
 		return
 	}
 
-	allStacks, err := query.ListStacks(db.DB, query.ListStacksRequest{Limit: 10000})
+	allStacks, err := query.ListStacks(db.DB, query.ListStacksRequest{Limit: db.MAX_LIMIT})
 	if err != nil {
 		responder.QueryError(w, err, "failed to count stacks")
 		return
@@ -36,7 +36,7 @@ func HandleGetOverview(w http.ResponseWriter, r *http.Request) {
 
 	activeStacks, err := query.ListStacks(db.DB, query.ListStacksRequest{
 		Active: &activeTrue,
-		Limit:  10000,
+		Limit:  db.MAX_LIMIT,
 	})
 	if err != nil {
 		responder.QueryError(w, err, "failed to count active stacks")
@@ -133,8 +133,8 @@ func HandleGetOverview(w http.ResponseWriter, r *http.Request) {
 		Memory     *float64 `json:"memory"`
 		DiskUsed   *float64 `json:"disk_used"`
 		DiskTotal  *float64 `json:"disk_total"`
-		NetRx      *int64   `json:"net_rx"`
-		NetTx      *int64   `json:"net_tx"`
+		NetRxRate  *float64 `json:"net_rx_rate"`
+		NetTxRate  *float64 `json:"net_tx_rate"`
 		Containers *int     `json:"containers"`
 		Running    *int     `json:"running"`
 		Status     string   `json:"status"`
@@ -162,8 +162,8 @@ func HandleGetOverview(w http.ResponseWriter, r *http.Request) {
 				Memory:     memPct,
 				DiskUsed:   m.DiskUsedMB,
 				DiskTotal:  m.DiskTotalMB,
-				NetRx:      m.NetworkRxBytes,
-				NetTx:      m.NetworkTxBytes,
+				NetRxRate:  m.NetworkRxRate,
+				NetTxRate:  m.NetworkTxRate,
 				Containers: m.ContainerCount,
 				Running:    m.ContainerRunningCount,
 				Status:     "online",

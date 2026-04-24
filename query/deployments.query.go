@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -186,11 +187,26 @@ func CreateDeploymentLog(engine db.Queryable, req CreateDeploymentLogRequest) er
 	if level == "" {
 		level = "info"
 	}
-	_, err := engine.Exec(
-		"INSERT INTO deployment_logs (deployment_id, level, stage, message) VALUES (?, ?, ?, ?)",
-		req.DeploymentID, level, req.Stage, req.Message,
-	)
+	q := "INSERT INTO deployment_logs (deployment_id, level, stage, message) VALUES (?, ?, ?, ?)"
+	// INSERT IGNORE discards rows that violate the unique index on
+	// (deployment_id, level, recorded_at, message), preventing duplicate
+	// log entries on message replay.
+	q = strings.Replace(q, "INSERT INTO", "INSERT IGNORE INTO", 1)
+	_, err := engine.Exec(q, req.DeploymentID, level, req.Stage, req.Message)
 	return err
+}
+
+// UpdateDeploymentAndStackStatus atomically updates both the deployment status
+// and the associated stack status in a single transaction. This prevents the
+// desynchronization that occurs when one update succeeds but the other fails.
+func UpdateDeploymentAndStackStatus(tx db.Queryable, deploymentID int, deployStatus string, stackID int, stackStatus string) error {
+	if err := UpdateDeploymentStatus(tx, deploymentID, deployStatus); err != nil {
+		return fmt.Errorf("failed to update deployment status: %w", err)
+	}
+	if _, err := UpdateStack(tx, stackID, UpdateStackRequest{Status: &stackStatus}); err != nil {
+		return fmt.Errorf("failed to update stack status: %w", err)
+	}
+	return nil
 }
 
 func ListDeploymentLogs(engine db.Queryable, deploymentID int) (*[]structs.DeploymentLog, error) {
