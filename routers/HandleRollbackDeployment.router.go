@@ -49,17 +49,8 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Atomically claim the stack for deployment — prevents concurrent rollbacks/deploys.
-	claimed, claimErr := query.ClaimStackForDeploy(db.DB, stack.ID)
-	if claimErr != nil {
-		responder.QueryError(w, claimErr, "failed to claim stack for rollback")
-		return
-	}
-	if !claimed {
-		responder.SendError(w, http.StatusConflict, "deployment already in progress for this stack")
-		return
-	}
-
+	// Pre-flight validation — must pass before we claim the stack, otherwise
+	// a failed check leaves the stack stuck in "deploying" with no deployment.
 	if stack.WorkerID == nil {
 		responder.SendError(w, http.StatusBadRequest, "stack has no worker assigned")
 		return
@@ -67,6 +58,18 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 
 	if !h.WorkerHub.IsConnected(*stack.WorkerID) {
 		responder.SendError(w, http.StatusBadRequest, "worker is not connected")
+		return
+	}
+
+	// Atomically claim the stack for deployment — prevents concurrent rollbacks/deploys.
+	// All pre-flight checks passed, so it's safe to transition to "deploying".
+	claimed, claimErr := query.ClaimStackForDeploy(db.DB, stack.ID)
+	if claimErr != nil {
+		responder.QueryError(w, claimErr, "failed to claim stack for rollback")
+		return
+	}
+	if !claimed {
+		responder.SendError(w, http.StatusConflict, "deployment already in progress for this stack")
 		return
 	}
 

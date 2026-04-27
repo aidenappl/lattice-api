@@ -69,7 +69,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 		wName := workerName
 		mailer.ScheduleDisconnectAlert(wID, func() {
 			mailer.Notify("worker.disconnected", "Worker Disconnected",
-				fmt.Sprintf("%s has gone offline.\n\nThe WebSocket connection to this worker was lost. This could be caused by a network interruption, a restart, or a crash.\n\nCheck the worker status in the Lattice dashboard for more details.", wName))
+				fmt.Sprintf("<strong>%s</strong> has gone offline.\n\nThe WebSocket connection to this worker was lost. This could be caused by a network interruption, a restart, or a crash.\n\nCheck the worker status in the Lattice dashboard for more details.", wName))
 		})
 	}
 

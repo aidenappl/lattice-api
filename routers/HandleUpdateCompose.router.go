@@ -11,9 +11,41 @@ import (
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/tools"
+	"github.com/aidenappl/lattice-api/structs"
 	"github.com/gorilla/mux"
 	"gopkg.in/yaml.v3"
 )
+
+// containerConfigFingerprint produces a deterministic string from a container's
+// config fields. Used to detect whether a compose save actually changed a
+// container's definition vs just recreating the same config.
+func containerConfigFingerprint(c structs.Container) string {
+	type fp struct {
+		Image          string   `json:"i"`
+		Tag            string   `json:"t"`
+		PortMappings   *string  `json:"pm"`
+		EnvVars        *string  `json:"ev"`
+		Volumes        *string  `json:"v"`
+		CPULimit       *float64 `json:"cl"`
+		MemoryLimit    *int     `json:"ml"`
+		Replicas       int      `json:"r"`
+		RestartPolicy  *string  `json:"rp"`
+		Command        *string  `json:"cmd"`
+		Entrypoint     *string  `json:"ep"`
+		HealthCheck    *string  `json:"hc"`
+		DependsOn      *string  `json:"do"`
+		NetworkAliases *string  `json:"na"`
+	}
+	b, _ := json.Marshal(fp{
+		Image: c.Image, Tag: c.Tag,
+		PortMappings: c.PortMappings, EnvVars: c.EnvVars,
+		Volumes: c.Volumes, CPULimit: c.CPULimit, MemoryLimit: c.MemoryLimit,
+		Replicas: c.Replicas, RestartPolicy: c.RestartPolicy,
+		Command: c.Command, Entrypoint: c.Entrypoint, HealthCheck: c.HealthCheck,
+		DependsOn: c.DependsOn, NetworkAliases: c.NetworkAliases,
+	})
+	return string(b)
+}
 
 func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 	stackID, err := strconv.Atoi(mux.Vars(r)["id"])
@@ -63,12 +95,20 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback() // no-op if committed
 
-	// Soft-delete existing containers
+	// Snapshot existing containers before deletion so we can diff afterward
 	existing, err := query.ListContainersByStack(tx, stack.ID)
 	if err != nil {
 		responder.QueryError(w, err, "failed to list containers")
 		return
 	}
+	oldConfigs := make(map[string]string) // container name → config fingerprint
+	if existing != nil {
+		for _, c := range *existing {
+			oldConfigs[c.Name] = containerConfigFingerprint(c)
+		}
+	}
+
+	// Soft-delete existing containers
 	if existing != nil {
 		for _, c := range *existing {
 			_ = query.DeleteContainer(tx, c.ID)
@@ -214,6 +254,24 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Diff old vs new containers by name to identify what changed
+	newContainers, _ := query.ListContainersByStack(db.DB, stack.ID)
+	var changedIDs []int
+	if newContainers != nil {
+		for _, c := range *newContainers {
+			oldFP, existed := oldConfigs[c.Name]
+			if !existed || oldFP != containerConfigFingerprint(c) {
+				changedIDs = append(changedIDs, c.ID)
+			}
+		}
+	}
+	if changedIDs == nil {
+		changedIDs = []int{}
+	}
+
 	logAudit(r, "update_compose", "stack", intPtr(stackID), nil)
-	responder.New(w, stack, "stack updated from compose file")
+	responder.New(w, map[string]any{
+		"stack":                 stack,
+		"changed_container_ids": changedIDs,
+	}, "stack updated from compose file")
 }

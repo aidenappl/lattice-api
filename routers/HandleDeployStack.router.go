@@ -15,6 +15,7 @@ import (
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/socket"
+	"github.com/aidenappl/lattice-api/structs"
 	"github.com/gorilla/mux"
 	"gopkg.in/yaml.v3"
 )
@@ -31,6 +32,12 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Optional body — if container_ids is provided, only deploy those containers.
+	var body struct {
+		ContainerIDs []int `json:"container_ids"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
 	user, ok := middleware.GetUserFromContext(r.Context())
 	if !ok || user == nil {
 		responder.SendError(w, http.StatusUnauthorized, "not authenticated")
@@ -43,17 +50,8 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Atomically claim the stack for deployment — prevents concurrent deploys.
-	claimed, err := query.ClaimStackForDeploy(db.DB, stack.ID)
-	if err != nil {
-		responder.QueryError(w, err, "failed to claim stack for deploy")
-		return
-	}
-	if !claimed {
-		responder.SendError(w, http.StatusConflict, "deployment already in progress for this stack")
-		return
-	}
-
+	// Pre-flight validation — must pass before we claim the stack, otherwise
+	// a failed check leaves the stack stuck in "deploying" with no deployment.
 	if stack.WorkerID == nil {
 		responder.SendError(w, http.StatusBadRequest, "stack has no worker assigned")
 		return
@@ -82,11 +80,45 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	// Atomically claim the stack for deployment — prevents concurrent deploys.
+	// All pre-flight checks passed, so it's safe to transition to "deploying".
+	claimed, err := query.ClaimStackForDeploy(db.DB, stack.ID)
+	if err != nil {
+		responder.QueryError(w, err, "failed to claim stack for deploy")
+		return
+	}
+	if !claimed {
+		responder.SendError(w, http.StatusConflict, "deployment already in progress for this stack")
+		return
+	}
+
 	// Fetch containers for this stack
 	containers, err := query.ListContainersByStack(db.DB, stack.ID)
 	if err != nil {
 		responder.QueryError(w, err, "failed to list containers")
 		return
+	}
+
+	// If specific container IDs were requested, filter to only those
+	targeted := len(body.ContainerIDs) > 0
+	if targeted {
+		idSet := make(map[int]bool, len(body.ContainerIDs))
+		for _, cid := range body.ContainerIDs {
+			idSet[cid] = true
+		}
+		filtered := make([]structs.Container, 0, len(body.ContainerIDs))
+		for _, c := range *containers {
+			if idSet[c.ID] {
+				filtered = append(filtered, c)
+			}
+		}
+		if len(filtered) == 0 {
+			failedStatus := "active"
+			_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{Status: &failedStatus})
+			responder.SendError(w, http.StatusBadRequest, "none of the specified container IDs belong to this stack")
+			return
+		}
+		containers = &filtered
 	}
 
 	// Fetch stack-level networks — assigned to every container so Docker DNS works
@@ -354,7 +386,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 	_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
 		DeploymentID: deployment.ID,
 		Level:        "info",
-		Message:      fmt.Sprintf("Deployment initiated by user %d for stack '%s' (strategy=%s, containers=%d)", user.ID, stack.Name, stack.DeploymentStrategy, len(*containers)),
+		Message:      fmt.Sprintf("Deployment initiated by user %d for stack '%s' (strategy=%s, containers=%d, targeted=%v)", user.ID, stack.Name, stack.DeploymentStrategy, len(*containers), targeted),
 	})
 
 	// Send deploy command to worker

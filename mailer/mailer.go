@@ -2,6 +2,7 @@ package mailer
 
 import (
 	"fmt"
+	"html"
 	"net/smtp"
 	"strings"
 
@@ -145,13 +146,14 @@ func renderEmail(subject, body string) string {
 		iconEmoji = "⚠️"
 	}
 
-	// HTML-escape body content then convert newlines to line breaks.
-	// This prevents HTML injection from user-controlled data like
-	// container names or error messages in notification bodies.
-	escaped := strings.ReplaceAll(body, "&", "&amp;")
-	escaped = strings.ReplaceAll(escaped, "<", "&lt;")
-	escaped = strings.ReplaceAll(escaped, ">", "&gt;")
-	escaped = strings.ReplaceAll(escaped, "\"", "&quot;")
+	// HTML-escape body content then restore safe formatting tags.
+	// This prevents injection from user-controlled data (container names,
+	// error messages) while allowing callers to use <strong>/<em> for formatting.
+	escaped := html.EscapeString(body)
+	escaped = strings.ReplaceAll(escaped, "&lt;strong&gt;", "<strong>")
+	escaped = strings.ReplaceAll(escaped, "&lt;/strong&gt;", "</strong>")
+	escaped = strings.ReplaceAll(escaped, "&lt;em&gt;", "<em>")
+	escaped = strings.ReplaceAll(escaped, "&lt;/em&gt;", "</em>")
 	htmlBody := strings.ReplaceAll(escaped, "\n", "<br>")
 
 	// Strip [Lattice] prefix from display title
