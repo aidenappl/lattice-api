@@ -34,6 +34,7 @@ type appContext struct {
 	workerActionHandler    *routers.WorkerActionHandler
 	volumeHandler          *routers.VolumeHandler
 	networkHandler         *routers.NetworkHandler
+	databaseHandler        *routers.DatabaseHandler
 }
 
 // initApp bootstraps all services, creates WebSocket hubs and handler structs,
@@ -111,6 +112,10 @@ func initApp() *appContext {
 		},
 		networkHandler: &routers.NetworkHandler{
 			WorkerHub: workerHub,
+		},
+		databaseHandler: &routers.DatabaseHandler{
+			WorkerHub: workerHub,
+			AdminHub:  adminHub,
 		},
 	}
 }

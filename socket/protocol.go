@@ -63,6 +63,29 @@ const (
 	MsgExecOutput = "exec_output"
 )
 
+// Database management: Orchestrator -> Worker
+const (
+	MsgDbCreate         = "db_create"
+	MsgDbStart          = "db_start"
+	MsgDbStop           = "db_stop"
+	MsgDbRestart        = "db_restart"
+	MsgDbRemove         = "db_remove"
+	MsgDbSnapshot       = "db_snapshot"
+	MsgDbRestore        = "db_restore"
+	MsgDbUpdateSchedule = "db_update_schedule"
+	MsgDbDeleteSnapshot = "db_delete_snapshot_file"
+	MsgBackupDestTest   = "backup_dest_test"
+)
+
+// Database management: Worker -> Orchestrator
+const (
+	MsgDbStatus             = "db_status"
+	MsgDbHealthStatus       = "db_health_status"
+	MsgDbSnapshotProgress   = "db_snapshot_status"
+	MsgDbRestoreStatus      = "db_restore_status"
+	MsgBackupDestTestResult = "backup_dest_test_result"
+)
+
 // Admin client -> API message types
 const (
 	MsgSubscribe   = "subscribe"

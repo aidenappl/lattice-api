@@ -220,6 +220,65 @@ func Init() {
 	migrate(db, "ALTER TABLE worker_metrics ADD COLUMN runner_goroutines INT DEFAULT NULL AFTER process_count")
 	migrate(db, "ALTER TABLE worker_metrics ADD COLUMN runner_heap_mb DOUBLE DEFAULT NULL AFTER runner_goroutines")
 	migrate(db, "ALTER TABLE worker_metrics ADD COLUMN runner_sys_mb DOUBLE DEFAULT NULL AFTER runner_heap_mb")
+
+	// Auto-create backup_destinations table
+	migrate(db, `CREATE TABLE IF NOT EXISTS backup_destinations (
+		id INT AUTO_INCREMENT PRIMARY KEY,
+		name VARCHAR(255) NOT NULL,
+		type VARCHAR(20) NOT NULL,
+		config TEXT,
+		active BOOLEAN DEFAULT TRUE,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`)
+
+	// Auto-create database_instances table
+	migrate(db, `CREATE TABLE IF NOT EXISTS database_instances (
+		id INT AUTO_INCREMENT PRIMARY KEY,
+		name VARCHAR(255) NOT NULL,
+		engine VARCHAR(20) NOT NULL,
+		engine_version VARCHAR(20) NOT NULL,
+		worker_id INT NOT NULL,
+		status VARCHAR(20) DEFAULT 'pending',
+		port INT NOT NULL,
+		root_password TEXT,
+		database_name VARCHAR(255) NOT NULL,
+		username VARCHAR(255) NOT NULL,
+		password TEXT,
+		cpu_limit DOUBLE DEFAULT NULL,
+		memory_limit INT DEFAULT NULL,
+		health_status VARCHAR(20) DEFAULT 'none',
+		snapshot_schedule VARCHAR(100) DEFAULT NULL,
+		retention_count INT DEFAULT NULL,
+		backup_destination_id INT DEFAULT NULL,
+		container_name VARCHAR(255) NOT NULL,
+		volume_name VARCHAR(255) NOT NULL,
+		active BOOLEAN DEFAULT TRUE,
+		started_at DATETIME DEFAULT NULL,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE INDEX idx_db_instance_name (name, active),
+		INDEX idx_db_instance_worker (worker_id)
+	)`)
+
+	// Auto-create database_snapshots table
+	migrate(db, `CREATE TABLE IF NOT EXISTS database_snapshots (
+		id INT AUTO_INCREMENT PRIMARY KEY,
+		database_instance_id INT NOT NULL,
+		backup_destination_id INT DEFAULT NULL,
+		filename VARCHAR(500) NOT NULL,
+		size_bytes BIGINT DEFAULT NULL,
+		engine VARCHAR(20) NOT NULL,
+		database_name VARCHAR(255) NOT NULL,
+		status VARCHAR(20) DEFAULT 'pending',
+		trigger_type VARCHAR(20) DEFAULT 'manual',
+		error_message TEXT DEFAULT NULL,
+		completed_at DATETIME DEFAULT NULL,
+		active BOOLEAN DEFAULT TRUE,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		INDEX idx_snapshot_instance (database_instance_id)
+	)`)
 }
 
 // QueryContext returns a context with a 30-second timeout suitable for

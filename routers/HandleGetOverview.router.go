@@ -171,6 +171,22 @@ func HandleGetOverview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Count database instances
+	allDatabases, _, dbErr := query.ListDatabaseInstances(db.DB, query.ListDatabaseInstancesRequest{Limit: db.MAX_LIMIT})
+	if dbErr != nil {
+		allDatabases = nil
+	}
+	totalDatabases := 0
+	runningDatabases := 0
+	if allDatabases != nil {
+		totalDatabases = len(*allDatabases)
+		for _, d := range *allDatabases {
+			if d.Status == "running" {
+				runningDatabases++
+			}
+		}
+	}
+
 	// Count deploying/failed stacks
 	deployingStacks := 0
 	failedStacks := 0
@@ -201,5 +217,7 @@ func HandleGetOverview(w http.ResponseWriter, r *http.Request) {
 		"fleet_container_count":   totalContainerCount,
 		"fleet_running_count":     totalRunningCount,
 		"worker_metrics":          workerSummaries,
+		"total_databases":         totalDatabases,
+		"running_databases":       runningDatabases,
 	}, "overview retrieved")
 }

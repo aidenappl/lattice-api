@@ -48,6 +48,11 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 			"type":      "worker_connected",
 			"worker_id": session.WorkerID,
 		})
+
+		// Distribute database snapshot schedules to the reconnected worker
+		safeGo("db-schedule-sync", func() {
+			distributeDbSchedules(session.WorkerID, wh.Hub)
+		})
 	}
 
 	wh.OnDisconnect = func(session *socket.WorkerSession, err error) {
@@ -324,6 +329,82 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
+
+		// ── Database management responses ─────────────────────────────────
+		case socket.MsgDbStatus:
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "db_status",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
+			safeGo("db-status", func() {
+				idFloat, _ := msg.Payload["database_instance_id"].(float64)
+				status, _ := msg.Payload["status"].(string)
+				if idFloat == 0 || status == "" {
+					return
+				}
+				dbID := int(idFloat)
+				req := query.UpdateDatabaseInstanceRequest{Status: &status}
+				if status == "running" {
+					now := time.Now()
+					req.StartedAt = &now
+				}
+				_, _ = query.UpdateDatabaseInstance(db.DB, dbID, req)
+			})
+
+		case socket.MsgDbHealthStatus:
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "db_health_status",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
+			safeGo("db-health", func() {
+				idFloat, _ := msg.Payload["database_instance_id"].(float64)
+				hs, _ := msg.Payload["health_status"].(string)
+				if idFloat == 0 || hs == "" {
+					return
+				}
+				req := query.UpdateDatabaseInstanceRequest{HealthStatus: &hs}
+				_, _ = query.UpdateDatabaseInstance(db.DB, int(idFloat), req)
+			})
+
+		case socket.MsgDbSnapshotProgress:
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "db_snapshot_status",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
+			safeGo("db-snapshot", func() {
+				snapIDFloat, _ := msg.Payload["snapshot_id"].(float64)
+				status, _ := msg.Payload["status"].(string)
+				if snapIDFloat == 0 || status == "" {
+					return
+				}
+				var sizeBytes *int64
+				if sb, ok := msg.Payload["size_bytes"].(float64); ok && sb > 0 {
+					v := int64(sb)
+					sizeBytes = &v
+				}
+				var errMsg *string
+				if em, ok := msg.Payload["error_message"].(string); ok && em != "" {
+					errMsg = &em
+				}
+				_ = query.UpdateSnapshotStatus(db.DB, int(snapIDFloat), status, sizeBytes, errMsg)
+			})
+
+		case socket.MsgDbRestoreStatus:
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "db_restore_status",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
+
+		case socket.MsgBackupDestTestResult:
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "backup_dest_test_result",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
 		}
 	}
 }
@@ -374,5 +455,75 @@ func configureAdminHandler(ah *socket.AdminHandler, workerHub *socket.WorkerHub)
 				Payload:   msg.Payload,
 			})
 		}
+	}
+}
+
+// distributeDbSchedules sends snapshot schedule configurations to a worker
+// for all database instances hosted on that worker. Called on worker reconnect
+// so the runner's scheduler is rehydrated.
+func distributeDbSchedules(workerID int, hub *socket.WorkerHub) {
+	instances, _, err := query.ListDatabaseInstances(db.DB, query.ListDatabaseInstancesRequest{
+		WorkerID: &workerID,
+		Limit:    db.MAX_LIMIT,
+	})
+	if err != nil || instances == nil {
+		return
+	}
+
+	for _, inst := range *instances {
+		if inst.SnapshotSchedule == nil || *inst.SnapshotSchedule == "" {
+			continue
+		}
+		if inst.BackupDestinationID == nil {
+			continue
+		}
+
+		dest, err := query.GetBackupDestinationByID(db.DB, *inst.BackupDestinationID)
+		if err != nil || dest == nil {
+			continue
+		}
+
+		retentionCount := 0
+		if inst.RetentionCount != nil {
+			retentionCount = *inst.RetentionCount
+		}
+
+		// Decrypt passwords for the runner
+		rootPw := ""
+		if inst.RootPassword != nil {
+			rootPw = *inst.RootPassword
+		}
+		pw := ""
+		if inst.Password != nil {
+			pw = *inst.Password
+		}
+
+		// Decode destination config
+		var destConfig map[string]any
+		if dest.Config != nil {
+			if err := json.Unmarshal([]byte(*dest.Config), &destConfig); err != nil {
+				logger.Warn("db-schedule-sync", "failed to parse backup destination config", logger.F{"dest_id": dest.ID, "error": err.Error()})
+				continue
+			}
+		}
+
+		_ = hub.SendJSONToWorker(workerID, socket.Envelope{
+			Type: socket.MsgDbUpdateSchedule,
+			Payload: map[string]any{
+				"database_instance_id": inst.ID,
+				"container_name":      inst.ContainerName,
+				"engine":              inst.Engine,
+				"database_name":       inst.DatabaseName,
+				"username":            inst.Username,
+				"password":            pw,
+				"root_password":       rootPw,
+				"cron":                *inst.SnapshotSchedule,
+				"retention_count":     retentionCount,
+				"backup_destination": map[string]any{
+					"type":   dest.Type,
+					"config": destConfig,
+				},
+			},
+		})
 	}
 }

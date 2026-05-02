@@ -165,6 +165,30 @@ func main() {
 	admin.HandleFunc("/registries/{id}/repositories", routers.HandleListRegistryRepos).Methods(http.MethodGet)
 	admin.HandleFunc("/registries/{id}/tags", routers.HandleListRegistryTags).Methods(http.MethodGet)
 
+	// Database Instances
+	admin.HandleFunc("/database-instances", routers.HandleListDatabaseInstances).Methods(http.MethodGet)
+	admin.HandleFunc("/database-instances", middleware.RequireEditor(app.databaseHandler.HandleCreateDatabaseInstance)).Methods(http.MethodPost)
+	admin.HandleFunc("/database-instances/{id}", routers.HandleGetDatabaseInstance).Methods(http.MethodGet)
+	admin.HandleFunc("/database-instances/{id}", middleware.RequireEditor(app.databaseHandler.HandleUpdateDatabaseInstance)).Methods(http.MethodPut)
+	admin.HandleFunc("/database-instances/{id}", middleware.RequireEditor(app.databaseHandler.HandleDeleteDatabaseInstance)).Methods(http.MethodDelete)
+	admin.HandleFunc("/database-instances/{id}/start", middleware.RequireEditor(app.databaseHandler.HandleDatabaseAction)).Methods(http.MethodPost)
+	admin.HandleFunc("/database-instances/{id}/stop", middleware.RequireEditor(app.databaseHandler.HandleDatabaseAction)).Methods(http.MethodPost)
+	admin.HandleFunc("/database-instances/{id}/restart", middleware.RequireEditor(app.databaseHandler.HandleDatabaseAction)).Methods(http.MethodPost)
+	admin.HandleFunc("/database-instances/{id}/remove", middleware.RequireEditor(app.databaseHandler.HandleDatabaseAction)).Methods(http.MethodPost)
+	admin.HandleFunc("/database-instances/{id}/credentials", middleware.RequireEditor(app.databaseHandler.HandleGetDatabaseCredentials)).Methods(http.MethodGet)
+	admin.HandleFunc("/database-instances/{id}/snapshots", routers.HandleListSnapshots).Methods(http.MethodGet)
+	admin.HandleFunc("/database-instances/{id}/snapshots", middleware.RequireEditor(app.databaseHandler.HandleCreateSnapshot)).Methods(http.MethodPost)
+	admin.HandleFunc("/database-instances/{id}/restore", middleware.RequireEditor(app.databaseHandler.HandleRestoreSnapshot)).Methods(http.MethodPost)
+	admin.HandleFunc("/database-snapshots/{id}", middleware.RequireEditor(routers.HandleDeleteSnapshot)).Methods(http.MethodDelete)
+
+	// Backup Destinations
+	admin.HandleFunc("/backup-destinations", routers.HandleListBackupDestinations).Methods(http.MethodGet)
+	admin.HandleFunc("/backup-destinations", middleware.RequireEditor(routers.HandleCreateBackupDestination)).Methods(http.MethodPost)
+	admin.HandleFunc("/backup-destinations/{id}", routers.HandleGetBackupDestination).Methods(http.MethodGet)
+	admin.HandleFunc("/backup-destinations/{id}", middleware.RequireEditor(routers.HandleUpdateBackupDestination)).Methods(http.MethodPut)
+	admin.HandleFunc("/backup-destinations/{id}", middleware.RequireEditor(routers.HandleDeleteBackupDestination)).Methods(http.MethodDelete)
+	admin.HandleFunc("/backup-destinations/{id}/test", middleware.RequireEditor(app.databaseHandler.HandleTestBackupDestination)).Methods(http.MethodPost)
+
 	// Users
 	admin.HandleFunc("/users", middleware.RequireAdmin(routers.HandleGetUsers)).Methods(http.MethodGet)
 	admin.HandleFunc("/users", middleware.RequireAdmin(routers.HandleCreateUser)).Methods(http.MethodPost)
