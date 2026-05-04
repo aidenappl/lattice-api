@@ -9,6 +9,7 @@ import (
 	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/logger"
+	"github.com/aidenappl/lattice-api/mailer"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/socket"
@@ -338,6 +339,10 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 
 	h.startDeploymentMonitor(deployment.ID, stack.ID, *stack.WorkerID, payload)
 
+	mailer.Notify("deployment.triggered", "Deployment Triggered",
+		fmt.Sprintf("Stack <strong>%s</strong> deployment triggered via deploy token <strong>%s</strong>.\n\nStrategy: %s\nContainers: %d",
+			stack.Name, dt.Name, stack.DeploymentStrategy, len(*containers)))
+
 	responder.NewCreated(w, deployment, "deployment created and sent to worker")
 }
 
@@ -412,6 +417,10 @@ func (h *DeployHandler) handleSingleContainerDeploy(w http.ResponseWriter, r *ht
 		"container": containerName,
 		"token":     dt.Name,
 	})
+
+	mailer.Notify("deployment.triggered", "Deployment Triggered",
+		fmt.Sprintf("Container <strong>%s</strong> in stack <strong>%s</strong> recreated via deploy token <strong>%s</strong>.",
+			containerName, stack.Name, dt.Name))
 
 	logAudit(r, "deploy_container", "container", intPtr(target.ID), strPtr(fmt.Sprintf("via deploy token %q", dt.Name)))
 

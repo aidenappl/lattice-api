@@ -17,6 +17,7 @@ var AllEventTypes = []string{
 	"worker.disconnected",
 	"worker.crash",
 	"container.unhealthy",
+	"deployment.triggered",
 	"deployment.failed",
 	"deployment.success",
 }
@@ -26,6 +27,7 @@ var EventLabels = map[string]string{
 	"worker.disconnected": "Worker Disconnected",
 	"worker.crash":        "Worker Crashed",
 	"container.unhealthy": "Container Unhealthy",
+	"deployment.triggered": "Deployment Triggered",
 	"deployment.failed":   "Deployment Failed",
 	"deployment.success":  "Deployment Successful",
 }
@@ -141,6 +143,9 @@ func renderEmail(subject, body string) string {
 	} else if strings.Contains(subject, "Successful") || strings.Contains(subject, "Success") {
 		accentColor = "#22c55e" // green
 		iconEmoji = "✅"
+	} else if strings.Contains(subject, "Triggered") {
+		accentColor = "#3b82f6" // blue
+		iconEmoji = "🚀"
 	} else if strings.Contains(subject, "Disconnected") {
 		accentColor = "#f59e0b" // amber
 		iconEmoji = "⚠️"

@@ -11,6 +11,7 @@ import (
 	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/logger"
+	"github.com/aidenappl/lattice-api/mailer"
 	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
@@ -447,6 +448,14 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 	})
 
 	h.startDeploymentMonitor(deployment.ID, stack.ID, *stack.WorkerID, payload)
+
+	triggeredBy := user.Email
+	if user.Name != nil {
+		triggeredBy = *user.Name
+	}
+	mailer.Notify("deployment.triggered", "Deployment Triggered",
+		fmt.Sprintf("Stack <strong>%s</strong> deployment triggered by <strong>%s</strong>.\n\nStrategy: %s\nContainers: %d",
+			stack.Name, triggeredBy, stack.DeploymentStrategy, len(*containers)))
 
 	logAudit(r, "deploy", "stack", intPtr(stackID), strPtr(stack.Name))
 	responder.NewCreated(w, deployment, "deployment created and sent to worker")

@@ -31,6 +31,7 @@ func DefaultPrefs() EventPreferences {
 		"worker.disconnected": {Enabled: true, GraceSeconds: 30, CooldownMinutes: 5},
 		"worker.crash":        {Enabled: true, CooldownMinutes: 5},
 		"container.unhealthy": {Enabled: true, Threshold: 3, CooldownMinutes: 10},
+		"deployment.triggered": {Enabled: true, CooldownMinutes: 0},
 		"deployment.failed":   {Enabled: true, CooldownMinutes: 0},
 		"deployment.success":  {Enabled: true, CooldownMinutes: 0},
 	}
