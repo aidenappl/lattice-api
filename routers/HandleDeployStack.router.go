@@ -34,8 +34,10 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 	}
 
 	// Optional body — if container_ids is provided, only deploy those containers.
+	// If force is true, all existing stack containers are removed before deploying.
 	var body struct {
 		ContainerIDs []int `json:"container_ids"`
+		Force        bool  `json:"force"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
@@ -387,7 +389,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 	_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
 		DeploymentID: deployment.ID,
 		Level:        "info",
-		Message:      fmt.Sprintf("Deployment initiated by user %d for stack '%s' (strategy=%s, containers=%d, targeted=%v)", user.ID, stack.Name, stack.DeploymentStrategy, len(*containers), targeted),
+		Message:      fmt.Sprintf("Deployment initiated by user %d for stack '%s' (strategy=%s, containers=%d, targeted=%v, force=%v)", user.ID, stack.Name, stack.DeploymentStrategy, len(*containers), targeted, body.Force),
 	})
 
 	// Send deploy command to worker
@@ -395,6 +397,8 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		"deployment_id": deployment.ID,
 		"stack_name":    stack.Name,
 		"strategy":      stack.DeploymentStrategy,
+		"targeted":      targeted,
+		"force":         body.Force,
 		"containers":    containerSpecs,
 		"attempt":       1,
 		"max_retries":   deployMaxRetryCount,
