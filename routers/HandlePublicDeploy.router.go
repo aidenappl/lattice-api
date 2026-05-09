@@ -343,6 +343,12 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		fmt.Sprintf("Stack <strong>%s</strong> deployment triggered via deploy token <strong>%s</strong>.\n\nStrategy: %s\nContainers: %d",
 			stack.Name, dt.Name, stack.DeploymentStrategy, len(*containers)))
 
+	auditDetails := fmt.Sprintf("%s via deploy token %q", stack.Name, dt.Name)
+	if commit := r.URL.Query().Get("commit"); commit != "" {
+		auditDetails += fmt.Sprintf(" @ %s", commit)
+	}
+	logAudit(r, "deploy", "stack", intPtr(stack.ID), strPtr(auditDetails))
+
 	responder.NewCreated(w, deployment, "deployment created and sent to worker")
 }
 
@@ -422,7 +428,11 @@ func (h *DeployHandler) handleSingleContainerDeploy(w http.ResponseWriter, r *ht
 		fmt.Sprintf("Container <strong>%s</strong> in stack <strong>%s</strong> recreated via deploy token <strong>%s</strong>.",
 			containerName, stack.Name, dt.Name))
 
-	logAudit(r, "deploy_container", "container", intPtr(target.ID), strPtr(fmt.Sprintf("via deploy token %q", dt.Name)))
+	containerAuditDetails := fmt.Sprintf("%s/%s via deploy token %q", stack.Name, containerName, dt.Name)
+	if commit := r.URL.Query().Get("commit"); commit != "" {
+		containerAuditDetails += fmt.Sprintf(" @ %s", commit)
+	}
+	logAudit(r, "deploy_container", "container", intPtr(target.ID), strPtr(containerAuditDetails))
 
 	responder.New(w, map[string]any{
 		"container": containerName,

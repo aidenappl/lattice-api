@@ -457,7 +457,15 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		fmt.Sprintf("Stack <strong>%s</strong> deployment triggered by <strong>%s</strong>.\n\nStrategy: %s\nContainers: %d",
 			stack.Name, triggeredBy, stack.DeploymentStrategy, len(*containers)))
 
-	logAudit(r, "deploy", "stack", intPtr(stackID), strPtr(stack.Name))
+	deployAuditDetails := stack.Name
+	if targeted {
+		names := make([]string, 0, len(*containers))
+		for _, c := range *containers {
+			names = append(names, c.Name)
+		}
+		deployAuditDetails += fmt.Sprintf(" [%s]", strings.Join(names, ", "))
+	}
+	logAudit(r, "deploy", "stack", intPtr(stackID), strPtr(deployAuditDetails))
 	responder.NewCreated(w, deployment, "deployment created and sent to worker")
 }
 

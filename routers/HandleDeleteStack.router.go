@@ -53,6 +53,12 @@ func (h *ContainerActionHandler) HandleDeleteStack(w http.ResponseWriter, r *htt
 	}
 	defer tx.Rollback()
 
+	// Fail any in-progress deployments so they don't stay stuck in "deploying"
+	if err := query.FailActiveDeployments(tx, id); err != nil {
+		responder.QueryError(w, err, "failed to cancel active deployments")
+		return
+	}
+
 	if err := query.DeleteStack(tx, id); err != nil {
 		responder.QueryError(w, err, "failed to delete stack")
 		return

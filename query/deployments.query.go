@@ -244,6 +244,18 @@ func GetLatestDeploymentLog(engine db.Queryable, deploymentID int) (*structs.Dep
 	return &l, nil
 }
 
+// FailActiveDeployments marks all non-terminal deployments for the given stack
+// as "failed" and sets their completed_at timestamp. This is used when a stack
+// is deleted to prevent orphaned deployments stuck in deploying/pending state.
+func FailActiveDeployments(engine db.Queryable, stackID int) error {
+	_, err := engine.Exec(
+		`UPDATE deployments SET status = 'failed', completed_at = NOW()
+		 WHERE stack_id = ? AND status IN ('pending', 'approved', 'sending', 'deploying', 'validating')`,
+		stackID,
+	)
+	return err
+}
+
 // GetPreviousDeployment returns the most recent successfully-deployed deployment
 // for the given stack that was recorded before (id < beforeID). This is used to
 // find the target image/tag set when rolling back a failed deployment.
