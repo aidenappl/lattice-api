@@ -104,6 +104,12 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 
 	// If specific container IDs were requested, filter to only those
 	targeted := len(body.ContainerIDs) > 0
+	if targeted && body.Force {
+		failedStatus := "active"
+		_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{Status: &failedStatus})
+		responder.SendError(w, http.StatusBadRequest, "force deploy cannot be combined with targeted container deployment")
+		return
+	}
 	if targeted {
 		idSet := make(map[int]bool, len(body.ContainerIDs))
 		for _, cid := range body.ContainerIDs {

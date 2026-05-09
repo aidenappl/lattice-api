@@ -33,19 +33,20 @@ func HandleCreateApiToken(w http.ResponseWriter, r *http.Request) {
 		responder.MissingBodyFields(w, "name")
 		return
 	}
+	if len(body.Name) > 255 {
+		responder.SendError(w, http.StatusBadRequest, "name too long (max 255 characters)")
+		return
+	}
 
 	var expiresAt *time.Time
 	switch strings.ToLower(body.ExpiresIn) {
-	case "never", "":
-		if body.ExpiresIn == "" {
-			t := time.Now().Add(90 * 24 * time.Hour)
-			expiresAt = &t
-		}
+	case "never":
+		// expiresAt stays nil — token never expires
+	case "", "90d":
+		t := time.Now().Add(90 * 24 * time.Hour)
+		expiresAt = &t
 	case "30d":
 		t := time.Now().Add(30 * 24 * time.Hour)
-		expiresAt = &t
-	case "90d":
-		t := time.Now().Add(90 * 24 * time.Hour)
 		expiresAt = &t
 	case "365d":
 		t := time.Now().Add(365 * 24 * time.Hour)

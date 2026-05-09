@@ -31,9 +31,11 @@ func GetUserFromContext(ctx context.Context) (*structs.User, bool) {
 // the same way as local users after login.
 func DualAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bearerToken := extractBearerToken(r)
+
 		// Try Lattice JWT from Authorization header
-		if token := extractBearerToken(r); token != "" {
-			if user := validateLatticeToken(token); user != nil {
+		if bearerToken != "" {
+			if user := validateLatticeToken(bearerToken); user != nil {
 				ctx := context.WithValue(r.Context(), UserContextKey, user)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
@@ -49,9 +51,9 @@ func DualAuthMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
-		// Try API token from Authorization header
-		if token := extractBearerToken(r); token != "" {
-			if user := validateApiToken(token); user != nil {
+		// Try API token (long-lived) from Authorization header
+		if bearerToken != "" {
+			if user := validateApiToken(bearerToken); user != nil {
 				ctx := context.WithValue(r.Context(), UserContextKey, user)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
