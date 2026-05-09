@@ -104,6 +104,11 @@ func main() {
 	admin.HandleFunc("/workers/{id}/networks/{name}", middleware.RequireEditor(app.networkHandler.HandleDeleteNetwork)).Methods(http.MethodDelete)
 	admin.HandleFunc("/worker-tokens/{id}", middleware.RequireEditor(routers.HandleDeleteWorkerToken)).Methods(http.MethodDelete)
 
+	// API Tokens
+	admin.HandleFunc("/api-tokens", routers.HandleListApiTokens).Methods(http.MethodGet)
+	admin.HandleFunc("/api-tokens", middleware.RequireEditor(routers.HandleCreateApiToken)).Methods(http.MethodPost)
+	admin.HandleFunc("/api-tokens/{id}", middleware.RequireEditor(routers.HandleDeleteApiToken)).Methods(http.MethodDelete)
+
 	// Networks
 	admin.HandleFunc("/networks", routers.HandleListAllNetworks).Methods(http.MethodGet)
 	admin.HandleFunc("/networks/{id}", middleware.RequireEditor(routers.HandleDeleteNetworkByID)).Methods(http.MethodDelete)

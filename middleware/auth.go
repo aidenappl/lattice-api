@@ -49,6 +49,15 @@ func DualAuthMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
+		// Try API token from Authorization header
+		if token := extractBearerToken(r); token != "" {
+			if user := validateApiToken(token); user != nil {
+				ctx := context.WithValue(r.Context(), UserContextKey, user)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+		}
+
 		responder.SendError(w, http.StatusUnauthorized, "authentication required")
 	})
 }
@@ -122,6 +131,23 @@ func WorkerTokenAuth(r *http.Request) (int, bool) {
 	_ = query.TouchWorkerToken(db.DB, wt.ID)
 
 	return wt.WorkerID, true
+}
+
+func validateApiToken(tokenStr string) *structs.User {
+	hash := tools.HashToken(tokenStr)
+	apiToken, err := query.GetApiTokenByHash(db.DB, hash)
+	if err != nil || apiToken == nil || !apiToken.Active {
+		return nil
+	}
+
+	user, err := query.GetUserByID(db.DB, apiToken.UserID)
+	if err != nil || user == nil || !user.Active {
+		return nil
+	}
+
+	_ = query.TouchApiToken(db.DB, apiToken.ID)
+
+	return user
 }
 
 func validateLatticeToken(tokenStr string) *structs.User {

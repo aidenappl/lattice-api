@@ -279,6 +279,21 @@ func Init() {
 		inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		INDEX idx_snapshot_instance (database_instance_id)
 	)`)
+
+	migrate(db, `CREATE TABLE IF NOT EXISTS api_tokens (
+		id INT AUTO_INCREMENT PRIMARY KEY,
+		user_id INT NOT NULL,
+		name VARCHAR(255) NOT NULL,
+		token_hash VARCHAR(255) NOT NULL,
+		scopes VARCHAR(1000) DEFAULT NULL,
+		expires_at TIMESTAMP NULL DEFAULT NULL,
+		last_used_at TIMESTAMP NULL DEFAULT NULL,
+		active TINYINT(1) NOT NULL DEFAULT 1,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		inserted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE INDEX idx_api_tokens_hash (token_hash),
+		INDEX idx_api_tokens_user (user_id)
+	)`)
 }
 
 // QueryContext returns a context with a 30-second timeout suitable for
