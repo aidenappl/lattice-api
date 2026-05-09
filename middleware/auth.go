@@ -29,7 +29,6 @@ func GetUserFromContext(ctx context.Context) (*structs.User, bool) {
 // 2. Lattice-issued JWT from lattice-access-token cookie
 // SSO users receive Lattice JWTs via the SSO callback, so they authenticate
 // the same way as local users after login.
-// On success, injects *structs.User into the request context.
 func DualAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Try Lattice JWT from Authorization header
