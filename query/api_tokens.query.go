@@ -80,7 +80,7 @@ func GetApiTokenByHash(engine db.Queryable, tokenHash string) (*structs.ApiToken
 		Where(sq.Eq{"api_tokens.active": true}).
 		Where(sq.Or{
 			sq.Eq{"api_tokens.expires_at": nil},
-			sq.Gt{"api_tokens.expires_at": sq.Expr("NOW()")},
+			sq.Expr("api_tokens.expires_at > NOW()"),
 		})
 
 	qStr, args, err := q.ToSql()
