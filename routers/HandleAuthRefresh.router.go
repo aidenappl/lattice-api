@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/aidenappl/lattice-api/db"
@@ -13,18 +14,25 @@ import (
 func HandleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("lattice-refresh-token")
 	if err != nil || cookie.Value == "" {
+		log.Printf("auth/refresh: no refresh token cookie (err=%v)", err)
 		responder.SendError(w, http.StatusUnauthorized, "no refresh token provided")
 		return
 	}
 
 	claims, err := jwt.ValidateToken(cookie.Value)
-	if err != nil || claims.Type != "refresh" {
+	if err != nil || claims == nil || claims.Type != "refresh" {
+		claimType := ""
+		if claims != nil {
+			claimType = claims.Type
+		}
+		log.Printf("auth/refresh: invalid refresh token (err=%v, type=%s)", err, claimType)
 		responder.SendError(w, http.StatusUnauthorized, "invalid refresh token")
 		return
 	}
 
 	user, err := query.GetUserByID(db.DB, claims.UserID)
 	if err != nil || user == nil || !user.Active {
+		log.Printf("auth/refresh: user lookup failed (user_id=%d, err=%v, active=%v)", claims.UserID, err, user != nil && user.Active)
 		responder.SendError(w, http.StatusUnauthorized, "user not found or inactive")
 		return
 	}
@@ -32,10 +40,13 @@ func HandleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 	// Reject refresh tokens issued before the revocation timestamp
 	if user.TokensRevokedAt != nil && claims.IssuedAt != nil {
 		if claims.IssuedAt.Time.Before(*user.TokensRevokedAt) {
+			log.Printf("auth/refresh: token revoked (user_id=%d, issued=%v, revoked=%v)", user.ID, claims.IssuedAt.Time, *user.TokensRevokedAt)
 			responder.SendError(w, http.StatusUnauthorized, "token has been revoked")
 			return
 		}
 	}
+
+	log.Printf("auth/refresh: success (user_id=%d)", user.ID)
 
 	accessToken, accessExpiry, err := jwt.NewAccessToken(user.ID)
 	if err != nil {
