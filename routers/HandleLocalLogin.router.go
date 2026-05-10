@@ -91,7 +91,7 @@ func HandleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	})
 
 	http.SetCookie(w, &http.Cookie{
-		Name:     "logged_in",
+		Name:     "lattice-logged-in",
 		Value:    "1",
 		Path:     "/",
 		Domain:   domain,

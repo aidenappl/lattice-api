@@ -181,7 +181,7 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode,
 	})
 	http.SetCookie(w, &http.Cookie{
-		Name: "logged_in", Value: "1", Path: "/",
+		Name: "lattice-logged-in", Value: "1", Path: "/",
 		Domain: domain, Expires: time.Now().Add(7 * 24 * time.Hour),
 		HttpOnly: false, Secure: secure, SameSite: http.SameSiteLaxMode,
 	})

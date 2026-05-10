@@ -18,14 +18,14 @@ func HandleLogout(w http.ResponseWriter, r *http.Request) {
 	domain := env.CookieDomain
 
 	// Clear auth cookies by setting them expired
-	for _, name := range []string{"lattice-access-token", "lattice-refresh-token", "logged_in"} {
+	for _, name := range []string{"lattice-access-token", "lattice-refresh-token", "lattice-logged-in"} {
 		http.SetCookie(w, &http.Cookie{
 			Name:     name,
 			Value:    "",
 			Path:     "/",
 			Domain:   domain,
 			MaxAge:   -1,
-			HttpOnly: name != "logged_in",
+			HttpOnly: name != "lattice-logged-in",
 			Secure:   env.Environment == "production",
 			SameSite: http.SameSiteLaxMode,
 		})
