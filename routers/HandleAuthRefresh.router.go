@@ -43,6 +43,16 @@ func HandleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reissue refresh token (sliding window) — extends the 7-day session
+	// on each refresh so active users never hit refresh token expiry
+	refreshToken, refreshExpiry, err := jwt.NewRefreshToken(user.ID)
+	if err != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to generate refresh token", err)
+		return
+	}
+
+	secure := env.Environment == "production"
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     "lattice-access-token",
 		Value:    accessToken,
@@ -50,7 +60,17 @@ func HandleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 		Domain:   env.CookieDomain,
 		Expires:  accessExpiry,
 		HttpOnly: true,
-		Secure:   env.Environment == "production",
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     "lattice-refresh-token",
+		Value:    refreshToken,
+		Path:     "/",
+		Domain:   env.CookieDomain,
+		Expires:  refreshExpiry,
+		HttpOnly: true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 

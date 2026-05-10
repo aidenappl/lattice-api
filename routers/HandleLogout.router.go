@@ -38,6 +38,8 @@ func HandleLogout(w http.ResponseWriter, r *http.Request) {
 		Domain: domain,
 		MaxAge: -1,
 	})
+
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"success":true,"message":"logged out"}`))
 }
