@@ -13,6 +13,10 @@ func HandleLogout(w http.ResponseWriter, r *http.Request) {
 	// Revoke all tokens for this user so stolen refresh tokens can't be reused
 	if user, ok := middleware.GetUserFromContext(r.Context()); ok && user != nil {
 		_ = query.RevokeUserTokens(db.DB, user.ID)
+		// If this is an SSO user, drop the persisted IDP tokens too.
+		if user.AuthType == "sso" {
+			_ = query.DeleteSSOSession(db.DB, int64(user.ID))
+		}
 	}
 
 	domain := env.CookieDomain
@@ -38,7 +42,6 @@ func HandleLogout(w http.ResponseWriter, r *http.Request) {
 		Domain: domain,
 		MaxAge: -1,
 	})
-
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"success":true,"message":"logged out"}`))

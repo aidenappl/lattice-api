@@ -43,12 +43,12 @@ func HandleUpdateStack(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stack, err := query.UpdateStack(db.DB, id, query.UpdateStackRequest{
-		Name:               body.Name,
-		Description:        body.Description,
-		WorkerID:           body.WorkerID,
-		Status:             body.Status,
-		DeploymentStrategy: body.DeploymentStrategy,
-		AutoDeploy:         body.AutoDeploy,
+		Name:                 body.Name,
+		Description:          body.Description,
+		WorkerID:             body.WorkerID,
+		Status:               body.Status,
+		DeploymentStrategy:   body.DeploymentStrategy,
+		AutoDeploy:           body.AutoDeploy,
 		EnvVars:              body.EnvVars,
 		PlacementConstraints: body.PlacementConstraints,
 		Active:               body.Active,

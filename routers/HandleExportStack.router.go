@@ -13,21 +13,21 @@ import (
 )
 
 type containerExportData struct {
-	Name          string  `json:"name"`
-	Image         string  `json:"image"`
-	Tag           string  `json:"tag"`
-	PortMappings  *string `json:"port_mappings"`
-	EnvVars       *string `json:"env_vars"`
-	Volumes       *string `json:"volumes"`
+	Name          string   `json:"name"`
+	Image         string   `json:"image"`
+	Tag           string   `json:"tag"`
+	PortMappings  *string  `json:"port_mappings"`
+	EnvVars       *string  `json:"env_vars"`
+	Volumes       *string  `json:"volumes"`
 	CPULimit      *float64 `json:"cpu_limit"`
-	MemoryLimit   *int    `json:"memory_limit"`
-	Replicas      int     `json:"replicas"`
-	RestartPolicy *string `json:"restart_policy"`
-	Command       *string `json:"command"`
-	Entrypoint    *string `json:"entrypoint"`
-	HealthCheck   *string `json:"health_check"`
-	RegistryID    *int    `json:"registry_id"`
-	DependsOn     *string `json:"depends_on"`
+	MemoryLimit   *int     `json:"memory_limit"`
+	Replicas      int      `json:"replicas"`
+	RestartPolicy *string  `json:"restart_policy"`
+	Command       *string  `json:"command"`
+	Entrypoint    *string  `json:"entrypoint"`
+	HealthCheck   *string  `json:"health_check"`
+	RegistryID    *int     `json:"registry_id"`
+	DependsOn     *string  `json:"depends_on"`
 }
 
 func formatContainersForExport(containers []structs.Container) []containerExportData {
@@ -78,7 +78,7 @@ func HandleExportStack(w http.ResponseWriter, r *http.Request) {
 		"stack": map[string]any{
 			"name":                  stack.Name,
 			"description":           stack.Description,
-			"deployment_strategy":    stack.DeploymentStrategy,
+			"deployment_strategy":   stack.DeploymentStrategy,
 			"auto_deploy":           stack.AutoDeploy,
 			"env_vars":              stack.EnvVars,
 			"compose_yaml":          stack.ComposeYAML,

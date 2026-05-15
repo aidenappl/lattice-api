@@ -175,23 +175,23 @@ func GetContainerByID(engine db.Queryable, id int) (*structs.Container, error) {
 }
 
 type CreateContainerRequest struct {
-	StackID       int
-	Name          string
-	Image         string
-	Tag           string
-	PortMappings  *string
-	EnvVars       *string
-	Volumes       *string
-	CPULimit      *float64
-	MemoryLimit   *int
-	Replicas      int
-	RestartPolicy *string
-	Command       *string
-	Entrypoint    *string
-	HealthCheck   *string
-	RegistryID       *int
-	DependsOn        *string
-	NetworkAliases   *string
+	StackID        int
+	Name           string
+	Image          string
+	Tag            string
+	PortMappings   *string
+	EnvVars        *string
+	Volumes        *string
+	CPULimit       *float64
+	MemoryLimit    *int
+	Replicas       int
+	RestartPolicy  *string
+	Command        *string
+	Entrypoint     *string
+	HealthCheck    *string
+	RegistryID     *int
+	DependsOn      *string
+	NetworkAliases *string
 }
 
 func CreateContainer(engine db.Queryable, req CreateContainerRequest) (*structs.Container, error) {
@@ -220,26 +220,26 @@ func CreateContainer(engine db.Queryable, req CreateContainerRequest) (*structs.
 }
 
 type UpdateContainerRequest struct {
-	Name          *string
-	Image         *string
-	Tag           *string
-	Status        *string
-	PortMappings  *string
-	EnvVars       *string
-	Volumes       *string
-	CPULimit      *float64
-	MemoryLimit   *int
-	Replicas      *int
-	RestartPolicy *string
-	Command       *string
-	Entrypoint    *string
-	HealthCheck   *string
-	HealthStatus  *string
-	RegistryID    *int
-	DependsOn        *string
-	NetworkAliases   *string
-	StartedAt        *time.Time
-	Active           *bool
+	Name           *string
+	Image          *string
+	Tag            *string
+	Status         *string
+	PortMappings   *string
+	EnvVars        *string
+	Volumes        *string
+	CPULimit       *float64
+	MemoryLimit    *int
+	Replicas       *int
+	RestartPolicy  *string
+	Command        *string
+	Entrypoint     *string
+	HealthCheck    *string
+	HealthStatus   *string
+	RegistryID     *int
+	DependsOn      *string
+	NetworkAliases *string
+	StartedAt      *time.Time
+	Active         *bool
 }
 
 func UpdateContainer(engine db.Queryable, id int, req UpdateContainerRequest) (*structs.Container, error) {

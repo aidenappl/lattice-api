@@ -12,8 +12,8 @@ import (
 
 func HandleImportStackExport(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Version    string `json:"version"`
-		Stack      struct {
+		Version string `json:"version"`
+		Stack   struct {
 			Name                 string  `json:"name"`
 			Description          *string `json:"description"`
 			DeploymentStrategy   string  `json:"deployment_strategy"`

@@ -24,12 +24,12 @@ var AllEventTypes = []string{
 
 // EventLabels provides human-readable names for event types.
 var EventLabels = map[string]string{
-	"worker.disconnected": "Worker Disconnected",
-	"worker.crash":        "Worker Crashed",
-	"container.unhealthy": "Container Unhealthy",
+	"worker.disconnected":  "Worker Disconnected",
+	"worker.crash":         "Worker Crashed",
+	"container.unhealthy":  "Container Unhealthy",
 	"deployment.triggered": "Deployment Triggered",
-	"deployment.failed":   "Deployment Failed",
-	"deployment.success":  "Deployment Successful",
+	"deployment.failed":    "Deployment Failed",
+	"deployment.success":   "Deployment Successful",
 }
 
 // SMTPConfig holds the SMTP settings loaded from the database.

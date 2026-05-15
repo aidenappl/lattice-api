@@ -118,11 +118,11 @@ func GetStackByID(engine db.Queryable, id int) (*structs.Stack, error) {
 }
 
 type CreateStackRequest struct {
-	Name               string
-	Description        *string
-	WorkerID           *int
-	DeploymentStrategy string
-	AutoDeploy         bool
+	Name                 string
+	Description          *string
+	WorkerID             *int
+	DeploymentStrategy   string
+	AutoDeploy           bool
 	EnvVars              *string
 	ComposeYAML          *string
 	PlacementConstraints *string
@@ -152,12 +152,12 @@ func CreateStack(engine db.Queryable, req CreateStackRequest) (*structs.Stack, e
 }
 
 type UpdateStackRequest struct {
-	Name               *string
-	Description        *string
-	WorkerID           *int
-	Status             *string
-	DeploymentStrategy *string
-	AutoDeploy         *bool
+	Name                 *string
+	Description          *string
+	WorkerID             *int
+	Status               *string
+	DeploymentStrategy   *string
+	AutoDeploy           *bool
 	EnvVars              *string
 	ComposeYAML          *string
 	PlacementConstraints *string

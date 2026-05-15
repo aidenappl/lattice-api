@@ -25,13 +25,14 @@ var (
 	SSOAuthorizeURL   = getEnv("SSO_AUTHORIZE_URL", "")
 	SSOTokenURL       = getEnv("SSO_TOKEN_URL", "")
 	SSOUserInfoURL    = getEnv("SSO_USERINFO_URL", "")
+	SSOIntrospectURL  = getEnv("SSO_INTROSPECT_URL", "")
 	SSORedirectURL    = getEnv("SSO_REDIRECT_URL", "")
 	SSOLogoutURL      = getEnv("SSO_LOGOUT_URL", "")
 	SSOScopes         = getEnv("SSO_SCOPES", "openid email profile")
 	SSOUserIdentifier = getEnv("SSO_USER_IDENTIFIER", "email") // field in userinfo to match user
 	SSOButtonLabel    = getEnv("SSO_BUTTON_LABEL", "Sign in with SSO")
 	SSOAutoProvision  = getEnv("SSO_AUTO_PROVISION", "true") == "true" // auto-create users on first SSO login
-	SSOPostLoginURL   = getEnv("SSO_POST_LOGIN_URL", "/")             // URL to redirect to after SSO login (frontend URL)
+	SSOPostLoginURL   = getEnv("SSO_POST_LOGIN_URL", "/")              // URL to redirect to after SSO login (frontend URL)
 
 	// TLS (optional — for local HTTPS development)
 	TLSCert = getEnv("TLS_CERT", "")
@@ -60,10 +61,10 @@ var (
 // weakJWTKeys is a blocklist of known-insecure default signing keys that must
 // not be used in production.
 var weakJWTKeys = map[string]bool{
-	"change-me-to-a-random-secret":               true,
-	"dev-jwt-signing-key-change-in-production":    true,
-	"changeme":                                    true,
-	"secret":                                      true,
+	"change-me-to-a-random-secret":             true,
+	"dev-jwt-signing-key-change-in-production": true,
+	"changeme": true,
+	"secret":   true,
 }
 
 // ValidateSecurityDefaults checks that critical security configuration is not

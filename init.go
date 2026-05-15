@@ -23,9 +23,9 @@ import (
 // appContext holds all runtime dependencies created during initialization.
 // It is passed to route registration and server startup.
 type appContext struct {
-	workerHub    *socket.WorkerHub
-	adminHub     *socket.AdminHub
-	scanner      *healthscan.Scanner
+	workerHub     *socket.WorkerHub
+	adminHub      *socket.AdminHub
+	scanner       *healthscan.Scanner
 	workerHandler *socket.WorkerHandler
 	adminHandler  *socket.AdminHandler
 

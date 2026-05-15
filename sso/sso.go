@@ -28,6 +28,7 @@ type SSOConfig struct {
 	AuthorizeURL   string
 	TokenURL       string
 	UserInfoURL    string
+	IntrospectURL  string
 	RedirectURL    string
 	LogoutURL      string
 	Scopes         string
@@ -57,6 +58,7 @@ func LoadConfig() *SSOConfig {
 			AuthorizeURL:   env.SSOAuthorizeURL,
 			TokenURL:       env.SSOTokenURL,
 			UserInfoURL:    env.SSOUserInfoURL,
+			IntrospectURL:  env.SSOIntrospectURL,
 			RedirectURL:    env.SSORedirectURL,
 			LogoutURL:      env.SSOLogoutURL,
 			Scopes:         env.SSOScopes,
@@ -73,6 +75,7 @@ func LoadConfig() *SSOConfig {
 		AuthorizeURL:   strings.TrimSpace(settings["sso.authorize_url"]),
 		TokenURL:       strings.TrimSpace(settings["sso.token_url"]),
 		UserInfoURL:    strings.TrimSpace(settings["sso.userinfo_url"]),
+		IntrospectURL:  strings.TrimSpace(or(settings["sso.introspect_url"], env.SSOIntrospectURL)),
 		RedirectURL:    strings.TrimSpace(settings["sso.redirect_url"]),
 		LogoutURL:      strings.TrimSpace(settings["sso.logout_url"]),
 		Scopes:         strings.TrimSpace(or(settings["sso.scopes"], "openid email profile")),

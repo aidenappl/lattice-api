@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/jwt"
@@ -150,6 +151,21 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	if !user.Active {
 		http.Redirect(w, r, loginErrorURL("account_disabled"), http.StatusFound)
 		return
+	}
+
+	// Persist the IDP tokens so the auth middleware can checkpoint the
+	// user's grant against the IDP on a TTL. Tokens are encrypted at rest
+	// via crypto.Encrypt (AES-256-GCM, key from ENCRYPTION_KEY).
+	if encAccess, encErr := crypto.Encrypt(tokenResp.AccessToken); encErr == nil {
+		if encRefresh, encErr2 := crypto.Encrypt(tokenResp.RefreshToken); encErr2 == nil {
+			if upErr := query.UpsertSSOSession(db.DB, int64(user.ID), encAccess, encRefresh); upErr != nil {
+				logger.Error("sso", "failed to persist sso session", logger.F{"error": upErr, "user_id": user.ID})
+			}
+		} else {
+			logger.Error("sso", "failed to encrypt refresh token", logger.F{"error": encErr2})
+		}
+	} else {
+		logger.Error("sso", "failed to encrypt access token", logger.F{"error": encErr})
 	}
 
 	// Issue Lattice JWT tokens

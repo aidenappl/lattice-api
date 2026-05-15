@@ -107,12 +107,12 @@ func Init() {
 	migrate(db, "ALTER TABLE users ADD COLUMN tokens_revoked_at DATETIME DEFAULT NULL")
 
 	// Auto-create global_env_vars table if it doesn't exist
-	migrate(db, "CREATE TABLE IF NOT EXISTS global_env_vars (" +
-		"id INT AUTO_INCREMENT PRIMARY KEY," +
-		"`key` VARCHAR(255) NOT NULL UNIQUE," +
-		"encrypted_value TEXT NOT NULL," +
-		"is_secret BOOLEAN DEFAULT FALSE," +
-		"updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP," +
+	migrate(db, "CREATE TABLE IF NOT EXISTS global_env_vars ("+
+		"id INT AUTO_INCREMENT PRIMARY KEY,"+
+		"`key` VARCHAR(255) NOT NULL UNIQUE,"+
+		"encrypted_value TEXT NOT NULL,"+
+		"is_secret BOOLEAN DEFAULT FALSE,"+
+		"updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"+
 		"inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
 
 	// Auto-create deploy_tokens table if it doesn't exist
@@ -155,9 +155,9 @@ func Init() {
 	migrate(db, "ALTER TABLE containers ADD COLUMN network_aliases TEXT DEFAULT NULL AFTER depends_on")
 
 	// Auto-create settings table if it doesn't exist
-	migrate(db, "CREATE TABLE IF NOT EXISTS settings (" +
-		"`key` VARCHAR(255) PRIMARY KEY," +
-		"value TEXT NOT NULL," +
+	migrate(db, "CREATE TABLE IF NOT EXISTS settings ("+
+		"`key` VARCHAR(255) PRIMARY KEY,"+
+		"value TEXT NOT NULL,"+
 		"updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP)")
 
 	// ── Idempotency migrations ────────────────────────────────────────────

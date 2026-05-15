@@ -183,8 +183,8 @@ func Request(requestID, method, path string, status int, duration time.Duration)
 		level = LevelWarn
 	}
 	emit(level, "http", fmt.Sprintf("%s %s", method, path), F{
-		"status":     status,
+		"status":      status,
 		"duration_ms": duration.Milliseconds(),
-		"request_id": requestID,
+		"request_id":  requestID,
 	})
 }

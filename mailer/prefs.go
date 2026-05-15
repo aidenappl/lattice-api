@@ -13,7 +13,7 @@ import (
 
 // EventConfig holds the full notification preferences for a single event type.
 type EventConfig struct {
-	Enabled  bool `json:"enabled"`
+	Enabled bool `json:"enabled"`
 	// GraceSeconds: for worker.disconnected — wait this long before alerting, cancel if worker reconnects.
 	GraceSeconds int `json:"grace_seconds,omitempty"`
 	// Threshold: for container.unhealthy — how many consecutive unhealthy reports before alerting.
@@ -28,12 +28,12 @@ type EventPreferences map[string]EventConfig
 // DefaultPrefs returns the default configuration for all event types.
 func DefaultPrefs() EventPreferences {
 	return EventPreferences{
-		"worker.disconnected": {Enabled: true, GraceSeconds: 30, CooldownMinutes: 5},
-		"worker.crash":        {Enabled: true, CooldownMinutes: 5},
-		"container.unhealthy": {Enabled: true, Threshold: 3, CooldownMinutes: 10},
+		"worker.disconnected":  {Enabled: true, GraceSeconds: 30, CooldownMinutes: 5},
+		"worker.crash":         {Enabled: true, CooldownMinutes: 5},
+		"container.unhealthy":  {Enabled: true, Threshold: 3, CooldownMinutes: 10},
 		"deployment.triggered": {Enabled: true, CooldownMinutes: 0},
-		"deployment.failed":   {Enabled: true, CooldownMinutes: 0},
-		"deployment.success":  {Enabled: true, CooldownMinutes: 0},
+		"deployment.failed":    {Enabled: true, CooldownMinutes: 0},
+		"deployment.success":   {Enabled: true, CooldownMinutes: 0},
 	}
 }
 
@@ -79,8 +79,8 @@ func GetEventConfig(eventType string) EventConfig {
 // ─── Cooldown tracker ──────────────────────────────────────────────────────
 
 var (
-	cooldownMu   sync.Mutex
-	cooldownMap  = make(map[string]time.Time) // "eventType:resourceKey" -> last alert time
+	cooldownMu  sync.Mutex
+	cooldownMap = make(map[string]time.Time) // "eventType:resourceKey" -> last alert time
 )
 
 // ShouldAlert checks if an alert should fire based on enabled status, cooldown, and threshold.

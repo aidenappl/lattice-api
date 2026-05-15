@@ -10,8 +10,8 @@ import (
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
-	"github.com/aidenappl/lattice-api/tools"
 	"github.com/aidenappl/lattice-api/structs"
+	"github.com/aidenappl/lattice-api/tools"
 	"github.com/gorilla/mux"
 	"gopkg.in/yaml.v3"
 )

@@ -16,29 +16,29 @@ import (
 type AnomalyType string
 
 const (
-	AnomalyOrphaned   AnomalyType = "orphaned_container"   // container on worker not tracked in DB
-	AnomalyMissing    AnomalyType = "missing_container"     // container in DB but not running on worker
-	AnomalyMismatch   AnomalyType = "status_mismatch"       // DB says running but worker says stopped (or vice versa)
-	AnomalyUnmanaged  AnomalyType = "unmanaged_container"   // container on worker not in any stack
-	AnomalyStaleState AnomalyType = "stale_state"           // DB shows running but worker hasn't reported in >2min
+	AnomalyOrphaned   AnomalyType = "orphaned_container"  // container on worker not tracked in DB
+	AnomalyMissing    AnomalyType = "missing_container"   // container in DB but not running on worker
+	AnomalyMismatch   AnomalyType = "status_mismatch"     // DB says running but worker says stopped (or vice versa)
+	AnomalyUnmanaged  AnomalyType = "unmanaged_container" // container on worker not in any stack
+	AnomalyStaleState AnomalyType = "stale_state"         // DB shows running but worker hasn't reported in >2min
 )
 
 // Anomaly represents a single detected issue.
 type Anomaly struct {
-	ID            string      `json:"id"`              // unique key for dedup
-	Type          AnomalyType `json:"type"`
-	WorkerID      int         `json:"worker_id"`
-	WorkerName    string      `json:"worker_name"`
-	ContainerName string      `json:"container_name,omitempty"`
-	Message       string      `json:"message"`
-	DetectedAt    time.Time   `json:"detected_at"`
+	ID            string         `json:"id"` // unique key for dedup
+	Type          AnomalyType    `json:"type"`
+	WorkerID      int            `json:"worker_id"`
+	WorkerName    string         `json:"worker_name"`
+	ContainerName string         `json:"container_name,omitempty"`
+	Message       string         `json:"message"`
+	DetectedAt    time.Time      `json:"detected_at"`
 	Details       map[string]any `json:"details,omitempty"`
 }
 
 // Scanner periodically audits worker/container state and reports anomalies.
 type Scanner struct {
-	db       *sql.DB
-	adminHub *socket.AdminHub
+	db        *sql.DB
+	adminHub  *socket.AdminHub
 	workerHub *socket.WorkerHub
 
 	mu        sync.RWMutex
@@ -51,7 +51,7 @@ type Scanner struct {
 }
 
 type workerContainerState struct {
-	Containers []string  // container names reported by worker
+	Containers []string // container names reported by worker
 	UpdatedAt  time.Time
 }
 
@@ -291,4 +291,3 @@ func ParseContainerNameFromSync(payload map[string]any) string {
 	name, _ := payload["container_name"].(string)
 	return name
 }
-

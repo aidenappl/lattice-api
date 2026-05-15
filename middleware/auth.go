@@ -4,14 +4,23 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/jwt"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
+	"github.com/aidenappl/lattice-api/sso"
 	"github.com/aidenappl/lattice-api/structs"
 	"github.com/aidenappl/lattice-api/tools"
 )
+
+// ssoCheckpointTTL controls how often the auth middleware re-validates an
+// SSO user's grant against the IDP. Shorter = faster revocation propagation,
+// more network calls. 5 min matches the IDP's recommended access token TTL.
+const ssoCheckpointTTL = 5 * time.Minute
 
 const (
 	UserContextKey   contextKey = "user"
@@ -170,7 +179,60 @@ func validateLatticeToken(tokenStr string) *structs.User {
 		}
 	}
 
+	if user.AuthType == "sso" && !checkpointSSOGrant(int64(user.ID)) {
+		return nil
+	}
+
 	return user
+}
+
+// checkpointSSOGrant re-validates the user's grant against the IDP on a TTL.
+// Returns true if the grant is still active (or the check is skipped because
+// it ran recently). Returns false if the IDP reports active=false — the
+// sso_sessions row is deleted and the caller MUST 401.
+//
+// Network errors fail-open (return true) — a transient IDP outage shouldn't
+// log users out, but it does mean revocation latency gets a small extra
+// budget during incidents.
+func checkpointSSOGrant(userID int64) bool {
+	sess, err := query.GetSSOSession(db.DB, userID)
+	if err != nil {
+		logger.Warn("auth", "checkpoint: db lookup failed", logger.F{"user_id": userID, "error": err})
+		return true
+	}
+	if sess == nil {
+		// SSO user with no stored IDP tokens — pre-checkpoint legacy state.
+		// Allow; the next SSO login will populate the row.
+		return true
+	}
+	if time.Since(sess.LastCheckedAt) < ssoCheckpointTTL {
+		return true
+	}
+
+	refreshToken, err := crypto.Decrypt(sess.RefreshToken)
+	if err != nil {
+		logger.Warn("auth", "checkpoint: decrypt refresh token failed", logger.F{"user_id": userID, "error": err})
+		return true
+	}
+
+	resp, err := sso.Introspect(refreshToken, "refresh_token")
+	if err != nil {
+		logger.Warn("auth", "checkpoint: introspect call failed (allowing request)", logger.F{"user_id": userID, "error": err})
+		return true
+	}
+
+	if !resp.Active {
+		logger.Info("auth", "checkpoint: IDP reports inactive, killing local session", logger.F{"user_id": userID})
+		if delErr := query.DeleteSSOSession(db.DB, userID); delErr != nil {
+			logger.Warn("auth", "checkpoint: failed to delete sso_session", logger.F{"user_id": userID, "error": delErr})
+		}
+		return false
+	}
+
+	if err := query.TouchSSOSession(db.DB, userID); err != nil {
+		logger.Warn("auth", "checkpoint: touch failed", logger.F{"user_id": userID, "error": err})
+	}
+	return true
 }
 
 func extractBearerToken(r *http.Request) string {
