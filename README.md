@@ -7,11 +7,11 @@ Central orchestrator API for the Lattice platform. Manages workers, stacks, cont
 ## Tech Stack
 
 - **Go 1.25** with gorilla/mux
-- **MariaDB** — primary data store
+- **MariaDB** — primary data store (schema `lattice`, migrated in-code via `db.Init()`)
 - **gorilla/websocket** — real-time worker communication
-- **Forta** — OAuth2 SSO (optional, for appleby.cloud ecosystem)
-- **squirrel** — SQL query builder
-- **golang-jwt/jwt/v5** — local JWT auth for standalone operation
+- **Generic OAuth2 / OIDC SSO** — optional, self-contained client under `sso/` (no `go-forta` dependency)
+- **squirrel** — SQL query builder (no ORM)
+- **golang-jwt/jwt/v5** — local JWT auth (HS512) for standalone operation
 
 ---
 
@@ -27,31 +27,39 @@ Central orchestrator API for the Lattice platform. Manages workers, stacks, cont
 | `ALLOWED_ORIGINS` | No | Comma-separated CORS origins |
 | `TLS_CERT` | No | Path to TLS certificate file (enables HTTPS) |
 | `TLS_KEY` | No | Path to TLS key file |
-| `FORTA_API_DOMAIN` | No | Forta API base URL (enables OAuth) |
-| `FORTA_CLIENT_ID` | No | OAuth2 client ID |
-| `FORTA_CLIENT_SECRET` | No | OAuth2 client secret |
-| `FORTA_CALLBACK_URL` | No | OAuth2 callback URL |
-| `FORTA_LOGIN_DOMAIN` | No | Forta login UI URL |
-| `FORTA_APP_DOMAIN` | No | Forta app domain |
-| `FORTA_JWT_SIGNING_KEY` | No | Forta JWT key for local token validation |
-| `FORTA_COOKIE_DOMAIN` | No | Cookie domain (e.g. `.appleby.cloud`) |
-| `FORTA_COOKIE_INSECURE` | No | Allow insecure cookies (development) |
-| `FORTA_POST_LOGIN_REDIRECT` | No | Redirect URL after Forta login |
-| `FORTA_POST_LOGOUT_REDIRECT` | No | Redirect URL after Forta logout |
-| `FORTA_FETCH_USER_ON_PROTECT` | No | Fetch full user profile on each protected request |
-| `FORTA_DISABLE_AUTO_REFRESH` | No | Disable automatic Forta token refresh |
-| `FORTA_ENFORCE_GRANTS` | No | Enforce Forta grant-based access control |
+| `COOKIE_DOMAIN` | No | Cookie domain (e.g. `.appleby.cloud`) for cross-subdomain auth cookies |
+| `ENCRYPTION_KEY` | No | 64 hex chars (32 bytes) for AES-256-GCM encryption of secrets at rest; passthrough if unset |
+| `SSO_CLIENT_ID` | No | OAuth2/OIDC client ID (enables "Sign in with SSO"); env fallback for the DB-backed `sso.*` settings |
+| `SSO_CLIENT_SECRET` | No | OAuth2 client secret |
+| `SSO_AUTHORIZE_URL` / `SSO_TOKEN_URL` / `SSO_USERINFO_URL` / `SSO_INTROSPECT_URL` | No | IDP endpoints |
+| `SSO_REDIRECT_URL` / `SSO_LOGOUT_URL` / `SSO_POST_LOGIN_URL` | No | Redirect URLs |
+| `SSO_SCOPES` | No | OAuth scopes (default `openid email profile`) |
+| `SSO_USER_IDENTIFIER` | No | userinfo field to match users on (default `email`) |
+| `SSO_AUTO_PROVISION` | No | Auto-create users on first SSO login (default `true`) |
+| `DOCKER_COMPOSE_DIR` | No | Compose dir for the self-update path (`/admin/update/api`,`/web`) |
+
+> **Note:** SSO configuration is primarily stored in the `settings` table (`sso.*` keys, editable via
+> `PUT /admin/sso-config`); the `SSO_*` env vars above act as a fallback. Forta-specific `FORTA_*`
+> variables are **no longer used** — Forta OAuth was replaced by the generic SSO client.
 
 ---
 
 ## Authentication
 
-Lattice supports dual authentication:
+Lattice authenticates every protected route via `DualAuthMiddleware`, which accepts, in order:
 
-1. **Local auth** — Email/password login issues a Lattice JWT stored as an HttpOnly cookie. Used for bootstrap and when Forta is unavailable.
-2. **Forta OAuth** — Standard OAuth2 flow via `go-forta`. OAuth users are auto-created on first login.
+1. **Local JWT** (HS512) — email/password login issues an access token (15 min) + refresh token
+   (7 days), sent as `Authorization: Bearer` or the `lattice-access-token` HttpOnly cookie.
+2. **API token** — a long-lived opaque token (`Authorization: Bearer`, SHA-256 hashed at rest)
+   tied to a user, for CI and the MCP server.
 
-Since Forta itself runs on Lattice, local auth provides a fallback when the auth service is down. The `DualAuthMiddleware` checks both auth methods on every protected route so either mechanism can be used transparently.
+SSO users are not a separate request-time path: the SSO callback provisions the user and issues a
+Lattice JWT, so they authenticate like local users, with a 5-minute IDP grant re-check. Local auth
+provides a fallback when the SSO IDP (which itself runs on Lattice) is down.
+
+RBAC roles: `admin` > `editor` > `viewer`, plus `pending` (blocked from `/admin` until approved).
+Mutations require `editor`; user/config/token administration requires `admin`. CSRF (double-submit
+cookie) and per-IP rate limiting are applied globally.
 
 ---
 
@@ -104,10 +112,14 @@ curl -fsSL https://lattice-api.appleby.cloud/install/update.sh | bash
 ### Auth
 - `POST /auth/login` — Local email/password login
 - `POST /auth/refresh` — Refresh local JWT
-- `GET /auth/self` — Get current user (protected)
-- `GET /forta/login` — Forta OAuth redirect (if enabled)
-- `GET /forta/callback` — Forta OAuth callback
-- `GET /forta/logout` — Clear Forta cookies
+- `GET /auth/self` — Get current user (protected); `PUT /auth/self` to update
+- `POST /auth/logout` — Log out (protected)
+- `GET /auth/sso/login` — SSO OAuth2 redirect (if enabled)
+- `GET /auth/sso/callback` — SSO OAuth2 callback
+- `GET /auth/sso/config` — Public SSO config for the login page
+
+> For the complete, authoritative route surface (workers, stacks, containers, deployments,
+> registries, database instances, backups, admin config, WebSocket), see `AGENTS.md`.
 
 ### Admin (protected)
 - `GET|POST /admin/workers` — List/create workers
