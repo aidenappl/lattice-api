@@ -2,7 +2,6 @@ package query
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -63,6 +62,10 @@ func ListContainerLogs(engine db.Queryable, req ListLogsRequest) (*[]structs.Con
 		} else {
 			q = q.Where(sq.Eq{"container_logs.container_id": *req.ContainerID})
 		}
+	} else if req.ContainerName != nil {
+		// No resolved ID but a name was given — filter by name so we don't
+		// return every container's logs.
+		q = q.Where(sq.Eq{"container_logs.container_name": *req.ContainerName})
 	}
 	if req.Stream != nil {
 		q = q.Where(sq.Eq{"container_logs.stream": *req.Stream})
@@ -123,17 +126,17 @@ func CreateContainerLog(engine db.Queryable, req CreateContainerLogRequest) erro
 		vals = append(vals, req.RecordedAt.UTC().Format("2006-01-02 15:04:05.999999"))
 	}
 
-	q := sq.Insert("container_logs").Columns(cols...).Values(vals...)
+	// ON DUPLICATE KEY UPDATE id = id makes a replay of the same log line (unique
+	// index on (container_id, recorded_at, message)) a no-op, while still
+	// surfacing real errors — unlike INSERT IGNORE, which swallows every error
+	// (truncation, FK, etc.), not just duplicate-key.
+	q := sq.Insert("container_logs").Columns(cols...).Values(vals...).
+		Suffix("ON DUPLICATE KEY UPDATE id = id")
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
 		return fmt.Errorf("failed to build sql query: %w", err)
 	}
-
-	// INSERT IGNORE silently discards rows that violate the unique index on
-	// (container_id, recorded_at, message), preventing runner-restart replays
-	// from creating duplicate log entries.
-	qStr = strings.Replace(qStr, "INSERT INTO", "INSERT IGNORE INTO", 1)
 
 	_, err = engine.Exec(qStr, args...)
 	return err

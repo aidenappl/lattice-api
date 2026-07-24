@@ -2,7 +2,6 @@ package query
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -190,11 +189,10 @@ func CreateDeploymentLog(engine db.Queryable, req CreateDeploymentLogRequest) er
 	if level == "" {
 		level = "info"
 	}
-	q := "INSERT INTO deployment_logs (deployment_id, level, stage, message) VALUES (?, ?, ?, ?)"
-	// INSERT IGNORE discards rows that violate the unique index on
-	// (deployment_id, level, recorded_at, message), preventing duplicate
-	// log entries on message replay.
-	q = strings.Replace(q, "INSERT INTO", "INSERT IGNORE INTO", 1)
+	// ON DUPLICATE KEY UPDATE id = id makes a replay (unique index on
+	// (deployment_id, level, recorded_at, message)) a no-op while still
+	// surfacing real errors — unlike INSERT IGNORE, which swallows all errors.
+	q := "INSERT INTO deployment_logs (deployment_id, level, stage, message) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE id = id"
 	_, err := engine.Exec(q, req.DeploymentID, level, req.Stage, req.Message)
 	return err
 }

@@ -20,7 +20,13 @@ import (
 // startServer configures CORS, creates the HTTP server, and blocks until
 // a SIGINT/SIGTERM triggers graceful shutdown.
 func startServer(r *mux.Router) {
-	allowedOrigins := []string{"http://localhost:3000"}
+	// Only trust the localhost dev origin outside production — in production it
+	// would let a page on the developer's machine make credentialed cross-origin
+	// requests against the live API. Production origins come from ALLOWED_ORIGINS.
+	var allowedOrigins []string
+	if env.Environment != "production" {
+		allowedOrigins = append(allowedOrigins, "http://localhost:3000")
+	}
 	if env.AllowedOrigins != "" {
 		allowedOrigins = append(allowedOrigins, strings.Split(env.AllowedOrigins, ",")...)
 	}

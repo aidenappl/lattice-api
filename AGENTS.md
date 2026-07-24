@@ -98,7 +98,7 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `db/db.go` | MariaDB pool (IIFE-free lazy `Init()`), `Queryable` interface, `DEFAULT_LIMIT`/`MAX_LIMIT`, `BeginTx`, and **all schema migrations run in-code** via the idempotent `migrate()` helper. |
 | `logger/logger.go` | Structured leveled logger (text/ANSI or JSON). `logger.F` = `map[string]any`. `Request()` picks level by HTTP status. |
 | `middleware/` | `middleware.go` (RequestID, Logging, MuxHeader, SecurityHeaders, MaxBodySize, `statusResponseWriter` with Hijack), `auth.go` (DualAuth, RejectPending, RequireAdmin, RequireEditor, WorkerTokenAuth, SSO checkpoint), `csrf.go` (double-submit), `ratelimit.go` (per-IP token bucket). |
-| `jwt/jwt.go` | HS512 local tokens. 15-min access / 7-day refresh. `Claims{UserID, Type}`. |
+| `jwt/jwt.go` | HS512 local tokens. 15-min access / 7-day refresh. `Claims{UserID, Type}`. Validation pins the alg to HS512 (`WithValidMethods`), requires an expiry (`WithExpirationRequired`) and the issuer, and rejects a token with no `iat` (so it can't bypass `tokens_revoked_at`). Revocation compare is `!IssuedAt.After(revokedAt)` (a token minted in the same second as revocation is rejected). |
 | `crypto/crypto.go` | AES-256-GCM encrypt/decrypt for secrets at rest. Passthrough (no-op) when `ENCRYPTION_KEY` unset **only in non-production** — `Init()` **panics at boot** if the key is empty and `ENVIRONMENT=production`. `Decrypt` returns a real error on bad base64 / short input / auth failure (no silent plaintext fallthrough); callers propagate it. |
 | `sso/` | `sso.go` (generic OAuth2/OIDC client, DB-backed config, state handling), `introspect.go` (RFC 7662 introspection used by the auth checkpoint). |
 | `responder/` | `responder.go` (success envelope: `New`/`NewCreated`/`NewWithCount`), `errors.go` (`SendError`/`SendErrorWithCode`), `templates.responder.go` (`BadBody`/`MissingBodyFields`/`QueryError`/`NotFound`). |
@@ -295,7 +295,9 @@ the WebSocket upgrade, since browsers/clients can't set headers on the handshake
 it, and looks it up in `worker_tokens` to resolve a `worker_id`.
 
 **CSRF:** double-submit cookie (`lattice-csrf` / `X-CSRF-Token`), constant-time compare. Exempt:
-safe methods, any `Authorization: Bearer` request (API tokens/JWT headers don't need it),
+safe methods, an `Authorization: Bearer` request **that carries no session cookie** (API-token/JWT
+header clients don't need it; but a Bearer header no longer waives CSRF for a request that also
+sends the `lattice-access-token` cookie — a cookie-authed browser request still gets checked),
 `/auth/login`, `/auth/refresh`, `/ws/worker`, `/api/deploy/*`, `/auth/sso/callback`.
 
 **SSO login CSRF:** the `state` parameter is bound to the browser and is single-use.

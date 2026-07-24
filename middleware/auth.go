@@ -266,9 +266,12 @@ func validateLatticeToken(tokenStr string) *structs.User {
 		return nil
 	}
 
-	// Reject tokens issued before the revocation timestamp
-	if user.TokensRevokedAt != nil && claims.IssuedAt != nil {
-		if claims.IssuedAt.Time.Before(*user.TokensRevokedAt) {
+	// Reject tokens issued at or before the revocation timestamp. Using !After
+	// (rather than Before) so a token minted in the same second as the revocation
+	// is also rejected; a nil iat is treated as revoked (ValidateToken already
+	// rejects nil iat, this is belt-and-suspenders).
+	if user.TokensRevokedAt != nil {
+		if claims.IssuedAt == nil || !claims.IssuedAt.Time.After(*user.TokensRevokedAt) {
 			return nil
 		}
 	}

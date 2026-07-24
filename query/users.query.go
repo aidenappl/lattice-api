@@ -166,6 +166,14 @@ func CountUsers(engine db.Queryable) (int, error) {
 	return count, err
 }
 
+// CountActiveAdmins returns the number of active users with the admin role.
+// Used to prevent removing the last admin (which would lock the platform out).
+func CountActiveAdmins(engine db.Queryable) (int, error) {
+	var count int
+	err := engine.QueryRow("SELECT COUNT(*) FROM users WHERE role = 'admin' AND active = TRUE").Scan(&count)
+	return count, err
+}
+
 type CreateUserRequest struct {
 	Email           string
 	Name            *string

@@ -66,7 +66,14 @@ func ValidateToken(tokenStr string) (*Claims, error) {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
 		return []byte(env.JWTSigningKey), nil
-	})
+	},
+		// Pin the algorithm to HS512 (defense in depth alongside the keyfunc
+		// check — rejects alg-confusion attempts before the key is even used),
+		// require an expiry, and require the issuer.
+		jwtlib.WithValidMethods([]string{"HS512"}),
+		jwtlib.WithExpirationRequired(),
+		jwtlib.WithIssuer(issuer),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse token: %w", err)
 	}
@@ -78,6 +85,13 @@ func ValidateToken(tokenStr string) (*Claims, error) {
 
 	if claims.Issuer != issuer {
 		return nil, fmt.Errorf("invalid token issuer: %s", claims.Issuer)
+	}
+
+	// A token with no iat cannot be checked against a user's token-revocation
+	// timestamp, so treat a missing iat as invalid rather than let it bypass
+	// revocation. Our tokens always set iat.
+	if claims.IssuedAt == nil {
+		return nil, fmt.Errorf("token missing issued-at claim")
 	}
 
 	return claims, nil

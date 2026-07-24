@@ -2,7 +2,6 @@ package query
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -57,6 +56,10 @@ func ListLifecycleLogs(engine db.Queryable, req ListLifecycleLogsRequest) (*[]st
 		} else {
 			q = q.Where(sq.Eq{"lifecycle_logs.container_id": *req.ContainerID})
 		}
+	} else if req.ContainerName != nil {
+		// No resolved ID but a name was given — filter by name so we don't
+		// return every container's lifecycle logs.
+		q = q.Where(sq.Eq{"lifecycle_logs.container_name": *req.ContainerName})
 	}
 	if req.WorkerID != nil {
 		q = q.Where(sq.Eq{"lifecycle_logs.worker_id": *req.WorkerID})
@@ -109,19 +112,18 @@ func CreateLifecycleLog(engine db.Queryable, req CreateLifecycleLogRequest) erro
 	// have already timestamped by the time the API processes the event).
 	ts := time.Now().Add(-1 * time.Second).UTC().Format("2006-01-02 15:04:05.999999")
 
+	// ON DUPLICATE KEY UPDATE id = id makes a replay (unique index on
+	// (container_id, worker_id, event, recorded_at)) a no-op while still
+	// surfacing real errors — unlike INSERT IGNORE, which swallows all errors.
 	q := sq.Insert("lifecycle_logs").
 		Columns("container_id", "container_name", "worker_id", "event", "message", "recorded_at").
-		Values(req.ContainerID, req.ContainerName, req.WorkerID, req.Event, req.Message, ts)
+		Values(req.ContainerID, req.ContainerName, req.WorkerID, req.Event, req.Message, ts).
+		Suffix("ON DUPLICATE KEY UPDATE id = id")
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
 		return fmt.Errorf("failed to build sql query: %w", err)
 	}
-
-	// INSERT IGNORE discards rows that violate the unique index on
-	// (container_id, worker_id, event, recorded_at), preventing message
-	// replays from creating duplicate lifecycle entries.
-	qStr = strings.Replace(qStr, "INSERT INTO", "INSERT IGNORE INTO", 1)
 
 	_, err = engine.Exec(qStr, args...)
 	return err

@@ -29,10 +29,17 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Skip for Bearer token auth
+		// Skip for Bearer token auth — but ONLY when the request is not also
+		// carrying a session cookie. A cross-site attacker cannot set an
+		// Authorization header, so a pure-Bearer request is not a CSRF vector; but
+		// if a session cookie is present the request may actually be authenticated
+		// by that cookie, so CSRF must still be enforced (don't let an attached
+		// Bearer header waive it for a cookie-authed browser request).
 		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
-			next.ServeHTTP(w, r)
-			return
+			if _, err := r.Cookie(latticeTokenName); err != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
 		}
 
 		// Skip exempt paths
