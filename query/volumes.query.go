@@ -26,7 +26,7 @@ func scanVolume(row scanner) (*structs.Volume, error) {
 }
 
 func ListVolumesByStack(engine db.Queryable, stackID int) (*[]structs.Volume, error) {
-	q := sq.Select(volumeColumns...).From("volumes").Where(sq.Eq{"volumes.stack_id": stackID}).OrderBy("volumes.id ASC")
+	q := sq.Select(volumeColumns...).From("volumes").Where(sq.Eq{"volumes.stack_id": stackID}).OrderBy("volumes.id ASC").Limit(uint64(db.MAX_LIMIT))
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

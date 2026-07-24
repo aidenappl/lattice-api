@@ -38,7 +38,8 @@ func ListWebhookConfigs(engine db.Queryable) (*[]structs.WebhookConfig, error) {
 	q := sq.Select(webhookConfigColumns...).
 		From("webhook_configs").
 		Where(sq.Eq{"webhook_configs.active": true}).
-		OrderBy("webhook_configs.id DESC")
+		OrderBy("webhook_configs.id DESC").
+		Limit(uint64(db.MAX_LIMIT))
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

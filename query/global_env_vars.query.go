@@ -33,7 +33,8 @@ func scanGlobalEnvVar(row scanner) (*structs.GlobalEnvVar, error) {
 func ListGlobalEnvVars(engine db.Queryable) (*[]structs.GlobalEnvVar, error) {
 	q := sq.Select(globalEnvVarColumns...).
 		From("global_env_vars").
-		OrderBy("global_env_vars.`key` ASC")
+		OrderBy("global_env_vars.`key` ASC").
+		Limit(uint64(db.MAX_LIMIT))
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

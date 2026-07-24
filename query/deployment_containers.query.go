@@ -42,7 +42,8 @@ func ListDeploymentContainers(engine db.Queryable, deploymentID int) (*[]structs
 	q := sq.Select(deploymentContainerColumns...).
 		From("deployment_containers").
 		Where(sq.Eq{"deployment_containers.deployment_id": deploymentID}).
-		OrderBy("deployment_containers.id ASC")
+		OrderBy("deployment_containers.id ASC").
+		Limit(uint64(db.MAX_LIMIT))
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

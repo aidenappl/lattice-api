@@ -44,7 +44,8 @@ func ListBackupDestinations(engine db.Queryable) (*[]structs.BackupDestination, 
 	q := sq.Select(backupDestinationColumns...).
 		From("backup_destinations").
 		Where(sq.Eq{"backup_destinations.active": true}).
-		OrderBy("backup_destinations.id DESC")
+		OrderBy("backup_destinations.id DESC").
+		Limit(uint64(db.MAX_LIMIT))
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

@@ -38,7 +38,8 @@ func ListTemplates(engine db.Queryable) (*[]structs.Template, error) {
 	q := sq.Select(templateColumns...).
 		From("templates").
 		Where(sq.Eq{"templates.active": true}).
-		OrderBy("templates.id DESC")
+		OrderBy("templates.id DESC").
+		Limit(uint64(db.MAX_LIMIT))
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

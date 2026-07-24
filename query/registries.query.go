@@ -48,7 +48,8 @@ func ListRegistries(engine db.Queryable) (*[]structs.Registry, error) {
 	q := sq.Select(registryColumns...).
 		From("registries").
 		Where(sq.Eq{"registries.active": true}).
-		OrderBy("registries.id DESC")
+		OrderBy("registries.id DESC").
+		Limit(uint64(db.MAX_LIMIT))
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

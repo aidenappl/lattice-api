@@ -26,7 +26,7 @@ func scanNetwork(row scanner) (*structs.Network, error) {
 }
 
 func ListNetworksByStack(engine db.Queryable, stackID int) (*[]structs.Network, error) {
-	q := sq.Select(networkColumns...).From("networks").Where(sq.Eq{"networks.stack_id": stackID}).OrderBy("networks.id ASC")
+	q := sq.Select(networkColumns...).From("networks").Where(sq.Eq{"networks.stack_id": stackID}).OrderBy("networks.id ASC").Limit(uint64(db.MAX_LIMIT))
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
@@ -74,7 +74,7 @@ func CreateNetwork(engine db.Queryable, req CreateNetworkRequest) error {
 }
 
 func ListAllNetworks(engine db.Queryable) ([]structs.Network, error) {
-	q := sq.Select(networkColumns...).From("networks").OrderBy("networks.stack_id ASC", "networks.id ASC")
+	q := sq.Select(networkColumns...).From("networks").OrderBy("networks.stack_id ASC", "networks.id ASC").Limit(uint64(db.MAX_LIMIT))
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

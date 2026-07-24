@@ -52,7 +52,8 @@ func ListSnapshotsByInstance(engine db.Queryable, instanceID int) (*[]structs.Da
 		From("database_snapshots").
 		Where(sq.Eq{"database_snapshots.database_instance_id": instanceID}).
 		Where(sq.Eq{"database_snapshots.active": true}).
-		OrderBy("database_snapshots.inserted_at DESC")
+		OrderBy("database_snapshots.inserted_at DESC").
+		Limit(uint64(db.MAX_LIMIT))
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

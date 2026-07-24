@@ -72,7 +72,8 @@ func ListContainersByStack(engine db.Queryable, stackID int) (*[]structs.Contain
 		From("containers").
 		Where(sq.Eq{"containers.stack_id": stackID}).
 		Where(sq.Eq{"containers.active": true}).
-		OrderBy("containers.id ASC")
+		OrderBy("containers.id ASC").
+		Limit(uint64(db.MAX_LIMIT))
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

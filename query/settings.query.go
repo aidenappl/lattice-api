@@ -1,6 +1,8 @@
 package query
 
 import (
+	"fmt"
+
 	"github.com/aidenappl/lattice-api/db"
 )
 
@@ -25,7 +27,7 @@ func DeleteSetting(engine db.Queryable, key string) error {
 
 // GetSettingsByPrefix returns all settings matching a prefix
 func GetSettingsByPrefix(engine db.Queryable, prefix string) (map[string]string, error) {
-	rows, err := engine.Query("SELECT `key`, value FROM settings WHERE `key` LIKE ?", prefix+"%")
+	rows, err := engine.Query(fmt.Sprintf("SELECT `key`, value FROM settings WHERE `key` LIKE ? LIMIT %d", db.MAX_LIMIT), prefix+"%")
 	if err != nil {
 		return nil, err
 	}
