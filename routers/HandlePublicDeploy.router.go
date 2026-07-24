@@ -58,10 +58,28 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if stack.Status == "deploying" {
+	// Atomically claim the stack for deployment — prevents the check-then-set
+	// TOCTOU race where two concurrent token deploys both pass a status check
+	// and proceed. A second concurrent deploy/rollback returns 409.
+	claimed, err := query.ClaimStackForDeploy(db.DB, stack.ID)
+	if err != nil {
+		responder.QueryError(w, err, "failed to claim stack for deploy")
+		return
+	}
+	if !claimed {
 		responder.SendError(w, http.StatusConflict, "deployment already in progress for this stack")
 		return
 	}
+
+	// Guarantee the claim is released on every post-claim failure path so a
+	// transient error can't strand the stack in "deploying" for 30 minutes.
+	deploySettled := false
+	defer func() {
+		if !deploySettled {
+			active := "active"
+			_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{Status: &active})
+		}
+	}()
 
 	// Validate placement constraints against worker labels
 	if stack.PlacementConstraints != nil && *stack.PlacementConstraints != "" {
@@ -268,10 +286,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	deployingStatus := "deploying"
-	_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{
-		Status: &deployingStatus,
-	})
+	// Stack is already in "deploying" from ClaimStackForDeploy above.
 
 	// Log deployment initiation
 	_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
@@ -327,9 +342,14 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		failedStatus := "failed"
 		_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{Status: &failedStatus})
 		_ = query.UpdateDeploymentStatus(db.DB, deployment.ID, "failed")
+		// Explicit terminal status set — suppress the deferred unclaim.
+		deploySettled = true
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send deploy command: %v", err))
 		return
 	}
+
+	// Deploy handed off to the worker; the monitor now owns the stack status.
+	deploySettled = true
 
 	_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
 		DeploymentID: deployment.ID,

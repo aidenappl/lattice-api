@@ -95,6 +95,19 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// The stack is now claimed (status=deploying, deploy_claimed_at=NOW()).
+	// Guarantee the claim is released on EVERY post-claim failure path: if we
+	// don't successfully hand the deploy off to the worker (or explicitly set a
+	// terminal status ourselves), reset the stack to active so a transient DB
+	// error can't strand it in "deploying" for the full 30-minute claim window.
+	deploySettled := false
+	defer func() {
+		if !deploySettled {
+			active := "active"
+			_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{Status: &active})
+		}
+	}()
+
 	// Fetch containers for this stack
 	containers, err := query.ListContainersByStack(db.DB, stack.ID)
 	if err != nil {
@@ -105,8 +118,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 	// If specific container IDs were requested, filter to only those
 	targeted := len(body.ContainerIDs) > 0
 	if targeted && body.Force {
-		failedStatus := "active"
-		_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{Status: &failedStatus})
+		// deferred unclaim resets the stack to active
 		responder.SendError(w, http.StatusBadRequest, "force deploy cannot be combined with targeted container deployment")
 		return
 	}
@@ -122,8 +134,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 			}
 		}
 		if len(filtered) == 0 {
-			failedStatus := "active"
-			_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{Status: &failedStatus})
+			// deferred unclaim resets the stack to active
 			responder.SendError(w, http.StatusBadRequest, "none of the specified container IDs belong to this stack")
 			return
 		}
@@ -447,9 +458,16 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		failedStatus := "failed"
 		_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{Status: &failedStatus})
 		_ = query.UpdateDeploymentStatus(db.DB, deployment.ID, "failed")
+		// We've set an explicit terminal (failed) status — don't let the deferred
+		// unclaim reset it back to active.
+		deploySettled = true
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send deploy command: %v", err))
 		return
 	}
+
+	// Deploy command handed off to the worker; the deployment monitor now owns
+	// the stack status. Suppress the deferred unclaim.
+	deploySettled = true
 
 	_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
 		DeploymentID: deployment.ID,
