@@ -284,7 +284,8 @@ during an IDP blip.
   `/auth/self` to see their status) with `error_code 4004`.
 - `RequireEditor` gates all resource mutations (deploy, container/stack/worker/registry/DB CRUD).
 - `RequireAdmin` gates users, webhooks, global env vars, audit log, SSO/SMTP config, notification
-  prefs, deploy-token create/delete, worker reboot/upgrade, and version refresh/self-update.
+  prefs, deploy-token create/delete, worker reboot/upgrade, version refresh/self-update, and the
+  DB-credentials endpoint (returns live secrets).
 
 **Worker auth** is entirely separate: `WorkerTokenAuth` reads `X-Worker-Token` (or `?token=` on
 the WebSocket upgrade, since browsers/clients can't set headers on the handshake), SHA-256 hashes
@@ -449,7 +450,7 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 | POST | `/stacks/{id}/sync-compose` | `HandleSyncCompose` `[E]` |
 | POST | `/stacks/{id}/deploy` | `DeployHandler.HandleDeployStack` `[E]` |
 | POST | `/stacks/{id}/restart-all` / `stop-all` / `start-all` | `ContainerActionHandler.HandleRestartStack` / `HandleStopStack` / `HandleStartStack` `[E]` |
-| GET | `/stacks/{id}/export` | `HandleExportStack` |
+| GET | `/stacks/{id}/export` | `HandleExportStack` `[E]` (export includes plaintext env config) |
 | POST | `/stacks/import-export` | `HandleImportStackExport` `[E]` |
 | POST | `/stacks/{id}/save-template` | `HandleCreateTemplateFromStack` `[E]` |
 | GET / POST | `/stacks/{id}/deploy-tokens` | `HandleListDeployTokens` / `HandleCreateDeployToken` `[A]` |
@@ -494,7 +495,7 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 | GET / POST | `/database-instances` | `HandleListDatabaseInstances` / `DatabaseHandler.HandleCreateDatabaseInstance` `[E]` |
 | GET / PUT / DELETE | `/database-instances/{id}` | `HandleGetDatabaseInstance` / `DatabaseHandler.HandleUpdateDatabaseInstance` `[E]` / `HandleDeleteDatabaseInstance` `[E]` |
 | POST | `/database-instances/{id}/{start,stop,restart,remove}` | `DatabaseHandler.HandleDatabaseAction` `[E]` (action derived from the last path segment) |
-| GET | `/database-instances/{id}/credentials` | `DatabaseHandler.HandleGetDatabaseCredentials` `[E]` (returns live secrets) |
+| GET | `/database-instances/{id}/credentials` | `DatabaseHandler.HandleGetDatabaseCredentials` `[A]` (returns live secrets — admin only) |
 | GET / POST | `/database-instances/{id}/snapshots` | `HandleListSnapshots` / `DatabaseHandler.HandleCreateSnapshot` `[E]` |
 | POST | `/database-instances/{id}/restore` | `DatabaseHandler.HandleRestoreSnapshot` `[E]` |
 | DELETE | `/database-snapshots/{id}` | `HandleDeleteSnapshot` `[E]` |

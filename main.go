@@ -126,7 +126,7 @@ func main() {
 	admin.HandleFunc("/stacks/{id}/restart-all", middleware.RequireEditor(app.containerActionHandler.HandleRestartStack)).Methods(http.MethodPost)
 	admin.HandleFunc("/stacks/{id}/stop-all", middleware.RequireEditor(app.containerActionHandler.HandleStopStack)).Methods(http.MethodPost)
 	admin.HandleFunc("/stacks/{id}/start-all", middleware.RequireEditor(app.containerActionHandler.HandleStartStack)).Methods(http.MethodPost)
-	admin.HandleFunc("/stacks/{id}/export", routers.HandleExportStack).Methods(http.MethodGet)
+	admin.HandleFunc("/stacks/{id}/export", middleware.RequireEditor(routers.HandleExportStack)).Methods(http.MethodGet)
 	admin.HandleFunc("/stacks/import-export", middleware.RequireEditor(routers.HandleImportStackExport)).Methods(http.MethodPost)
 
 	// Deploy tokens
@@ -180,7 +180,7 @@ func main() {
 	admin.HandleFunc("/database-instances/{id}/stop", middleware.RequireEditor(app.databaseHandler.HandleDatabaseAction)).Methods(http.MethodPost)
 	admin.HandleFunc("/database-instances/{id}/restart", middleware.RequireEditor(app.databaseHandler.HandleDatabaseAction)).Methods(http.MethodPost)
 	admin.HandleFunc("/database-instances/{id}/remove", middleware.RequireEditor(app.databaseHandler.HandleDatabaseAction)).Methods(http.MethodPost)
-	admin.HandleFunc("/database-instances/{id}/credentials", middleware.RequireEditor(app.databaseHandler.HandleGetDatabaseCredentials)).Methods(http.MethodGet)
+	admin.HandleFunc("/database-instances/{id}/credentials", middleware.RequireAdmin(app.databaseHandler.HandleGetDatabaseCredentials)).Methods(http.MethodGet)
 	admin.HandleFunc("/database-instances/{id}/snapshots", routers.HandleListSnapshots).Methods(http.MethodGet)
 	admin.HandleFunc("/database-instances/{id}/snapshots", middleware.RequireEditor(app.databaseHandler.HandleCreateSnapshot)).Methods(http.MethodPost)
 	admin.HandleFunc("/database-instances/{id}/restore", middleware.RequireEditor(app.databaseHandler.HandleRestoreSnapshot)).Methods(http.MethodPost)
