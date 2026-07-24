@@ -84,6 +84,9 @@ func GetRegistryByID(engine db.Queryable, id int) (*structs.Registry, error) {
 	row := engine.QueryRow(qStr, args...)
 	r, err := scanRegistry(row)
 	if err != nil {
+		if isNoRows(err) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("failed to scan registry: %w", err)
 	}
 

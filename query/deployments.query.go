@@ -101,6 +101,9 @@ func GetDeploymentByID(engine db.Queryable, id int) (*structs.Deployment, error)
 	row := engine.QueryRow(qStr, args...)
 	d, err := scanDeployment(row)
 	if err != nil {
+		if isNoRows(err) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("failed to scan deployment: %w", err)
 	}
 

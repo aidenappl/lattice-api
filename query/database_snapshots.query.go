@@ -88,6 +88,9 @@ func GetSnapshotByID(engine db.Queryable, id int) (*structs.DatabaseSnapshot, er
 	row := engine.QueryRow(qStr, args...)
 	s, err := scanDatabaseSnapshot(row)
 	if err != nil {
+		if isNoRows(err) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("failed to scan database snapshot: %w", err)
 	}
 

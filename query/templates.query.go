@@ -74,6 +74,9 @@ func GetTemplateByID(engine db.Queryable, id int) (*structs.Template, error) {
 	row := engine.QueryRow(qStr, args...)
 	t, err := scanTemplate(row)
 	if err != nil {
+		if isNoRows(err) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("failed to scan template: %w", err)
 	}
 

@@ -174,6 +174,12 @@ This repo follows the global Go standards. Specifics and deviations:
   `.ToSql()`, then `engine.Query`. Never hand-concatenate SQL.
 - **Pagination.** `db.DEFAULT_LIMIT = 50`, `db.MAX_LIMIT = 500`. List queries clamp: a limit of
   0 or > MAX becomes DEFAULT.
+- **Not-found handling.** Single-row `GetXByID` getters return `query.ErrNotFound` (a typed
+  error exposing `NotFound() bool`) when the row is missing, instead of wrapping `sql.ErrNoRows`
+  in a generic error. `responder.QueryError` detects it via a local `notFounder` interface and
+  responds `404` rather than `500` — so any handler funnelling its query error through
+  `QueryError` gets consistent not-found behaviour. (responder stays a leaf package: it detects
+  the interface, it does not import `query`.)
 - **Responder envelope.** Success `{success, message, data, pagination?}`; error
   `{success, error, error_message, error_code}`. Messages are lowercased. 5xx never leaks the
   raw error (`error` becomes `"internal server error"`); 4xx exposes it. Custom error codes are

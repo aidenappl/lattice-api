@@ -80,6 +80,9 @@ func GetBackupDestinationByID(engine db.Queryable, id int) (*structs.BackupDesti
 	row := engine.QueryRow(qStr, args...)
 	b, err := scanBackupDestination(row)
 	if err != nil {
+		if isNoRows(err) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("failed to scan backup destination: %w", err)
 	}
 

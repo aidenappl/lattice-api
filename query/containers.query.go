@@ -168,6 +168,9 @@ func GetContainerByID(engine db.Queryable, id int) (*structs.Container, error) {
 	row := engine.QueryRow(qStr, args...)
 	c, err := scanContainer(row)
 	if err != nil {
+		if isNoRows(err) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("failed to scan container: %w", err)
 	}
 

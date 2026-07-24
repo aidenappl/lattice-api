@@ -170,6 +170,9 @@ func GetDatabaseInstanceByID(engine db.Queryable, id int) (*structs.DatabaseInst
 	row := engine.QueryRow(qStr, args...)
 	d, err := scanDatabaseInstance(row)
 	if err != nil {
+		if isNoRows(err) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("failed to scan database instance: %w", err)
 	}
 

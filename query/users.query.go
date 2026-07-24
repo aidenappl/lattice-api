@@ -99,6 +99,9 @@ func GetUserByID(engine db.Queryable, id int) (*structs.User, error) {
 	row := engine.QueryRow(qStr, args...)
 	u, err := scanUser(row)
 	if err != nil {
+		if isNoRows(err) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("failed to scan user: %w", err)
 	}
 
