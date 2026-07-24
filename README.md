@@ -1,170 +1,111 @@
 # lattice-api
 
-Central orchestrator API for the Lattice platform. Manages workers, stacks, containers, deployments, and registries across a distributed set of Docker hosts. Workers connect via WebSocket for real-time command dispatch and telemetry.
+Central orchestrator API for the Lattice container-orchestration platform — workers, stacks, containers, deployments, registries, database instances, and backups across a fleet of Docker hosts.
+
+> **appleby.cloud platform** · Go API · `lattice.appleby.cloud`
 
 ---
 
-## Tech Stack
+## Overview
 
-- **Go 1.25** with gorilla/mux
-- **MariaDB** — primary data store (schema `lattice`, migrated in-code via `db.Init()`)
-- **gorilla/websocket** — real-time worker communication
+`lattice-api` is the brain of Lattice (an in-house replacement for Portainer). It is a monolithic Go HTTP + WebSocket server that holds all persistent state in a MariaDB `lattice` database and is the only component that can issue commands to workers. Each host runs a `lattice-runner` agent that dials **outbound** to `/ws/worker`; the API pushes deploy/start/stop/rollback and database commands down that socket and ingests heartbeats, metrics, and lifecycle telemetry back. The Next.js dashboard talks to it over REST plus a second admin WebSocket (`/ws/admin`) for live updates.
+
+It owns the data model, command dispatch, deployment bookkeeping (record + watchdog that pings, retries, and force-fails stalled deploys), auth/RBAC, and fleet observability plumbing (health scanning, metrics, anomalies, retention, webhooks, SMTP alerts). It does **not** perform the Docker work itself — pulling images and executing the blue-green/canary/rolling strategy step-by-step lives in `lattice-runner`; the API only sends a `strategy` string and a resolved container spec.
+
+## Role in the Lattice ecosystem
+
+| Repo | Relationship |
+|------|--------------|
+| [`lattice-web`](https://github.com/aidenappl/lattice-web) | Next.js dashboard — consumes `/admin/*` REST + `/ws/admin`. |
+| [`lattice-runner`](https://github.com/aidenappl/lattice-runner) | Agent on each worker VM — dials `/ws/worker` outbound and executes Docker ops. The worker protocol is a shared contract; change both together. |
+| [`lattice-mcp`](https://github.com/aidenappl/lattice-mcp) | MCP server exposing `/admin` as Claude tools — keep it in sync when routes change. |
+
+Lattice is self-hosting: Forta (SSO), Keyring, Monitor and the rest all run as stacks on Lattice workers, which is why local auth exists as a fallback when the SSO IDP is itself down.
+
+## Tech stack
+
+- **Go 1.25** with `gorilla/mux` (subrouters for `/auth` and `/admin`)
+- **MariaDB** — primary data store (schema `lattice`, migrated **in-code** via idempotent `migrate()` calls in `db.Init()`; no external migration runner)
+- **`gorilla/websocket`** — worker hub and admin hub
+- **`squirrel`** (`sq`) — SQL query builder, no ORM
+- **`golang-jwt/jwt/v5`** — local JWT auth (HS512)
 - **Generic OAuth2 / OIDC SSO** — optional, self-contained client under `sso/` (no `go-forta` dependency)
-- **squirrel** — SQL query builder (no ORM)
-- **golang-jwt/jwt/v5** — local JWT auth (HS512) for standalone operation
+- **`rs/cors`** for CORS, `golang.org/x/crypto` (bcrypt) for passwords, AES-256-GCM for secrets at rest
 
----
+## Getting started
 
-## Environment Variables
+### Prerequisites
 
-| Variable | Required | Description |
-|---|---|---|
-| `DATABASE_DSN` | Yes | MariaDB base DSN without database name (e.g. `user:pass@tcp(host:3306)`) — schema `lattice` is appended automatically |
-| `JWT_SIGNING_KEY` | Yes | HMAC-SHA512 signing key for local auth tokens |
-| `PORT` | No | Server port (default `8000`) |
-| `LATTICE_ADMIN_EMAIL` | No | Bootstrap admin email (creates local admin if no users exist) |
-| `LATTICE_ADMIN_PASSWORD` | No | Bootstrap admin password |
-| `ALLOWED_ORIGINS` | No | Comma-separated CORS origins |
-| `TLS_CERT` | No | Path to TLS certificate file (enables HTTPS) |
-| `TLS_KEY` | No | Path to TLS key file |
-| `COOKIE_DOMAIN` | No | Cookie domain (e.g. `.appleby.cloud`) for cross-subdomain auth cookies |
-| `ENCRYPTION_KEY` | No | 64 hex chars (32 bytes) for AES-256-GCM encryption of secrets at rest; passthrough if unset |
-| `SSO_CLIENT_ID` | No | OAuth2/OIDC client ID (enables "Sign in with SSO"); env fallback for the DB-backed `sso.*` settings |
-| `SSO_CLIENT_SECRET` | No | OAuth2 client secret |
-| `SSO_AUTHORIZE_URL` / `SSO_TOKEN_URL` / `SSO_USERINFO_URL` / `SSO_INTROSPECT_URL` | No | IDP endpoints |
-| `SSO_REDIRECT_URL` / `SSO_LOGOUT_URL` / `SSO_POST_LOGIN_URL` | No | Redirect URLs |
-| `SSO_SCOPES` | No | OAuth scopes (default `openid email profile`) |
-| `SSO_USER_IDENTIFIER` | No | userinfo field to match users on (default `email`) |
-| `SSO_AUTO_PROVISION` | No | Auto-create users on first SSO login (default `true`) |
-| `DOCKER_COMPOSE_DIR` | No | Compose dir for the self-update path (`/admin/update/api`,`/web`) |
+- **Go 1.25+**
+- **Docker** — for `dev up` (bundled MariaDB) and, in production, the Docker-socket self-update path
+- A **MariaDB** reachable via `DATABASE_DSN` (the base DSN only, no database name — `db.Init()` appends `/lattice`)
+- A **`.env`** file (copy `.env.example`); the `dev` server sources it
 
-> **Note:** SSO configuration is primarily stored in the `settings` table (`sso.*` keys, editable via
-> `PUT /admin/sso-config`); the `SSO_*` env vars above act as a fallback. Forta-specific `FORTA_*`
-> variables are **no longer used** — Forta OAuth was replaced by the generic SSO client.
-
----
-
-## Authentication
-
-Lattice authenticates every protected route via `DualAuthMiddleware`, which accepts, in order:
-
-1. **Local JWT** (HS512) — email/password login issues an access token (15 min) + refresh token
-   (7 days), sent as `Authorization: Bearer` or the `lattice-access-token` HttpOnly cookie.
-2. **API token** — a long-lived opaque token (`Authorization: Bearer`, SHA-256 hashed at rest)
-   tied to a user, for CI and the MCP server.
-
-SSO users are not a separate request-time path: the SSO callback provisions the user and issues a
-Lattice JWT, so they authenticate like local users, with a 5-minute IDP grant re-check. Local auth
-provides a fallback when the SSO IDP (which itself runs on Lattice) is down.
-
-RBAC roles: `admin` > `editor` > `viewer`, plus `pending` (blocked from `/admin` until approved).
-Mutations require `editor`; user/config/token administration requires `admin`. CSRF (double-submit
-cookie) and per-IP rate limiting are applied globally.
-
----
-
-## Quick Start
+### Setup
 
 ```bash
-# Copy env and configure
-cp .env.example .env
-
-# Start MariaDB + API
-docker compose up -d
-
-# Or run locally
-go run .
+cp .env.example .env      # then set DATABASE_DSN and a strong JWT_SIGNING_KEY
+dev up                    # start MariaDB + API + web via docker compose
+# or run the API alone against your own MariaDB:
+dev                       # sources .env, go run .
 ```
 
----
+Set at least `DATABASE_DSN` and `JWT_SIGNING_KEY` (min 32 chars; production panics on weak/known-default keys). SSO is optional — uncomment the `SSO_*` block in `.env.example` or configure it at runtime via `PUT /admin/sso-config`. See `.env.example` for the full list.
 
-## Install Script
+## Development
 
-Workers can be provisioned from any machine with a one-liner:
+| Command | What it does |
+|---------|--------------|
+| `dev` | Run the HTTP dev server (`source .env && go run .`) |
+| `dev dev-https` | Run over HTTPS with local mkcert certs |
+| `dev build` | Build the binary (`go build -o bin/app .`) |
+| `dev test` | Run tests (`go test ./...`) |
+| `dev fmt` | Format (`gofmt -w -s .`) |
+| `dev vet` | Vet (`go vet ./...`) |
+| `dev check` | fmt + vet + test |
+| `dev tidy` | `go mod tidy` |
+| `dev up` / `dev down` | `docker compose up -d` / `down` (MariaDB + API + web) |
+| `dev setup-local` | One-time mkcert + `/etc/hosts` for `lattice-api.local.appleby.cloud` |
+
+**Provisioning a worker** — from any host:
 
 ```bash
 curl -fsSL https://lattice-api.appleby.cloud/install/runner | \
   REGISTRY_USERNAME=x REGISTRY_PASSWORD=x WORKER_TOKEN=<token> WORKER_NAME=<name> bash
 ```
 
-The script is served from `GET /install/runner` and handles cloning, building, configuring, and installing the runner as a systemd service.
+The script (served from `GET /install/runner`) clones, builds, configures, and installs the runner as a systemd service.
 
----
-
-## Update Script
-
-To update an existing runner to the latest version:
-
-```bash
-curl -fsSL https://lattice-api.appleby.cloud/install/update.sh | bash
-```
-
----
-
-## API Routes
-
-### Public
-- `GET /` — Service identifier
-- `GET /healthcheck` — Health check
-- `GET /version` — Returns `{"version":"v0.0.1"}`
-- `GET /install/runner` — Runner install script
-
-### Auth
-- `POST /auth/login` — Local email/password login
-- `POST /auth/refresh` — Refresh local JWT
-- `GET /auth/self` — Get current user (protected); `PUT /auth/self` to update
-- `POST /auth/logout` — Log out (protected)
-- `GET /auth/sso/login` — SSO OAuth2 redirect (if enabled)
-- `GET /auth/sso/callback` — SSO OAuth2 callback
-- `GET /auth/sso/config` — Public SSO config for the login page
-
-> For the complete, authoritative route surface (workers, stacks, containers, deployments,
-> registries, database instances, backups, admin config, WebSocket), see `AGENTS.md`.
-
-### Admin (protected)
-- `GET|POST /admin/workers` — List/create workers
-- `GET|PUT|DELETE /admin/workers/{id}` — Worker CRUD
-- `GET /admin/workers/{id}/tokens` — List worker tokens
-- `POST /admin/workers/{id}/tokens` — Generate worker API token
-- `DELETE /admin/worker-tokens/{id}` — Revoke a worker token
-- `GET /admin/workers/{id}/metrics` — Worker metrics history
-- `GET|POST /admin/stacks` — List/create stacks
-- `GET|PUT|DELETE /admin/stacks/{id}` — Stack CRUD
-- `POST /admin/stacks/{id}/deploy` — Trigger deployment
-- `GET|POST /admin/stacks/{id}/containers` — Container management
-- `PUT|DELETE /admin/containers/{id}` — Update/delete container
-- `GET /admin/deployments` — List deployments
-- `GET /admin/deployments/{id}` — Deployment detail
-- `POST /admin/deployments/{id}/approve` — Approve pending deployment
-- `POST /admin/deployments/{id}/rollback` — Rollback deployment
-- `GET|POST /admin/registries` — Registry management
-- `PUT|DELETE /admin/registries/{id}` — Update/delete registry
-- `POST /admin/registries/{id}/test` — Test registry connectivity
-- `POST /admin/registries/test` — Test registry inline (no save)
-- `GET /admin/registries/{id}/repositories` — List registry repos
-- `GET /admin/registries/{id}/tags` — List image tags
-- `GET|POST /admin/users` — User management
-- `PUT /admin/users/{id}` — Update user
-- `GET /admin/overview` — Dashboard statistics
-- `GET /admin/audit-log` — Audit log
-
-### WebSocket
-- `GET /ws/worker?token=<token>` — Worker connection endpoint
-- `GET /ws/admin` — Admin live updates (protected)
-
----
-
-## Versioning
-
-The API version is hardcoded in the binary and can be overridden at build time via ldflags:
-
-```bash
-go build -ldflags "-X main.Version=v1.2.3" -o lattice-api .
-```
-
-The version endpoint returns the current version:
+## Project structure
 
 ```
-GET /version
-{"version":"v0.0.1"}
+main.go              # Entry point — router, all route registrations, middleware, WS endpoints
+init.go / server.go  # Dependency wiring (hubs, handlers, background jobs) / HTTP server + graceful shutdown
+message_handlers.go  # Worker & admin WebSocket OnConnect/OnDisconnect/OnMessage callbacks
+ws_dispatch.go       # Persistence helpers for inbound worker messages
+container_cache.go   # 60s name→container cache (kills the per-message N+1 lookup)
+env/  db/  logger/    # Env vars; MariaDB pool + Queryable + in-code migrations; structured logging
+middleware/          # DualAuth, RejectPending, RequireAdmin/Editor, WorkerTokenAuth, CSRF, rate limit
+jwt/  crypto/  sso/    # Local JWTs (HS512); AES-256-GCM secrets; OAuth2/OIDC client + introspection
+routers/             # ~80 Handle<Verb><Entity>.router.go handlers (+ deployment monitor, audit helper)
+query/               # 27 squirrel query files, all taking db.Queryable first
+structs/             # 20 domain types with json tags + pointer nullables
+socket/              # WorkerHub / AdminHub, connection handler, protocol constants
+registry/            # Docker Registry v2 client (repos, tags, credential test, manifest digest)
+healthscan/ watcher/ retention/ webhooks/ versions/ mailer/  # Background subsystems
+bootstrap/ tools/    # First-run admin creation; password/token hashing + validators
 ```
+
+See **[`AGENTS.md`](AGENTS.md)** for the full route table, auth model, worker protocol, and deploy mechanics.
+
+## Deployment
+
+Deployed **on Lattice itself** at `lattice.appleby.cloud`, as the `lattice-api` container in its stack (alongside `lattice-web` and a docker-helper). It mounts the Docker socket because `POST /admin/update/api|web` shells out to `docker compose` in `DOCKER_COMPOSE_DIR` to pull `:latest` and recreate the API/web containers.
+
+CI (`.github/workflows/build-and-deploy.yml`): on push to `main` it resolves a version (a commit-message `[release-patch|minor|major]` tag bumps the latest `vX.Y.Z` git tag, pushes `:latest` + `:vX.Y.Z` + a GitHub release; otherwise `:development` + `:<short-sha>`), injects registry credentials via `keyring-actions`, then builds and pushes to `registry.appleby.cloud/lattice-api`. **CI builds and pushes the image; rollout happens through Lattice's own self-update path.** The API version is stamped at build time via `-ldflags "-X main.Version=<tag>"` and exposed at `GET /version`.
+
+## Contributing & further reading
+
+- **[`AGENTS.md`](AGENTS.md)** — the authoritative deep reference (full route surface, dual-auth model, WebSocket hubs, worker protocol, deploy strategies, schema, operations, guardrails).
+- Related repos: [`lattice-web`](https://github.com/aidenappl/lattice-web), [`lattice-runner`](https://github.com/aidenappl/lattice-runner), [`lattice-mcp`](https://github.com/aidenappl/lattice-mcp).
+- Verify before "done": `gofmt -l .` (clean), `go build ./...`, `go vet ./...`, `go test ./...` (or `dev check`).
