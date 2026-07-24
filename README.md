@@ -50,7 +50,7 @@ dev up                    # start MariaDB + API + web via docker compose
 dev                       # sources .env, go run .
 ```
 
-Set at least `DATABASE_DSN` and `JWT_SIGNING_KEY` (min 32 chars; production panics on weak/known-default keys). SSO is optional — uncomment the `SSO_*` block in `.env.example` or configure it at runtime via `PUT /admin/sso-config`. See `.env.example` for the full list.
+Set at least `DATABASE_DSN` and `JWT_SIGNING_KEY` (min 32 chars; production panics on weak/known-default keys). In production `ENCRYPTION_KEY` (64 hex chars) is **required** — the app panics at boot without it rather than storing secrets as plaintext; in development it may be omitted (loud warning, plaintext passthrough). Set `TRUSTED_PROXIES` (comma-separated IPs/CIDRs) if the API sits behind a reverse proxy so rate limiting reads the forwarded client IP instead of the proxy's. SSO is optional — uncomment the `SSO_*` block in `.env.example` or configure it at runtime via `PUT /admin/sso-config`. See `.env.example` for the full list.
 
 ## Development
 

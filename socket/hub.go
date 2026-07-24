@@ -28,8 +28,13 @@ type WorkerSession struct {
 	ConnectedAt time.Time
 	Send        chan []byte
 
-	cancel         context.CancelFunc
-	once           sync.Once
+	cancel context.CancelFunc
+	once   sync.Once
+	// done is closed exactly once in Close(). Senders select on it so they
+	// never block on (or send to) a session that is shutting down. Send is
+	// never closed — closing it while a concurrent deploy-ping/heartbeat is
+	// mid-send would panic ("send on closed channel") and crash the process.
+	done           chan struct{}
 	DisconnectOnce sync.Once
 }
 
@@ -38,7 +43,9 @@ func (s *WorkerSession) Close() {
 		if s.cancel != nil {
 			s.cancel()
 		}
-		close(s.Send)
+		if s.done != nil {
+			close(s.done)
+		}
 		_ = s.Conn.Close()
 	})
 }
@@ -126,7 +133,15 @@ func (h *WorkerHub) ListConnectedIDs() []int {
 	return ids
 }
 
-func (h *WorkerHub) SendToWorker(workerID int, payload []byte) error {
+func (h *WorkerHub) SendToWorker(workerID int, payload []byte) (err error) {
+	// Defense-in-depth: a send can never panic now that Send is never closed,
+	// but recover here so a hub bug can never crash the whole process.
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("%w: %d (recovered: %v)", ErrWorkerNotConnected, workerID, rec)
+		}
+	}()
+
 	h.mu.RLock()
 	session, ok := h.sessions[workerID]
 	h.mu.RUnlock()
@@ -138,6 +153,8 @@ func (h *WorkerHub) SendToWorker(workerID int, payload []byte) error {
 	select {
 	case session.Send <- payload:
 		return nil
+	case <-session.done:
+		return fmt.Errorf("%w: %d", ErrWorkerNotConnected, workerID)
 	default:
 		return fmt.Errorf("%w: %d", ErrSendQueueFull, workerID)
 	}
@@ -158,6 +175,8 @@ func (h *WorkerHub) BroadcastAll(payload []byte) {
 	for _, session := range h.sessions {
 		select {
 		case session.Send <- payload:
+		case <-session.done:
+			// session is shutting down — skip it
 		default:
 			log.Printf("socket: broadcast queue full for worker=%d", session.WorkerID)
 		}

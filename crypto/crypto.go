@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"io"
 
 	"github.com/aidenappl/lattice-api/env"
@@ -19,6 +20,13 @@ var (
 func Init() {
 	keyHex := env.EncryptionKey
 	if keyHex == "" {
+		// Secrets at rest are only safe with a key. In production, refuse to
+		// boot rather than silently persist plaintext. In development we allow
+		// passthrough for convenience, but make it loud.
+		if env.Environment == "production" {
+			panic("ENCRYPTION_KEY is required in production (64 hex chars / 32 bytes); refusing to start with plaintext secret storage")
+		}
+		fmt.Println("⚠️  WARNING: ENCRYPTION_KEY is not set — secrets will be stored/read as PLAINTEXT (development passthrough). Do NOT run this configuration in production.")
 		active = false
 		return
 	}
@@ -53,20 +61,20 @@ func Encrypt(plaintext string) (string, error) {
 
 func Decrypt(encoded string) (string, error) {
 	if !active {
-		return encoded, nil // passthrough
+		return encoded, nil // passthrough (development, no key configured)
 	}
 	data, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return encoded, nil // assume it's plaintext (migration compatibility)
+		return "", fmt.Errorf("decrypt: value is not valid base64: %w", err)
 	}
 	nonceSize := gcm.NonceSize()
 	if len(data) < nonceSize {
-		return encoded, nil // too short to be encrypted, treat as plaintext
+		return "", fmt.Errorf("decrypt: ciphertext too short (%d < %d)", len(data), nonceSize)
 	}
 	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		return encoded, nil // decryption failed, assume plaintext (migration)
+		return "", fmt.Errorf("decrypt: authentication failed: %w", err)
 	}
 	return string(plaintext), nil
 }

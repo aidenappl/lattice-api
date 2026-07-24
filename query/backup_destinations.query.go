@@ -31,7 +31,10 @@ func scanBackupDestination(row scanner) (*structs.BackupDestination, error) {
 		&b.InsertedAt,
 	)
 	if err == nil && b.Config != nil && *b.Config != "" {
-		decrypted, _ := crypto.Decrypt(*b.Config)
+		decrypted, decErr := crypto.Decrypt(*b.Config)
+		if decErr != nil {
+			return &b, fmt.Errorf("failed to decrypt backup destination config: %w", decErr)
+		}
 		b.Config = &decrypted
 	}
 	return &b, err
@@ -93,9 +96,10 @@ func CreateBackupDestination(engine db.Queryable, req CreateBackupDestinationReq
 	encConfig := req.Config
 	if encConfig != "" {
 		encrypted, err := crypto.Encrypt(encConfig)
-		if err == nil {
-			encConfig = encrypted
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt backup destination config: %w", err)
 		}
+		encConfig = encrypted
 	}
 
 	q := sq.Insert("backup_destinations").
@@ -142,9 +146,11 @@ func UpdateBackupDestination(engine db.Queryable, id int, req UpdateBackupDestin
 	if req.Config != nil {
 		cfg := *req.Config
 		if cfg != "" {
-			if encrypted, err := crypto.Encrypt(cfg); err == nil {
-				cfg = encrypted
+			encrypted, err := crypto.Encrypt(cfg)
+			if err != nil {
+				return nil, fmt.Errorf("failed to encrypt backup destination config: %w", err)
 			}
+			cfg = encrypted
 		}
 		q = q.Set("config", cfg)
 		hasUpdate = true

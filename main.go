@@ -251,7 +251,7 @@ func main() {
 
 	// WebSocket endpoints
 	r.Handle("/ws/worker", app.workerHandler).Methods(http.MethodGet)
-	r.Handle("/ws/admin", middleware.DualAuthMiddleware(app.adminHandler)).Methods(http.MethodGet)
+	r.Handle("/ws/admin", middleware.DualAuthMiddleware(middleware.RejectPending(app.adminHandler))).Methods(http.MethodGet)
 
 	startServer(r)
 }

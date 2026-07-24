@@ -9,6 +9,7 @@ import (
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/registry"
 	"github.com/aidenappl/lattice-api/responder"
+	"github.com/aidenappl/lattice-api/tools"
 	"github.com/gorilla/mux"
 )
 
@@ -24,6 +25,12 @@ func HandleTestRegistry(w http.ResponseWriter, r *http.Request) {
 	reg, err := query.GetRegistryByID(db.DB, id)
 	if err != nil {
 		responder.NotFound(w)
+		return
+	}
+
+	// SSRF guard: re-validate the stored URL before dialing it.
+	if err := tools.ValidateExternalURL(reg.URL); err != nil {
+		responder.SendError(w, http.StatusBadRequest, "invalid registry url: "+err.Error())
 		return
 	}
 
@@ -50,6 +57,12 @@ func HandleTestRegistryInline(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.URL == "" {
 		responder.MissingBodyFields(w, "url")
+		return
+	}
+
+	// SSRF guard: the URL is dialed by the API, so it must be external HTTPS.
+	if err := tools.ValidateExternalURL(body.URL); err != nil {
+		responder.SendError(w, http.StatusBadRequest, "invalid registry url: "+err.Error())
 		return
 	}
 

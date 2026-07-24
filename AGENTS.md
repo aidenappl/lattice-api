@@ -99,7 +99,7 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `logger/logger.go` | Structured leveled logger (text/ANSI or JSON). `logger.F` = `map[string]any`. `Request()` picks level by HTTP status. |
 | `middleware/` | `middleware.go` (RequestID, Logging, MuxHeader, SecurityHeaders, MaxBodySize, `statusResponseWriter` with Hijack), `auth.go` (DualAuth, RejectPending, RequireAdmin, RequireEditor, WorkerTokenAuth, SSO checkpoint), `csrf.go` (double-submit), `ratelimit.go` (per-IP token bucket). |
 | `jwt/jwt.go` | HS512 local tokens. 15-min access / 7-day refresh. `Claims{UserID, Type}`. |
-| `crypto/crypto.go` | AES-256-GCM encrypt/decrypt for secrets at rest. Passthrough (no-op) when `ENCRYPTION_KEY` unset. |
+| `crypto/crypto.go` | AES-256-GCM encrypt/decrypt for secrets at rest. Passthrough (no-op) when `ENCRYPTION_KEY` unset **only in non-production** — `Init()` **panics at boot** if the key is empty and `ENVIRONMENT=production`. `Decrypt` returns a real error on bad base64 / short input / auth failure (no silent plaintext fallthrough); callers propagate it. |
 | `sso/` | `sso.go` (generic OAuth2/OIDC client, DB-backed config, state handling), `introspect.go` (RFC 7662 introspection used by the auth checkpoint). |
 | `responder/` | `responder.go` (success envelope: `New`/`NewCreated`/`NewWithCount`), `errors.go` (`SendError`/`SendErrorWithCode`), `templates.responder.go` (`BadBody`/`MissingBodyFields`/`QueryError`/`NotFound`). |
 | `routers/` | ~80 handler files, `Handle<Verb><Entity>.router.go`. Most are plain funcs; six use struct receivers that hold hub refs (see *Handler types*). Also `deployment_monitor.go` (watchdog), `backfill_networks.go` (startup migration), `audit.go` (`logAudit` helper). |
@@ -257,8 +257,13 @@ SSO users are **not** a separate auth path at request time: the SSO callback iss
 Lattice JWT, so they authenticate exactly like local users. The one extra step is
 `checkpointSSOGrant` — for users with `auth_type == "sso"`, the middleware re-introspects the
 stored refresh token against the IDP at most every **5 minutes** (`ssoCheckpointTTL`). If the IDP
-reports `active: false`, the `sso_sessions` row is deleted and the request 401s. Network errors
-**fail open** (allow) to avoid logging everyone out during an IDP blip.
+reports `active: false`, the middleware **stamps `users.tokens_revoked_at = NOW()`** (via
+`RevokeUserTokens`) — this is what actually locks the user out: `validateLatticeToken` then rejects
+every existing access/refresh JWT issued before that moment. The `sso_sessions` row is also
+deleted and the request 401s. (Revoking tokens is essential — deleting the session alone would
+drop the *next* request into the `sess == nil` allow-path, keeping a revoked user authenticated
+for the full JWT window.) Network errors **fail open** (allow) to avoid logging everyone out
+during an IDP blip.
 
 **RBAC roles:** `admin` > `editor` > `viewer`, plus `pending`.
 - `RejectPending` blocks `pending` users from all `/admin` routes (they can still hit
@@ -277,7 +282,11 @@ safe methods, any `Authorization: Bearer` request (API tokens/JWT headers don't 
 
 **Rate limiting:** per-IP token bucket. Auth/deploy endpoints 1 rps burst 5; general `/admin`
 & `/auth` 30 rps burst 60. `/healthcheck`, `/ws/*`, `/version`, `/install/runner`, and the SSO
-config/login/callback routes are exempt.
+config/login/callback routes are exempt. The client IP is taken from the **TCP peer
+(`RemoteAddr`) by default** — `X-Forwarded-For` / `X-Real-IP` are only honored when the peer is
+listed in `TRUSTED_PROXIES` (comma-separated IPs/CIDRs), so header spoofing can't bypass the
+limiter or flood the bucket map. The bucket map is capped (`maxBuckets`) and stale entries are
+evicted, bounding memory.
 
 ### WebSocket hubs
 
@@ -503,7 +512,7 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 | Method | Path | Handler |
 |--------|------|---------|
 | GET | `/ws/worker` | `WorkerHandler` (`X-Worker-Token` / `?token=`) |
-| GET | `/ws/admin` | `AdminHandler` wrapped in `DualAuthMiddleware` |
+| GET | `/ws/admin` | `AdminHandler` wrapped in `DualAuthMiddleware` → `RejectPending`; the socket `AuthFunc` also rejects `pending`. The exec relay (`exec_start`/`exec_input`/`exec_resize`/`exec_close`) is gated to **editor+** using the role captured onto the `AdminSession` at connect — a `viewer` cannot open a container shell. |
 
 ---
 

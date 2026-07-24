@@ -114,6 +114,7 @@ func (h *WorkerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ConnectedAt: time.Now().UTC(),
 		Send:        make(chan []byte, sendBufferSize),
 		cancel:      cancel,
+		done:        make(chan struct{}),
 	}
 
 	if err := h.Hub.Register(session); err != nil {

@@ -222,7 +222,18 @@ func checkpointSSOGrant(userID int64) bool {
 	}
 
 	if !resp.Active {
-		logger.Info("auth", "checkpoint: IDP reports inactive, killing local session", logger.F{"user_id": userID})
+		logger.Info("auth", "checkpoint: IDP reports inactive, revoking local session", logger.F{"user_id": userID})
+		// Revoke ALL of this user's Lattice JWTs (access + refresh) by stamping
+		// tokens_revoked_at. This is what actually locks the user out: without it,
+		// deleting the sso_sessions row would drop us into the sess==nil branch on
+		// the next request, which allows — so a revoked SSO user would stay
+		// authenticated for the full JWT window. validateLatticeToken rejects any
+		// token issued before tokens_revoked_at, so revocation is immediate.
+		if revErr := query.RevokeUserTokens(db.DB, int(userID)); revErr != nil {
+			logger.Error("auth", "checkpoint: failed to revoke user tokens", logger.F{"user_id": userID, "error": revErr})
+			// If we couldn't revoke, still deny this request; the next request
+			// will re-introspect and try again.
+		}
 		if delErr := query.DeleteSSOSession(db.DB, userID); delErr != nil {
 			logger.Warn("auth", "checkpoint: failed to delete sso_session", logger.F{"user_id": userID, "error": delErr})
 		}

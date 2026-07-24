@@ -41,6 +41,13 @@ var (
 	// CORS
 	AllowedOrigins = getEnv("ALLOWED_ORIGINS", "")
 
+	// TrustedProxies is a comma-separated list of proxy IPs or CIDRs whose
+	// X-Forwarded-For / X-Real-IP headers are trusted for deriving the real
+	// client IP (used by rate limiting). Empty (default) means the client IP is
+	// always taken from the TCP peer (RemoteAddr) and forwarding headers are
+	// ignored — this prevents header spoofing from bypassing rate limits.
+	TrustedProxies = getEnv("TRUSTED_PROXIES", "")
+
 	// Cookie domain (e.g. ".appleby.cloud") — required when frontend and API
 	// are on different subdomains so that cookies are readable cross-subdomain.
 	CookieDomain = getEnv("COOKIE_DOMAIN", "")

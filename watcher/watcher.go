@@ -28,15 +28,26 @@ func Start() {
 	go func() {
 		// Initial delay to let the app fully start and DB connections stabilise.
 		time.Sleep(2 * time.Minute)
-		poll()
+		safePoll()
 
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			poll()
+			safePoll()
 		}
 	}()
 	logger.Info("watcher", "image version watcher started (first poll in 2 minutes)")
+}
+
+// safePoll runs one poll cycle with panic recovery so a single bad cycle can
+// never kill the long-lived watcher goroutine.
+func safePoll() {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("watcher", "recovered from panic in poll cycle", logger.F{"panic": fmt.Sprintf("%v", r)})
+		}
+	}()
+	poll()
 }
 
 func poll() {

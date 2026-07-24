@@ -8,6 +8,7 @@ import (
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/registry"
 	"github.com/aidenappl/lattice-api/responder"
+	"github.com/aidenappl/lattice-api/tools"
 )
 
 func HandleCreateRegistry(w http.ResponseWriter, r *http.Request) {
@@ -32,6 +33,13 @@ func HandleCreateRegistry(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Type == "" {
 		responder.MissingBodyFields(w, "type")
+		return
+	}
+
+	// SSRF guard: the URL is dialed by the API (Ping / repo & tag listing), so
+	// it must be an external HTTPS URL, not an internal/private host.
+	if err := tools.ValidateExternalURL(body.URL); err != nil {
+		responder.SendError(w, http.StatusBadRequest, "invalid registry url: "+err.Error())
 		return
 	}
 

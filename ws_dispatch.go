@@ -414,7 +414,14 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 func configureAdminHandler(ah *socket.AdminHandler, workerHub *socket.WorkerHub) {
 	ah.AuthFunc = func(r *http.Request) (*structs.User, bool) {
 		user, ok := middleware.GetUserFromContext(r.Context())
-		return user, ok && user != nil
+		if !ok || user == nil {
+			return nil, false
+		}
+		// Pending users must never get the admin stream or the exec relay.
+		if user.Role == "pending" {
+			return nil, false
+		}
+		return user, true
 	}
 
 	ah.OnMessage = func(session *socket.AdminSession, msg socket.IncomingMessage) {
@@ -444,6 +451,13 @@ func configureAdminHandler(ah *socket.AdminHandler, workerHub *socket.WorkerHub)
 			}
 
 		case socket.MsgExecStart, socket.MsgExecInput, socket.MsgExecResize, socket.MsgExecClose:
+			// Exec relays a container shell to a worker — this is effectively RCE.
+			// Gate it to editor+ (reject viewer/pending). The session role is
+			// captured from the authenticated user at connect time.
+			if session.Role != "admin" && session.Role != "editor" {
+				logger.Warn("socket", "rejected exec relay for insufficient role", logger.F{"session_id": session.ID, "role": session.Role, "type": msg.Type})
+				return
+			}
 			workerIDFloat, _ := msg.Payload["worker_id"].(float64)
 			workerID := int(workerIDFloat)
 			if workerID == 0 {

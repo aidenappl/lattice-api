@@ -64,11 +64,17 @@ func scanDatabaseInstance(row scanner) (*structs.DatabaseInstance, error) {
 		&d.InsertedAt,
 	)
 	if err == nil && d.RootPassword != nil && *d.RootPassword != "" {
-		decrypted, _ := crypto.Decrypt(*d.RootPassword)
+		decrypted, decErr := crypto.Decrypt(*d.RootPassword)
+		if decErr != nil {
+			return &d, fmt.Errorf("failed to decrypt database root password: %w", decErr)
+		}
 		d.RootPassword = &decrypted
 	}
 	if err == nil && d.Password != nil && *d.Password != "" {
-		decrypted, _ := crypto.Decrypt(*d.Password)
+		decrypted, decErr := crypto.Decrypt(*d.Password)
+		if decErr != nil {
+			return &d, fmt.Errorf("failed to decrypt database password: %w", decErr)
+		}
 		d.Password = &decrypted
 	}
 	return &d, err
@@ -212,16 +218,20 @@ type CreateDatabaseInstanceRequest struct {
 func CreateDatabaseInstance(engine db.Queryable, req CreateDatabaseInstanceRequest) (*structs.DatabaseInstance, error) {
 	encRootPassword := req.RootPassword
 	if encRootPassword != "" {
-		if encrypted, err := crypto.Encrypt(encRootPassword); err == nil {
-			encRootPassword = encrypted
+		encrypted, err := crypto.Encrypt(encRootPassword)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt database root password: %w", err)
 		}
+		encRootPassword = encrypted
 	}
 
 	encPassword := req.Password
 	if encPassword != "" {
-		if encrypted, err := crypto.Encrypt(encPassword); err == nil {
-			encPassword = encrypted
+		encrypted, err := crypto.Encrypt(encPassword)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt database password: %w", err)
 		}
+		encPassword = encrypted
 	}
 
 	q := sq.Insert("database_instances").
@@ -287,9 +297,11 @@ func UpdateDatabaseInstance(engine db.Queryable, id int, req UpdateDatabaseInsta
 	if req.RootPassword != nil {
 		pw := *req.RootPassword
 		if pw != "" {
-			if encrypted, err := crypto.Encrypt(pw); err == nil {
-				pw = encrypted
+			encrypted, err := crypto.Encrypt(pw)
+			if err != nil {
+				return nil, fmt.Errorf("failed to encrypt database root password: %w", err)
 			}
+			pw = encrypted
 		}
 		q = q.Set("root_password", pw)
 		hasUpdate = true
@@ -297,9 +309,11 @@ func UpdateDatabaseInstance(engine db.Queryable, id int, req UpdateDatabaseInsta
 	if req.Password != nil {
 		pw := *req.Password
 		if pw != "" {
-			if encrypted, err := crypto.Encrypt(pw); err == nil {
-				pw = encrypted
+			encrypted, err := crypto.Encrypt(pw)
+			if err != nil {
+				return nil, fmt.Errorf("failed to encrypt database password: %w", err)
 			}
+			pw = encrypted
 		}
 		q = q.Set("password", pw)
 		hasUpdate = true

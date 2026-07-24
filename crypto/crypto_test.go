@@ -14,6 +14,9 @@ const testEncryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef01234
 func TestMain(m *testing.M) {
 	os.Setenv("DATABASE_DSN", "test:test@tcp(localhost)/test")
 	os.Setenv("JWT_SIGNING_KEY", "test-jwt-signing-key-for-unit-tests-minimum-32-chars")
+	// Force non-production so the empty-key passthrough path is exercised rather
+	// than panicking (Init panics on an empty ENCRYPTION_KEY in production).
+	env.Environment = "development"
 	os.Exit(m.Run())
 }
 
@@ -61,32 +64,46 @@ func TestEncryptProducesBase64(t *testing.T) {
 	}
 }
 
-func TestDecryptNonBase64ReturnsInput(t *testing.T) {
+func TestDecryptNonBase64Errors(t *testing.T) {
 	setupEncryption(t)
 	defer func() { env.EncryptionKey = ""; active = false }()
 
+	// With a key configured, a non-base64 value is not a valid ciphertext and
+	// must surface an error rather than being silently returned as "plaintext".
 	input := "not-base64-!!!@@@"
-	result, err := Decrypt(input)
-	if err != nil {
-		t.Fatalf("Decrypt error: %v", err)
-	}
-	if result != input {
-		t.Errorf("Decrypt of non-base64 = %q, want %q (migration compat)", result, input)
+	if _, err := Decrypt(input); err == nil {
+		t.Errorf("Decrypt of non-base64 should error when encryption is active")
 	}
 }
 
-func TestDecryptTooShortReturnsInput(t *testing.T) {
+func TestDecryptTooShortErrors(t *testing.T) {
 	setupEncryption(t)
 	defer func() { env.EncryptionKey = ""; active = false }()
 
-	// Valid base64 but too short to contain a nonce
+	// Valid base64 but too short to contain a nonce — must error, not passthrough.
 	input := base64.StdEncoding.EncodeToString([]byte("ab"))
-	result, err := Decrypt(input)
-	if err != nil {
-		t.Fatalf("Decrypt error: %v", err)
+	if _, err := Decrypt(input); err == nil {
+		t.Errorf("Decrypt of too-short data should error when encryption is active")
 	}
-	if result != input {
-		t.Errorf("Decrypt of too-short data = %q, want %q", result, input)
+}
+
+func TestDecryptTamperedErrors(t *testing.T) {
+	setupEncryption(t)
+	defer func() { env.EncryptionKey = ""; active = false }()
+
+	encrypted, err := Encrypt("secret")
+	if err != nil {
+		t.Fatalf("Encrypt error: %v", err)
+	}
+	// Flip the last base64 char to corrupt the ciphertext/tag.
+	tampered := encrypted[:len(encrypted)-1]
+	if encrypted[len(encrypted)-1] == 'A' {
+		tampered += "B"
+	} else {
+		tampered += "A"
+	}
+	if _, err := Decrypt(tampered); err == nil {
+		t.Errorf("Decrypt of tampered ciphertext should fail authentication")
 	}
 }
 

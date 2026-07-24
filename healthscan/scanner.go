@@ -2,6 +2,7 @@ package healthscan
 
 import (
 	"database/sql"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -69,14 +70,26 @@ func (s *Scanner) Start() {
 	go func() {
 		// Wait for workers to connect and report state
 		time.Sleep(2 * time.Minute)
-		s.scan()
+		s.safeScan()
 
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			s.scan()
+			s.safeScan()
 		}
 	}()
+}
+
+// safeScan runs one scan cycle with panic recovery so a single bad cycle
+// (e.g. a send to a shutting-down worker session) can never kill the
+// long-lived scanner goroutine.
+func (s *Scanner) safeScan() {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("healthscan", "recovered from panic in scan cycle", logger.F{"panic": fmt.Sprintf("%v", r)})
+		}
+	}()
+	s.scan()
 }
 
 // UpdateWorkerContainers is called from the heartbeat handler to keep the scanner

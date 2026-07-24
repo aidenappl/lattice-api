@@ -20,8 +20,16 @@ type AdminSession struct {
 	Send        chan []byte
 	ConnectedAt time.Time
 
+	// Role is the RBAC role of the authenticated user for this session
+	// ("admin", "editor", "viewer"). Used to gate privileged relays (exec).
+	Role string
+
 	cancel context.CancelFunc
 	once   sync.Once
+	// done is closed exactly once in Close(). Senders select on it so they
+	// never block on (or send to) a session that is shutting down. Send is
+	// never closed — closing it would panic any concurrent broadcaster.
+	done chan struct{}
 
 	// Topic-based filtering: if non-empty, only messages matching a
 	// subscribed topic are delivered. Empty means "receive everything".
@@ -75,7 +83,9 @@ func (s *AdminSession) Close() {
 		if s.cancel != nil {
 			s.cancel()
 		}
-		close(s.Send)
+		if s.done != nil {
+			close(s.done)
+		}
 		_ = s.Conn.Close()
 	})
 }
@@ -131,6 +141,8 @@ func (h *AdminHub) Broadcast(payload []byte) {
 	for _, session := range h.sessions {
 		select {
 		case session.Send <- payload:
+		case <-session.done:
+			// session is shutting down — skip it
 		default:
 			logger.Warn("socket", "admin broadcast queue full", logger.F{"session_id": session.ID})
 		}
@@ -159,6 +171,8 @@ func (h *AdminHub) BroadcastFiltered(payload []byte, topics []string) {
 		}
 		select {
 		case session.Send <- payload:
+		case <-session.done:
+			// session is shutting down — skip it
 		default:
 			logger.Warn("socket", "admin broadcast queue full", logger.F{"session_id": session.ID})
 		}
@@ -207,7 +221,8 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, ok := h.AuthFunc(r); !ok {
+	user, ok := h.AuthFunc(r)
+	if !ok || user == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -230,7 +245,9 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Conn:        conn,
 		Send:        make(chan []byte, sendBufferSize),
 		ConnectedAt: time.Now().UTC(),
+		Role:        user.Role,
 		cancel:      cancel,
+		done:        make(chan struct{}),
 	}
 
 	if err := h.Hub.Register(session); err != nil {

@@ -35,7 +35,10 @@ func scanRegistry(row scanner) (*structs.Registry, error) {
 		&r.InsertedAt,
 	)
 	if err == nil && r.Password != nil && *r.Password != "" {
-		decrypted, _ := crypto.Decrypt(*r.Password)
+		decrypted, decErr := crypto.Decrypt(*r.Password)
+		if decErr != nil {
+			return &r, fmt.Errorf("failed to decrypt registry password: %w", decErr)
+		}
 		r.Password = &decrypted
 	}
 	return &r, err
@@ -99,9 +102,10 @@ func CreateRegistry(engine db.Queryable, req CreateRegistryRequest) (*structs.Re
 	encPassword := req.Password
 	if encPassword != nil && *encPassword != "" {
 		encrypted, err := crypto.Encrypt(*encPassword)
-		if err == nil {
-			encPassword = &encrypted
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt registry password: %w", err)
 		}
+		encPassword = &encrypted
 	}
 	q := sq.Insert("registries").
 		Columns("name", "url", "type", "username", "password").
@@ -157,9 +161,11 @@ func UpdateRegistry(engine db.Queryable, id int, req UpdateRegistryRequest) (*st
 	if req.Password != nil {
 		pw := *req.Password
 		if pw != "" {
-			if encrypted, err := crypto.Encrypt(pw); err == nil {
-				pw = encrypted
+			encrypted, err := crypto.Encrypt(pw)
+			if err != nil {
+				return nil, fmt.Errorf("failed to encrypt registry password: %w", err)
 			}
+			pw = encrypted
 		}
 		q = q.Set("password", pw)
 		hasUpdate = true
