@@ -1,6 +1,8 @@
 # Lattice API
 
-Central orchestrator for the Lattice container management platform. Manages workers, stacks, containers, deployments, and registries. Workers connect via WebSocket; the web dashboard connects via REST + a separate admin WebSocket.
+Central orchestrator for the Lattice container management platform. Manages workers, stacks, containers, deployments, registries, database instances, backups, and networks/volumes. Workers connect via WebSocket; the web dashboard connects via REST + a separate admin WebSocket.
+
+> **See `AGENTS.md` for the full, authoritative reference** (complete route table, domain model, worker protocol, deploy mechanics). This file is a compact project-memory pointer.
 
 ## Commands
 
@@ -25,22 +27,28 @@ db/db.go                 # MariaDB connection pool, Queryable interface, paginat
 env/env.go               # Environment variable loading (getEnv/getEnvOrPanic)
 jwt/jwt.go               # Local auth JWT generation/validation (HS512, 15min access / 7d refresh)
 middleware/
-  middleware.go          # RequestID, Logging, MuxHeader middleware
-  auth.go               # DualAuthMiddleware (local JWT + Forta OAuth), WorkerTokenAuth, RequireAdmin
-query/                   # 16 query files — squirrel-based SQL builders, all accept db.Queryable
+  middleware.go          # RequestID, Logging, MuxHeader, SecurityHeaders, MaxBodySize middleware
+  auth.go               # DualAuthMiddleware (local JWT + API token; SSO grant checkpoint), WorkerTokenAuth, RejectPending, RequireAdmin, RequireEditor
+  csrf.go / ratelimit.go # CSRF double-submit; per-IP token-bucket rate limiting
+sso/                     # Generic OAuth2/OIDC SSO client (sso.go) + RFC 7662 introspection (introspect.go)
+crypto/crypto.go         # AES-256-GCM encrypt/decrypt for secrets at rest (passthrough if ENCRYPTION_KEY unset)
+query/                   # 27 query files — squirrel-based SQL builders, all accept db.Queryable
   workers.query.go       # Worker CRUD, heartbeat, runner version updates
   stacks.query.go        # Stack CRUD, compose YAML
   containers.query.go    # Container CRUD, batch updates, lookup by name
   deployments.query.go   # Deployment CRUD, status updates
   deployment_containers.query.go
   registries.query.go    # Registry CRUD
-  users.query.go         # User CRUD, lookup by email/forta_id
+  users.query.go         # User CRUD, lookup by email/sso_subject
   worker_tokens.query.go # Token generation/validation
   worker_metrics.query.go # Worker metrics storage/retrieval, fleet aggregation (DB-bucketed)
   container_metrics.query.go # Per-container CPU/memory metrics (batch insert, time-range queries)
   container_logs.query.go # Log persistence with dedup via unique index on recorded_at
   lifecycle_logs.query.go # Lifecycle event logging
-  audit_log.query.go     # Audit trail (CreateAuditLog exists but is NOT called anywhere yet)
+  audit_log.query.go     # Audit trail (mutating handlers call logAudit -> CreateAuditLog)
+  database_instances.query.go / database_snapshots.query.go / backup_destinations.query.go # Managed DB instances, snapshots, backup targets
+  api_tokens.query.go / deploy_tokens.query.go # Long-lived API tokens; CI deploy tokens
+  global_env_vars.query.go / templates.query.go / webhooks.query.go / settings.query.go / sso_sessions.query.go / search.query.go # Global env, stack templates, outbound webhooks, key-value settings, SSO sessions, global search
   networks.query.go      # Network CRUD (compose-based)
   volumes.query.go       # Volume CRUD (compose-based)
   container_events.query.go
@@ -49,17 +57,23 @@ responder/               # Standard JSON response formatting
   responder.go           # New(), NewCreated(), NewWithCount(), SendError()
   templates.responder.go # BadBody(), MissingBodyFields(), QueryError(), NotFound()
   errors.go              # SendError()
-routers/                 # 49 handler files, named Handle<Action>.router.go
+routers/                 # ~80 handler files, named Handle<Action>.router.go (+ deployment_monitor.go watchdog, audit.go logAudit helper, backfill_networks.go startup migration)
 socket/
   protocol.go            # Envelope (outgoing) and IncomingMessage (incoming) types, message constants
   hub.go                 # WorkerHub and AdminHub — manage connected WebSocket sessions
   handler.go             # WorkerHandler and AdminHandler — upgrade HTTP, manage read/write pumps
-structs/                 # 11 struct files — Worker, Stack, Container, Deployment, Registry, User, etc.
-tools/                   # HashPassword, HashToken utilities
+structs/                 # 20 struct files — Worker, Stack, Container, Deployment, Registry, User, DatabaseInstance, etc.
+tools/                   # HashPassword, HashToken, input validators
 versions/versions.go     # Background GitHub release polling (30min interval), in-memory cache
+watcher/watcher.go       # Registry digest polling for mutable-tag re-pushes
+retention/retention.go   # Hourly purge of old log/metric rows
+webhooks/dispatcher.go   # Outbound webhooks (optional HMAC-SHA256 signing)
+healthscan/scanner.go    # Worker-vs-DB reconciliation, anomaly detection
+mailer/                  # SMTP alerting + notification prefs (config in settings table)
 install/runner.sh        # Embedded runner install script served at GET /install/runner
-migrations/              # SQL migration scripts (auto-run by MariaDB on first boot)
 ```
+
+> Schema is created/evolved **in-code** by idempotent `migrate()` calls in `db.Init()` — there is no external migration runner. (`docker-compose.yml` mounts `./migrations` into MariaDB's init hook only for a fresh volume.)
 
 ## API Routes
 
@@ -73,8 +87,8 @@ All `/admin/*` routes are protected by `DualAuthMiddleware`.
 ### Auth
 - `POST /auth/login` — local email/password login, sets JWT cookies
 - `POST /auth/refresh` — refresh JWT
-- `GET /auth/self` — current user (protected)
-- `GET /forta/login`, `/forta/callback`, `/forta/logout` — Forta OAuth (conditional)
+- `GET/PUT /auth/self` — current user / update (protected); `POST /auth/logout`
+- `GET /auth/sso/login`, `/auth/sso/callback`, `/auth/sso/config` — generic OAuth2/OIDC SSO (conditional)
 
 ### Workers
 - `GET/POST /admin/workers` — list/create
@@ -145,22 +159,26 @@ All `/admin/*` routes are protected by `DualAuthMiddleware`.
 
 ## Handler Types
 
-Most handlers are standalone functions. Three require WebSocket hub references and use struct receivers:
+Most handlers are standalone functions. Six require WebSocket hub references and use struct receivers:
 
-- `DeployHandler{WorkerHub, AdminHub}` — deploy, rollback
-- `ContainerActionHandler{WorkerHub}` — start/stop/kill/restart/pause/unpause/remove/recreate/delete (container + stack)
+- `DeployHandler{WorkerHub, AdminHub}` — deploy, public/token deploy, rollback, deployment monitor
+- `ContainerActionHandler{WorkerHub}` — start/stop/kill/restart/pause/unpause/remove/recreate/force-remove; delete (container + stack); stack restart/stop/start-all
 - `WorkerActionHandler{WorkerHub}` — reboot, upgrade, stop-all, start-all
+- `VolumeHandler{WorkerHub}` / `NetworkHandler{WorkerHub}` — worker volume/network list/create/delete
+- `DatabaseHandler{WorkerHub, AdminHub}` — DB instance CRUD/actions, credentials, snapshots, backup-destination test
 
 ## Auth
 
-Dual auth system — both can coexist:
+`DualAuthMiddleware` accepts two credentials (Forta OAuth has been **removed**):
 
-1. **Local JWT** — `Authorization: Bearer <token>` or `lattice-access-token` cookie. HS512, 15min access / 7d refresh.
-2. **Forta OAuth** — `forta-access-token` cookie. First OAuth login auto-creates user with role `viewer`.
+1. **Local JWT** — `Authorization: Bearer <token>` or `lattice-access-token` cookie. HS512, 15min access / 7d refresh. Rejected if issued before `users.tokens_revoked_at`.
+2. **API token** — long-lived opaque token (`Authorization: Bearer`, SHA-256 hashed at rest) tied to a user; used by CI and lattice-mcp.
 
-**CSRF Protection** — Double-submit cookie pattern (`middleware/csrf.go`). State-changing requests must include a CSRF token that matches the cookie value.
+**SSO** — generic OAuth2/OIDC client (`sso/`), config in the `settings` table (`sso.*` keys) with `SSO_*` env fallback. The callback provisions the user (`SSO_AUTO_PROVISION`, default role handling) and issues a **Lattice JWT**, so SSO users authenticate like local users. `DualAuthMiddleware` re-introspects an SSO user's grant against the IDP at most every 5 min (fails open on network error). The old Forta integration and `forta_id` column were migrated to `sso_subject`.
 
-**Role-Based Access Control** — `RequireAdmin` middleware enforced on `HandleGetUsers`, `HandleGetAuditLog`, and other sensitive endpoints.
+**CSRF Protection** — Double-submit cookie pattern (`middleware/csrf.go`). State-changing requests must include a CSRF token matching the cookie; exempt for `Authorization: Bearer` requests, `/auth/login`, `/auth/refresh`, `/ws/worker`, `/api/deploy/*`, `/auth/sso/callback`.
+
+**Role-Based Access Control** — roles `admin` > `editor` > `viewer`, plus `pending`. `RejectPending` blocks pending users from `/admin`; `RequireEditor` gates resource mutations; `RequireAdmin` gates users/config/tokens/audit. Per-IP rate limiting is applied globally.
 
 **Security Headers** — Applied globally via middleware: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy` (restrictive).
 
@@ -184,11 +202,12 @@ RUN go build -ldflags="-w -s -X main.Version=${VERSION}" -o /lattice-api .
 
 ## Key Patterns
 
-- All message handlers in `main.go` (lines 117-221) route by `msg.Type` and dispatch to handler functions
-- Container status updates write lifecycle logs synchronously BEFORE broadcasting to admin hub
+- WebSocket callbacks live in `message_handlers.go` (`configureWorkerHandler`/`configureAdminHandler`); `OnMessage` routes by `msg.Type`, with `ws_dispatch.go` holding the persistence helpers. `safeGo` bounds handler goroutines (semaphore of 100)
+- Deploy dispatch bounds concurrent monitors (`maxConcurrentDeploys=10`); the watchdog pings every 15s, retries after a 45s stall (max 3), and force-fails after 30min
+- `container_cache.go` — 60s name→container cache to kill the per-message N+1 lookup
 - Container log deduplication via Docker-recorded RFC3339Nano timestamps and DB unique index
 - `handleContainerSync` reconciles Docker runtime state vs DB — only writes on diff
-- Deployment status flow: `pending -> deploying -> deployed|failed -> rolled_back`
+- Deployment status flow: `pending -> deploying -> deployed | failed | rolled_back` (terminal); stack status mirrors it. Deploy strategy (`rolling` default, `blue-green`, `canary`) is a string passed to the runner — the API does not implement the strategy
 - Stack status mirrors deployment terminal state
 - Worker registration on connect sends OS, arch, Docker version, IP, runner version
 - Graceful shutdown with 10s timeout via SIGINT/SIGTERM
