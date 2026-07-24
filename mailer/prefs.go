@@ -80,7 +80,7 @@ func GetEventConfig(eventType string) EventConfig {
 
 var (
 	cooldownMu  sync.Mutex
-	cooldownMap = make(map[string]time.Time) // "eventType:resourceKey" -> last alert time
+	cooldownMap = make(map[string]time.Time) // "eventType:resourceKey" -> cooldown expiry time
 )
 
 // ShouldAlert checks if an alert should fire based on enabled status, cooldown, and threshold.
@@ -91,17 +91,16 @@ func ShouldAlert(eventType, resourceKey string) bool {
 		return false
 	}
 
-	// Check cooldown
+	// Check cooldown. The map stores the expiry time (last alert + cooldown) so a
+	// background sweep can safely prune any entry that is already in the past.
 	if cfg.CooldownMinutes > 0 {
 		cooldownMu.Lock()
 		defer cooldownMu.Unlock()
 		key := eventType + ":" + resourceKey
-		if last, ok := cooldownMap[key]; ok {
-			if time.Since(last) < time.Duration(cfg.CooldownMinutes)*time.Minute {
-				return false // still in cooldown
-			}
+		if exp, ok := cooldownMap[key]; ok && time.Now().Before(exp) {
+			return false // still in cooldown
 		}
-		cooldownMap[key] = time.Now()
+		cooldownMap[key] = time.Now().Add(time.Duration(cfg.CooldownMinutes) * time.Minute)
 	}
 
 	return true
@@ -109,9 +108,14 @@ func ShouldAlert(eventType, resourceKey string) bool {
 
 // ─── Unhealthy counter ─────────────────────────────────────────────────────
 
+type unhealthyEntry struct {
+	count     int
+	updatedAt time.Time
+}
+
 var (
 	unhealthyMu     sync.Mutex
-	unhealthyCounts = make(map[string]int) // containerName -> consecutive unhealthy count
+	unhealthyCounts = make(map[string]unhealthyEntry) // containerName -> consecutive unhealthy count
 )
 
 // TrackUnhealthy increments the unhealthy counter for a container and returns
@@ -125,8 +129,11 @@ func TrackUnhealthy(containerName string) bool {
 
 	unhealthyMu.Lock()
 	defer unhealthyMu.Unlock()
-	unhealthyCounts[containerName]++
-	return unhealthyCounts[containerName] >= threshold
+	e := unhealthyCounts[containerName]
+	e.count++
+	e.updatedAt = time.Now()
+	unhealthyCounts[containerName] = e
+	return e.count >= threshold
 }
 
 // ClearUnhealthy resets the unhealthy counter when a container becomes healthy.
@@ -134,6 +141,35 @@ func ClearUnhealthy(containerName string) {
 	unhealthyMu.Lock()
 	defer unhealthyMu.Unlock()
 	delete(unhealthyCounts, containerName)
+}
+
+// StartEviction launches a background goroutine that periodically prunes expired
+// cooldown entries and stale unhealthy counters so these maps can't grow without
+// bound as containers and workers come and go.
+func StartEviction() {
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			now := time.Now()
+
+			cooldownMu.Lock()
+			for k, exp := range cooldownMap {
+				if now.After(exp) {
+					delete(cooldownMap, k)
+				}
+			}
+			cooldownMu.Unlock()
+
+			unhealthyMu.Lock()
+			for k, e := range unhealthyCounts {
+				if now.Sub(e.updatedAt) > time.Hour {
+					delete(unhealthyCounts, k)
+				}
+			}
+			unhealthyMu.Unlock()
+		}
+	}()
 }
 
 // ─── Delayed disconnect alerts ─────────────────────────────────────────────

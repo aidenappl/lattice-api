@@ -11,6 +11,7 @@ import (
 	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/healthscan"
 	"github.com/aidenappl/lattice-api/logger"
+	"github.com/aidenappl/lattice-api/mailer"
 	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/retention"
 	"github.com/aidenappl/lattice-api/routers"
@@ -53,6 +54,8 @@ func initApp() *appContext {
 	crypto.Init()
 	retention.Start(db.DB)
 	watcher.Start()
+	mailer.StartEviction()
+	containerNameCache.StartEviction()
 
 	if err := db.PingDB(db.DB); err != nil {
 		log.Fatal("failed to ping db: ", err)

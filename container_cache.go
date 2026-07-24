@@ -64,3 +64,28 @@ func (c *containerCache) InvalidateAll() {
 	c.entries = make(map[string]cacheEntry)
 	c.mu.Unlock()
 }
+
+// evictExpired removes all entries whose TTL has elapsed. Without this, the map
+// grows unbounded as containers come and go — expired entries are only replaced
+// on a fresh lookup of the same name, never on a name that is never queried again.
+func (c *containerCache) evictExpired() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for name, entry := range c.entries {
+		if time.Since(entry.cachedAt) >= cacheTTL {
+			delete(c.entries, name)
+		}
+	}
+}
+
+// StartEviction launches a background goroutine that periodically prunes expired
+// cache entries, bounding memory over the lifetime of the process.
+func (c *containerCache) StartEviction() {
+	go func() {
+		ticker := time.NewTicker(cacheTTL)
+		defer ticker.Stop()
+		for range ticker.C {
+			c.evictExpired()
+		}
+	}()
+}

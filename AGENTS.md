@@ -93,7 +93,7 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `server.go` | `startServer` — CORS config, `http.Server` with timeouts, TLS toggle, graceful shutdown on SIGINT/SIGTERM (10s drain). |
 | `message_handlers.go` | `configureWorkerHandler` / `configureAdminHandler` — the OnConnect/OnDisconnect/OnMessage callbacks. This is where inbound worker messages are routed by `msg.Type` and fanned out to the admin hub, DB, webhooks, and mailer. `safeGo` bounds handler goroutines (semaphore of 100). |
 | `ws_dispatch.go` | Helper dispatch logic for worker→API messages (heartbeat metrics, container status/sync/logs, lifecycle logs, deployment progress). Referenced by `message_handlers.go`. |
-| `container_cache.go` | 60s in-memory `name → *structs.Container` cache to kill the N+1 lookup on every heartbeat/log/status message. |
+| `container_cache.go` | 60s in-memory `name → *structs.Container` cache to kill the N+1 lookup on every heartbeat/log/status message. Status/health writes call `Invalidate(name)` so the next read is fresh, and a background `StartEviction` goroutine prunes expired entries to bound memory. |
 | `env/env.go` | All env vars via `getEnv`/`getEnvOrPanic`. `ValidateSecurityDefaults()` panics in production on weak `JWT_SIGNING_KEY` / admin password. |
 | `db/db.go` | MariaDB pool (IIFE-free lazy `Init()`), `Queryable` interface, `DEFAULT_LIMIT`/`MAX_LIMIT`, `BeginTx`, and **all schema migrations run in-code** via the idempotent `migrate()` helper. |
 | `logger/logger.go` | Structured leveled logger (text/ANSI or JSON). `logger.F` = `map[string]any`. `Request()` picks level by HTTP status. |

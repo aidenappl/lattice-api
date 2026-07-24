@@ -416,6 +416,9 @@ func handleContainerStatus(workerID int, payload map[string]any) map[string]any 
 	if _, err := query.UpdateContainer(db.DB, c.ID, req); err != nil {
 		logger.Error("container", "failed to update status", logger.F{"container_name": containerName, "status": dbStatus, "error": err})
 	} else {
+		// Invalidate the cache so the next sync/status read sees fresh Status/HealthCheck
+		// rather than the stale copy this write just superseded (up to a 60s TTL).
+		containerNameCache.Invalidate(c.Name)
 		logger.Info("container", "status updated", logger.F{"container_name": containerName, "status": dbStatus})
 
 		// Write a lifecycle entry to lifecycle_logs so it persists in the log viewer.
@@ -503,6 +506,7 @@ func handleContainerHealthStatus(payload map[string]any) {
 	if _, err := query.UpdateContainer(db.DB, c.ID, query.UpdateContainerRequest{HealthStatus: &healthStatus}); err != nil {
 		logger.Error("container", "failed to update health status", logger.F{"container_name": containerName, "health_status": healthStatus, "error": err})
 	} else {
+		containerNameCache.Invalidate(c.Name)
 		logger.Info("container", "health status updated", logger.F{"container_name": containerName, "health_status": healthStatus})
 	}
 }
@@ -564,6 +568,7 @@ func handleContainerSync(payload map[string]any) {
 	if _, err := query.UpdateContainer(db.DB, c.ID, req); err != nil {
 		logger.Error("container", "sync failed to update", logger.F{"container_name": containerName, "status": latticeStatus, "error": err})
 	} else {
+		containerNameCache.Invalidate(c.Name)
 		logger.Debug("container", "sync updated", logger.F{"container_name": containerName, "status": latticeStatus, "previous_status": c.Status})
 	}
 }

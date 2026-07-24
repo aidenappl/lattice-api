@@ -11,6 +11,7 @@ import (
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/socket"
+	"github.com/aidenappl/lattice-api/structs"
 )
 
 // AnomalyType categorizes what kind of issue was detected.
@@ -103,6 +104,22 @@ func (s *Scanner) UpdateWorkerContainers(workerID int, containerNames []string) 
 	}
 }
 
+// pruneContainerState drops per-worker state for any worker not in the current
+// worker set, and any entry that has gone stale (not updated within an hour).
+func (s *Scanner) pruneContainerState(workers []structs.Worker) {
+	live := make(map[int]struct{}, len(workers))
+	for _, w := range workers {
+		live[w.ID] = struct{}{}
+	}
+	s.containerStateMu.Lock()
+	defer s.containerStateMu.Unlock()
+	for id, state := range s.containerState {
+		if _, ok := live[id]; !ok || time.Since(state.UpdatedAt) > time.Hour {
+			delete(s.containerState, id)
+		}
+	}
+}
+
 // GetAnomalies returns the current list of active anomalies.
 func (s *Scanner) GetAnomalies() []Anomaly {
 	s.mu.RLock()
@@ -126,6 +143,10 @@ func (s *Scanner) scan() {
 	if workers == nil {
 		return
 	}
+
+	// Prune per-worker container state for workers that no longer exist so the
+	// map can't grow unbounded as workers are added and removed over time.
+	s.pruneContainerState(*workers)
 
 	for _, w := range *workers {
 		// Only scan online workers that have reported container state

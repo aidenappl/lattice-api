@@ -78,6 +78,10 @@ func poll() {
 		}
 	}
 
+	// Track which cache keys are still live this cycle so we can prune keys for
+	// containers/images that no longer exist and stop the map growing unbounded.
+	seenKeys := make(map[string]struct{})
+
 	for _, stack := range *stacks {
 		containers, err := query.ListContainersByStack(db.DB, stack.ID)
 		if err != nil || containers == nil {
@@ -101,6 +105,7 @@ func poll() {
 			}
 
 			cacheKey := repo + ":" + currentTag
+			seenKeys[cacheKey] = struct{}{}
 
 			// Try to get the manifest digest for this tag. This is a HEAD request
 			// and returns the Docker-Content-Digest, which changes when the tag
@@ -149,4 +154,14 @@ func poll() {
 			mu.Unlock()
 		}
 	}
+
+	// Prune digest entries for image refs that are no longer referenced by any
+	// container, bounding the map to the current fleet.
+	mu.Lock()
+	for key := range lastKnownDigests {
+		if _, ok := seenKeys[key]; !ok {
+			delete(lastKnownDigests, key)
+		}
+	}
+	mu.Unlock()
 }
