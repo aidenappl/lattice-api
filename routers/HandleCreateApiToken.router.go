@@ -38,6 +38,16 @@ func HandleCreateApiToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate/normalize scopes. Recognized: read, write, admin. Nil/empty is an
+	// unrestricted token (backward-compatible default). Unknown scope values are
+	// rejected so a caller can't mint a token whose scope is silently ignored.
+	normalizedScopes, ok := middleware.NormalizeApiTokenScopes(body.Scopes)
+	if !ok {
+		responder.SendError(w, http.StatusBadRequest, "invalid scopes: allowed values are read, write, admin (comma-separated)")
+		return
+	}
+	body.Scopes = normalizedScopes
+
 	var expiresAt *time.Time
 	switch strings.ToLower(body.ExpiresIn) {
 	case "never":

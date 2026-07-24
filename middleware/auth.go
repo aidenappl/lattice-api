@@ -62,7 +62,11 @@ func DualAuthMiddleware(next http.Handler) http.Handler {
 
 		// Try API token (long-lived) from Authorization header
 		if bearerToken != "" {
-			if user := validateApiToken(bearerToken); user != nil {
+			if user, apiToken := validateApiToken(bearerToken); user != nil {
+				if !apiTokenScopeAllows(apiToken.Scopes, r.Method) {
+					responder.SendError(w, http.StatusForbidden, "api token scope does not permit this operation")
+					return
+				}
 				ctx := context.WithValue(r.Context(), UserContextKey, user)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
@@ -144,21 +148,104 @@ func WorkerTokenAuth(r *http.Request) (int, bool) {
 	return wt.WorkerID, true
 }
 
-func validateApiToken(tokenStr string) *structs.User {
+// API token scope model. A token's Scopes column is a comma-separated list of
+// scope names. Recognized values:
+//
+//	read  — safe (GET/HEAD/OPTIONS) requests only
+//	write — read + mutating requests (still subject to the user's RBAC role)
+//	admin — same request surface as write (admin-only routes are still gated by
+//	        RequireAdmin against the owning user's role)
+//
+// A nil/empty scope means the token is UNRESTRICTED — this is the backward-
+// compatible default for tokens minted before scope enforcement existed (the
+// dashboard and MCP never sent a scopes field, so every existing token is nil).
+const (
+	ScopeRead  = "read"
+	ScopeWrite = "write"
+	ScopeAdmin = "admin"
+)
+
+func isSafeMethod(m string) bool {
+	switch m {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	return false
+}
+
+// apiTokenScopeAllows reports whether an API token carrying the given scopes
+// string may perform a request with the given HTTP method. A nil/empty scope is
+// unrestricted; a scope granting write/admin allows all methods; anything else
+// (read-only or unknown-but-non-write) is limited to safe methods.
+func apiTokenScopeAllows(scopes *string, method string) bool {
+	if scopes == nil {
+		return true // unrestricted (legacy token)
+	}
+	s := strings.TrimSpace(*scopes)
+	if s == "" {
+		return true
+	}
+	for _, p := range strings.Split(s, ",") {
+		switch strings.TrimSpace(strings.ToLower(p)) {
+		case ScopeWrite, ScopeAdmin:
+			return true
+		}
+	}
+	return isSafeMethod(method)
+}
+
+// NormalizeApiTokenScopes validates and canonicalizes a user-supplied scopes
+// string. It returns the normalized value (lowercased, trimmed, de-duplicated,
+// comma-joined) and false if any token is not a recognized scope. A nil input
+// (no scopes field) is accepted as-is (unrestricted).
+func NormalizeApiTokenScopes(scopes *string) (*string, bool) {
+	if scopes == nil {
+		return nil, true
+	}
+	raw := strings.TrimSpace(*scopes)
+	if raw == "" {
+		return nil, true
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	for _, p := range strings.Split(raw, ",") {
+		v := strings.TrimSpace(strings.ToLower(p))
+		if v == "" {
+			continue
+		}
+		switch v {
+		case ScopeRead, ScopeWrite, ScopeAdmin:
+		default:
+			return nil, false
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	if len(out) == 0 {
+		return nil, true
+	}
+	joined := strings.Join(out, ",")
+	return &joined, true
+}
+
+func validateApiToken(tokenStr string) (*structs.User, *structs.ApiToken) {
 	hash := tools.HashToken(tokenStr)
 	apiToken, err := query.GetApiTokenByHash(db.DB, hash)
 	if err != nil || apiToken == nil || !apiToken.Active {
-		return nil
+		return nil, nil
 	}
 
 	user, err := query.GetUserByID(db.DB, apiToken.UserID)
 	if err != nil || user == nil || !user.Active {
-		return nil
+		return nil, nil
 	}
 
 	_ = query.TouchApiToken(db.DB, apiToken.ID)
 
-	return user
+	return user, apiToken
 }
 
 func validateLatticeToken(tokenStr string) *structs.User {

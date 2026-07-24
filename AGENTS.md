@@ -258,6 +258,14 @@ individual mutating routes wrap the handler in `RequireEditor` or `RequireAdmin`
 2. **Local JWT** from the `lattice-access-token` cookie — same validation.
 3. **Long-lived API token** from `Authorization: Bearer` — SHA-256 hashed, looked up in
    `api_tokens`, must be active and belong to an active user. `last_used_at` is touched.
+   **Scopes are enforced:** a token's `scopes` column is a comma-separated list of `read` /
+   `write` / `admin`. A `read`-only (or nil-of-write) token is limited to safe methods
+   (GET/HEAD/OPTIONS) — a mutating request with it gets `403`. `write`/`admin` allow all methods
+   (still subject to the owning user's RBAC role). A **nil/empty** scope is unrestricted — the
+   backward-compatible default, since the dashboard and MCP historically never sent a scopes
+   field (so every pre-existing token is nil). `HandleCreateApiToken` validates/normalizes the
+   scopes field (`middleware.NormalizeApiTokenScopes`) and rejects unknown values with a `400`.
+   Enforcement lives in `DualAuthMiddleware` (`apiTokenScopeAllows`).
 
 SSO users are **not** a separate auth path at request time: the SSO callback issues them a
 Lattice JWT, so they authenticate exactly like local users. The one extra step is
