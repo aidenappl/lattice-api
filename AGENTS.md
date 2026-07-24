@@ -345,7 +345,10 @@ deploy/rollback returns `409`. `deployment_monitor.go` then runs a watchdog goro
 (`deployPingInterval 15s`, `deployStallTimeout 45s`, `deployMaxRetryCount 3`,
 `deployMaxRuntime 30m`, bounded to `maxConcurrentDeploys 10`): it pings the worker, and if no
 non-monitor deployment-log progress appears within 45s it re-sends the deploy up to 3 times,
-finally marking the deployment + stack `failed` transactionally. Deployment status flow:
+finally marking the deployment + stack `failed` transactionally. When the monitor pool
+(`maxConcurrentDeploys 10`) is saturated, an overflow deploy is **not** left unwatched — it gets a
+lightweight watchdog that does no pinging/retrying but still force-fails the deploy if it never
+reaches a terminal state within `deployMaxRuntime`. Deployment status flow:
 `pending → deploying → deployed | failed | rolled_back`; the stack status mirrors the terminal
 state. **Rollback** (`HandleRollbackDeployment`) rebuilds specs from the previous successful
 deployment's recorded image/tag (everything else from the live container rows) and dispatches a
