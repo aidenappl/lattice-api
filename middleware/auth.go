@@ -22,6 +22,13 @@ import (
 // more network calls. 5 min matches the IDP's recommended access token TTL.
 const ssoCheckpointTTL = 5 * time.Minute
 
+// ssoCheckpointGrace bounds how long the checkpoint may keep failing OPEN. If
+// the IDP grant has not been positively re-confirmed (last_checked_at) within
+// this window, the checkpoint fails CLOSED — the request is denied rather than
+// allowed on an unverified grant. It does not revoke tokens, so once the IDP is
+// reachable again and reports active, the user is allowed without re-login.
+const ssoCheckpointGrace = 30 * time.Minute
+
 const (
 	UserContextKey   contextKey = "user"
 	latticeTokenName            = "lattice-access-token"
@@ -278,9 +285,13 @@ func validateLatticeToken(tokenStr string) *structs.User {
 // it ran recently). Returns false if the IDP reports active=false — the
 // sso_sessions row is deleted and the caller MUST 401.
 //
-// Network errors fail-open (return true) — a transient IDP outage shouldn't
-// log users out, but it does mean revocation latency gets a small extra
-// budget during incidents.
+// Network/decrypt errors fail-open (return true) ONLY within a bounded grace
+// window (ssoCheckpointGrace) measured from the last positive confirmation
+// (last_checked_at) — a transient IDP outage shouldn't log users out. Once the
+// grant has gone unconfirmed past that window, the checkpoint fails CLOSED
+// (returns false) rather than trusting an unverified grant indefinitely. It does
+// not revoke tokens in that case, so a recovered IDP re-admits the user without
+// forcing a re-login.
 func checkpointSSOGrant(userID int64) bool {
 	sess, err := query.GetSSOSession(db.DB, userID)
 	if err != nil {
@@ -296,15 +307,27 @@ func checkpointSSOGrant(userID int64) bool {
 		return true
 	}
 
+	// unconfirmedTooLong reports whether the grant has gone un-reconfirmed past
+	// the fail-open grace window — at which point we stop allowing on faith.
+	unconfirmedTooLong := time.Since(sess.LastCheckedAt) > ssoCheckpointGrace
+
 	refreshToken, err := crypto.Decrypt(sess.RefreshToken)
 	if err != nil {
-		logger.Warn("auth", "checkpoint: decrypt refresh token failed", logger.F{"user_id": userID, "error": err})
+		if unconfirmedTooLong {
+			logger.Warn("auth", "checkpoint: decrypt failed and grant unconfirmed past grace window, denying", logger.F{"user_id": userID, "error": err})
+			return false
+		}
+		logger.Warn("auth", "checkpoint: decrypt refresh token failed (within grace window, allowing)", logger.F{"user_id": userID, "error": err})
 		return true
 	}
 
 	resp, err := sso.Introspect(refreshToken, "refresh_token")
 	if err != nil {
-		logger.Warn("auth", "checkpoint: introspect call failed (allowing request)", logger.F{"user_id": userID, "error": err})
+		if unconfirmedTooLong {
+			logger.Warn("auth", "checkpoint: introspect failed and grant unconfirmed past grace window, denying", logger.F{"user_id": userID, "error": err})
+			return false
+		}
+		logger.Warn("auth", "checkpoint: introspect call failed (within grace window, allowing request)", logger.F{"user_id": userID, "error": err})
 		return true
 	}
 

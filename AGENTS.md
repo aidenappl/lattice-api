@@ -276,8 +276,11 @@ reports `active: false`, the middleware **stamps `users.tokens_revoked_at = NOW(
 every existing access/refresh JWT issued before that moment. The `sso_sessions` row is also
 deleted and the request 401s. (Revoking tokens is essential — deleting the session alone would
 drop the *next* request into the `sess == nil` allow-path, keeping a revoked user authenticated
-for the full JWT window.) Network errors **fail open** (allow) to avoid logging everyone out
-during an IDP blip.
+for the full JWT window.) Network/decrypt errors **fail open** (allow) only within a bounded
+grace window (`ssoCheckpointGrace`, 30 min) measured from the last positive confirmation
+(`last_checked_at`); once the grant has gone that long unconfirmed the checkpoint **fails closed**
+(denies the request) rather than trusting it indefinitely. It does not revoke tokens in that case,
+so a recovered IDP re-admits the user without a re-login.
 
 **RBAC roles:** `admin` > `editor` > `viewer`, plus `pending`.
 - `RejectPending` blocks `pending` users from all `/admin` routes (they can still hit
