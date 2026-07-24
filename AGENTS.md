@@ -295,6 +295,19 @@ it, and looks it up in `worker_tokens` to resolve a `worker_id`.
 safe methods, any `Authorization: Bearer` request (API tokens/JWT headers don't need it),
 `/auth/login`, `/auth/refresh`, `/ws/worker`, `/api/deploy/*`, `/auth/sso/callback`.
 
+**SSO login CSRF:** the `state` parameter is bound to the browser and is single-use.
+`/auth/sso/login` sets an HttpOnly, `SameSite=Lax`, `Path=/auth/sso` cookie (`lattice-sso-state`)
+holding the same random `state` it sends to the IDP and stores in the DB (10-min expiry). The
+callback requires **both** that the returned `state` constant-time-matches the cookie (an attacker
+forging a callback can't set this browser's cookie → CSRF blocked) **and** that `ValidateState`
+finds it in the DB, which **consumes** it (single-use). The state cookie is cleared on every
+callback. A benign double-callback (provider redirect chains) is tolerated only when the browser
+already holds a `lattice-access-token` session, in which case it is redirected to the dashboard.
+**Follow-up (not yet implemented):** PKCE (S256 `code_challenge`/`code_verifier`) and OIDC `nonce`
+validation — deferred because correctness depends on the IDP's support and the token-exchange has
+three fallback request shapes (JSON / basic-auth / body-auth) plus a Forta-envelope response, so
+it must be validated against the live IDP before shipping.
+
 **Rate limiting:** per-IP token bucket. Auth/deploy endpoints 1 rps burst 5; general `/admin`
 & `/auth` 30 rps burst 60. `/healthcheck`, `/ws/*`, `/version`, `/install/runner`, and the SSO
 config/login/callback routes are exempt. The client IP is taken from the **TCP peer

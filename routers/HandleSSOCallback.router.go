@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"net/url"
 	"strings"
@@ -45,6 +46,17 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return "/login?error=" + url.QueryEscape(errorCode)
 	}
 
+	// hasSession reports whether the browser already holds a Lattice session
+	// cookie — used to tolerate a benign double-callback (provider redirect
+	// chains) now that state is single-use, without weakening CSRF protection.
+	hasSession := func() bool {
+		c, err := r.Cookie("lattice-access-token")
+		return err == nil && c.Value != ""
+	}
+
+	// The state cookie is single-use — always clear it once we reach the callback.
+	sso.ClearStateCookie(w)
+
 	// Check for error from provider (before state validation — some providers
 	// return errors without a valid state parameter)
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
@@ -54,9 +66,31 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate state
+	// Validate state. Two independent checks must pass:
+	//   1. The state must be bound to THIS browser — the value in the
+	//      lattice-sso-state HttpOnly cookie (set at /auth/sso/login) must match
+	//      the state returned by the IDP. This is the CSRF defense: an attacker
+	//      who forges a callback cannot also set this browser's cookie.
+	//   2. The state must be present and unexpired in the DB, and is consumed
+	//      (single-use) by ValidateState.
 	state := r.URL.Query().Get("state")
+	stateCookie, cookieErr := r.Cookie(sso.SSOStateCookie)
+	if cookieErr != nil || stateCookie.Value == "" || state == "" ||
+		subtle.ConstantTimeCompare([]byte(stateCookie.Value), []byte(state)) != 1 {
+		// If the browser already completed login (double-callback), send it on.
+		if hasSession() {
+			http.Redirect(w, r, cfg.PostLoginRedirectURL(), http.StatusFound)
+			return
+		}
+		logger.Error("sso", "state cookie missing or does not match callback state")
+		http.Redirect(w, r, loginErrorURL("sso_state_expired"), http.StatusFound)
+		return
+	}
 	if !sso.ValidateState(state) {
+		if hasSession() {
+			http.Redirect(w, r, cfg.PostLoginRedirectURL(), http.StatusFound)
+			return
+		}
 		logger.Error("sso", "invalid or expired state parameter")
 		http.Redirect(w, r, loginErrorURL("sso_state_expired"), http.StatusFound)
 		return

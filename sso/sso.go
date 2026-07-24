@@ -18,7 +18,11 @@ import (
 	"github.com/aidenappl/lattice-api/query"
 )
 
-// State is now stored in the DB via the settings table, so it survives restarts.
+// State is stored in the DB via the settings table (so it survives restarts and
+// is single-use) AND bound to the browser via an HttpOnly cookie set at
+// /auth/sso/login, so the callback can prove the request originated from a login
+// this browser started (CSRF defense).
+const SSOStateCookie = "lattice-sso-state"
 
 // SSOConfig holds all SSO configuration values.
 type SSOConfig struct {
@@ -137,14 +141,20 @@ func Config() map[string]any {
 
 // generateState creates a random state parameter and stores it in the DB for validation.
 // Using the DB (instead of in-memory) ensures states survive API restarts.
-func generateState() string {
+// Returns an error if the OS CSPRNG fails — the caller MUST NOT proceed with a
+// zero/weak state.
+func generateState() (string, error) {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate state: %w", err)
+	}
 	state := base64.URLEncoding.EncodeToString(b)
 
 	// Store with expiry timestamp as value
 	expiry := time.Now().Add(10 * time.Minute).Format(time.RFC3339)
-	_ = query.SetSetting(db.DB, "sso_state:"+state, expiry)
+	if err := query.SetSetting(db.DB, "sso_state:"+state, expiry); err != nil {
+		return "", fmt.Errorf("failed to persist state: %w", err)
+	}
 
 	// Cleanup expired states (best-effort)
 	go func() {
@@ -156,31 +166,30 @@ func generateState() string {
 		}
 	}()
 
-	return state
+	return state, nil
 }
 
-// ValidateState checks that a state parameter is valid and not expired.
-// Instead of deleting immediately, it shortens the expiry to 30 seconds
-// to tolerate double-callback scenarios (e.g., SSO provider redirect chains).
+// ValidateState checks that a state parameter is valid and not expired, and
+// CONSUMES it — state is single-use. A replayed state (or a second leg of a
+// provider redirect chain) will not validate a second time; the callback handles
+// the benign double-callback case separately via the existing session cookie.
 func ValidateState(state string) bool {
+	if state == "" {
+		return false
+	}
 	key := "sso_state:" + state
 	val, err := query.GetSetting(db.DB, key)
 	if err != nil || val == "" {
 		return false
 	}
 
-	// Check expiry
+	// Consume immediately (single-use) regardless of the expiry check outcome.
+	_ = query.DeleteSetting(db.DB, key)
+
 	expiry, err := time.Parse(time.RFC3339, val)
 	if err != nil || time.Now().After(expiry) {
-		// Expired — clean up
-		_ = query.DeleteSetting(db.DB, key)
 		return false
 	}
-
-	// Mark as used by shortening expiry to 30s from now (handles double-callbacks)
-	shortExpiry := time.Now().Add(30 * time.Second).Format(time.RFC3339)
-	_ = query.SetSetting(db.DB, key, shortExpiry)
-
 	return true
 }
 
@@ -192,7 +201,25 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	state := generateState()
+	state, err := generateState()
+	if err != nil {
+		http.Error(w, "failed to initialize login", http.StatusInternalServerError)
+		return
+	}
+
+	// Bind the state to this browser via an HttpOnly cookie. SameSite=Lax so the
+	// cookie is still sent on the top-level GET redirect back from the IDP, but
+	// not on cross-site subresource requests. Path is scoped to /auth/sso so it
+	// is only presented on the login/callback routes.
+	http.SetCookie(w, &http.Cookie{
+		Name:     SSOStateCookie,
+		Value:    state,
+		Path:     "/auth/sso",
+		MaxAge:   600,
+		HttpOnly: true,
+		Secure:   env.Environment == "production",
+		SameSite: http.SameSiteLaxMode,
+	})
 
 	params := url.Values{
 		"client_id":     {cfg.ClientID},
@@ -203,6 +230,20 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, cfg.AuthorizeURL+"?"+params.Encode(), http.StatusFound)
+}
+
+// ClearStateCookie writes an expired state cookie to the response, consuming the
+// browser-side binding after a callback (single-use).
+func ClearStateCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     SSOStateCookie,
+		Value:    "",
+		Path:     "/auth/sso",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   env.Environment == "production",
+		SameSite: http.SameSiteLaxMode,
+	})
 }
 
 // TokenResponse from the OAuth2 token endpoint
