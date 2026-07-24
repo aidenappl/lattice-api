@@ -240,9 +240,10 @@ individual mutating routes wrap the handler in `RequireEditor` or `RequireAdmin`
 
 ### Auth model — three credentials, one middleware
 
-> **Note:** Forta OAuth has been **removed** from this repo. The README and CLAUDE.md still
-> mention Forta and `FORTA_*` env vars — those are **stale**; the real config is the `SSO_*`
-> vars and DB-backed `sso.*` settings. A DB migration renames `users.forta_id → sso_subject`.
+> **Note:** Forta OAuth has been **removed** from this repo and replaced by a generic
+> OAuth2/OIDC SSO client. The real config is the `SSO_*` env vars and DB-backed `sso.*`
+> settings — there are no `FORTA_*` vars or `/forta/*` routes anymore. A DB migration renames
+> `users.forta_id → sso_subject`. If you find a stray Forta reference anywhere, it is stale.
 
 `DualAuthMiddleware` (`middleware/auth.go`) authenticates a request by trying, in order:
 
