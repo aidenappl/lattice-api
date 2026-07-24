@@ -3,9 +3,12 @@ package tools
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+	"syscall"
+	"time"
 	"unicode/utf8"
 )
 
@@ -75,11 +78,12 @@ func ValidateExternalURL(rawURL string) error {
 		return fmt.Errorf("URL must not point to internal hosts")
 	}
 
-	// Resolve and check for private/reserved IP ranges
+	// Resolve and check for private/reserved IP ranges. Fail CLOSED on a
+	// resolution error — an unresolvable host is rejected rather than allowed,
+	// so a name that can't be vetted is never treated as safe.
 	ips, err := net.LookupHost(host)
 	if err != nil {
-		// DNS resolution failed — allow it (host may be valid but unreachable from this network)
-		return nil
+		return fmt.Errorf("could not resolve host %q: %w", host, err)
 	}
 
 	for _, ipStr := range ips {
@@ -87,10 +91,59 @@ func ValidateExternalURL(rawURL string) error {
 		if ip == nil {
 			continue
 		}
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		if isDisallowedIP(ip) {
 			return fmt.Errorf("URL resolves to a private/internal IP address (%s)", ipStr)
 		}
 	}
 
 	return nil
+}
+
+// isDisallowedIP reports whether an IP is not a safe public destination —
+// loopback, private (RFC1918 + fc00::/7), link-local, unspecified, multicast,
+// or CGNAT (100.64.0.0/10, RFC 6598, which net.IP.IsPrivate does NOT cover).
+func isDisallowedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+		return true
+	}
+	// 100.64.0.0/10 — carrier-grade NAT shared address space.
+	if ip4 := ip.To4(); ip4 != nil && ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+		return true
+	}
+	return false
+}
+
+// safeDialControl is a net.Dialer Control hook that rejects connections to
+// private/reserved IPs. It runs AFTER DNS resolution against the ACTUAL address
+// being dialed, so it pins the connection to a vetted IP and defeats
+// DNS-rebinding — validation-time and connect-time resolution can no longer
+// diverge to reach an internal host.
+func safeDialControl(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("invalid dial address %q: %w", address, err)
+	}
+	if isDisallowedIP(net.ParseIP(host)) {
+		return fmt.Errorf("blocked connection to non-public IP %s", host)
+	}
+	return nil
+}
+
+// NewSafeHTTPClient returns an *http.Client whose dialer refuses to connect to
+// private/reserved IPs. Use it for outbound requests to user- or admin-
+// configured URLs (webhooks, registries) to prevent SSRF via DNS rebinding.
+func NewSafeHTTPClient(timeout time.Duration) *http.Client {
+	dialer := &net.Dialer{Timeout: timeout, Control: safeDialControl}
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext:         dialer.DialContext,
+			TLSHandshakeTimeout: timeout,
+			ForceAttemptHTTP2:   true,
+		},
+	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
+	"github.com/aidenappl/lattice-api/tools"
 )
 
 type WebhookPayload struct {
@@ -80,7 +81,10 @@ func sendWebhook(url string, secret *string, body []byte) {
 		req.Header.Set("X-Lattice-Signature", "sha256="+sig)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	// Pin the dialer to public IPs so a webhook URL can't be used to reach an
+	// internal service via DNS rebinding (validation happens at config time; the
+	// dialer re-checks the resolved IP at delivery time).
+	client := tools.NewSafeHTTPClient(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.Error("webhook", "delivery failed", logger.F{"url": url, "error": err})

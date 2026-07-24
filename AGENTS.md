@@ -114,7 +114,7 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `versions/versions.go` | Polls GitHub `releases/latest` for api/web/runner every 30 min; in-memory cache. |
 | `mailer/` | `mailer.go` (SMTP send + HTML template, config from `settings`), `prefs.go` (notification prefs, cooldowns, grace timers, unhealthy thresholds). |
 | `bootstrap/admin.go` | First-run: creates the local admin user from `LATTICE_ADMIN_EMAIL`/`_PASSWORD` if no users exist. |
-| `tools/` | `password.tool.go` (bcrypt cost 12), `token.tool.go` (opaque token gen + SHA-256 hash-at-rest), `validate.go` (name/email/password/YAML-size/SSRF-guard validators). |
+| `tools/` | `password.tool.go` (bcrypt cost 12), `token.tool.go` (opaque token gen + SHA-256 hash-at-rest), `validate.go` (name/email/password/YAML-size validators; `ValidateExternalURL` SSRF guard — HTTPS-only, blocks private/reserved/CGNAT IPs, **fails closed** on DNS failure; `NewSafeHTTPClient` pins the dialer to public IPs at connect time to defeat DNS-rebinding). Outbound clients for user/admin-configured URLs (webhooks, registry) use `NewSafeHTTPClient`. |
 | `install/runner.sh` | Embedded (`//go:embed`) worker install script served at `GET /install/runner`. |
 | `deploy/` | Ops shell scripts (`setup.sh`, `update.sh`, `backup.sh`, `docker-compose.prod.yml`) — production host bootstrap, not part of the Go build. |
 | `Dockerfile` / `docker-compose.yml` / `Devfile.yaml` | Build + local orchestration + `dev` CLI wiring. |

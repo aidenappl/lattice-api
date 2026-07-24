@@ -38,12 +38,15 @@ func NewClient(url, username, password string) *Client {
 		URL:      url,
 		Username: username,
 		Password: password,
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-			// Reject redirects that would send the request (and its Basic-auth
-			// credentials) to a private/reserved or non-HTTPS host — an SSRF
-			// vector where a malicious registry 302s us at an internal service.
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		client: func() *http.Client {
+			// Base client pins the dialer to public IPs (SSRF / DNS-rebinding
+			// defense) so the actual TCP connect can't reach an internal host
+			// even if DNS resolves differently at request time than at validation.
+			c := tools.NewSafeHTTPClient(10 * time.Second)
+			// Also reject redirects that would send the request (and its Basic-auth
+			// credentials) to a private/reserved or non-HTTPS host — a malicious
+			// registry 302ing us at an internal service.
+			c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
 					return fmt.Errorf("stopped after 10 redirects")
 				}
@@ -51,8 +54,9 @@ func NewClient(url, username, password string) *Client {
 					return fmt.Errorf("blocked redirect to %s: %w", req.URL.Host, err)
 				}
 				return nil
-			},
-		},
+			}
+			return c
+		}(),
 	}
 }
 
