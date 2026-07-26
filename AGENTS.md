@@ -628,7 +628,7 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 | GET | `/anomalies` | `HandleGetAnomalies` |
 | GET | `/versions` | `HandleGetVersions` |
 | POST | `/versions/refresh` | `HandleRefreshVersions` `[A]` |
-| POST | `/update/api` / `/update/web` | `HandleUpdateAPI` `[A]` / `HandleUpdateWeb` `[A]` (self-update via Docker socket) |
+| POST | `/update/api` / `/update/web` | `HandleUpdateAPI` `[A]` / `HandleUpdateWeb` `[A]` (self-update via Docker socket; returns "already up to date" when the resolved image matches the running one — `?force=true` overrides) |
 
 **WebSocket**
 
@@ -662,8 +662,34 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
 - **Deployed on Lattice itself**, at `lattice.appleby.cloud`, as the `lattice-api` container in
   its stack (alongside `lattice-web` and a `lattice-docker-helper`). It mounts the Docker socket
   because `POST /admin/update/api` and `/update/web` shell out to `docker compose` in
-  `DOCKER_COMPOSE_DIR` to pull `:latest` and recreate the API/web containers — hence the runtime
+  `DOCKER_COMPOSE_DIR` to pull and recreate the API/web containers — hence the runtime
   image includes `docker-cli` + `docker-cli-compose` and runs as root.
+- **`lattice-api` is pinned to an explicit version tag in the host compose file; `lattice-web`
+  floats on `:latest`.** This is deliberate. `:latest` on the control plane means any restart can
+  silently change the version, and if a bad API ships you cannot use the control plane to fix the
+  control plane — so API rollout is an explicit compose edit. The consequence is that
+  **`POST /admin/update/api` cannot move the API version at all** while it stays pinned: the pull
+  fetches the pinned tag (already local) and the recreate faithfully reproduces the same image.
+  Updating the API is:
+
+  ```bash
+  cd /opt/lattice
+  sudo sed -i 's|lattice-api:vOLD|lattice-api:vNEW|' docker-compose.yml
+  sudo docker compose pull lattice-api && sudo docker compose up -d --force-recreate lattice-api
+  ```
+
+  The endpoint now detects this and answers **"already up to date"** with the pinned reference and
+  the edit to make, instead of reporting `"pull complete, restarting"` regardless. It previously
+  could not distinguish a version-changing update from an impossible one, so a pinned service
+  looked like a self-update that silently refused to stick.
+- **Self-update pre-flight.** `HandleUpdateAPI` compares the running container's image ID against
+  the ID the pull resolved, and verifies `DOCKER_HELPER_CONTAINER` is running before claiming
+  success — the API cannot recreate itself (Docker kills every process in the container during the
+  stop step), so a missing helper means the recreate silently never happens. Both cases now return
+  an actionable error or a no-op result rather than an optimistic 200. `?force=true` recreates even
+  when the image is unchanged, which is what you want after an env-var change. Every attempt writes
+  its outcome to the audit log (`resource_type: api`), which is the durable record — the HTTP
+  response necessarily goes out before the container is replaced.
 - **Image:** multi-stage `golang:1.25-alpine` → `alpine:3.19`, static `CGO_ENABLED=0` build with
   `-ldflags="-w -s -X main.Version=${VERSION}"`, `EXPOSE 8000`, Docker `HEALTHCHECK` hitting
   `/healthcheck`. Pushed to `registry.appleby.cloud/lattice-api`.
