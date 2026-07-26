@@ -17,6 +17,9 @@ func (notFoundError) NotFound() bool { return true }
 var (
 	ErrNotFound  error = notFoundError{}
 	ErrNoChanges       = errors.New("no changes applied")
+	// ErrNoFreePort means the managed database host-port range is exhausted on
+	// the target worker.
+	ErrNoFreePort = errors.New("no free port available in the managed range")
 )
 
 // isNoRows reports whether err is (or wraps) sql.ErrNoRows. Single-row getters

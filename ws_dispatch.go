@@ -53,6 +53,14 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 		safeGo("db-schedule-sync", func() {
 			distributeDbSchedules(session.WorkerID, wh.Hub)
 		})
+
+		// Ask the worker what database containers it actually has before
+		// trusting anything stored about them. Anything that changed while it
+		// was offline is corrected now rather than up to a reconcile interval
+		// later.
+		safeGo("db-sync-request", func() {
+			dbReconciler.RequestSync(session.WorkerID)
+		})
 	}
 
 	wh.OnDisconnect = func(session *socket.WorkerSession, err error) {
@@ -337,20 +345,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
-			safeGo("db-status", func() {
-				idFloat, _ := msg.Payload["database_instance_id"].(float64)
-				status, _ := msg.Payload["status"].(string)
-				if idFloat == 0 || status == "" {
-					return
-				}
-				dbID := int(idFloat)
-				req := query.UpdateDatabaseInstanceRequest{Status: &status}
-				if status == "running" {
-					now := time.Now()
-					req.StartedAt = &now
-				}
-				_, _ = query.UpdateDatabaseInstance(db.DB, dbID, req)
-			})
+			safeGo("db-status", func() { handleDbStatus(session.WorkerID, msg.Payload) })
 
 		case socket.MsgDbHealthStatus:
 			adminHub.BroadcastJSON(map[string]any{
@@ -359,14 +354,20 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				"payload":   msg.Payload,
 			})
 			safeGo("db-health", func() {
-				idFloat, _ := msg.Payload["database_instance_id"].(float64)
+				instanceID := payloadInt(msg.Payload, socket.PayloadDbInstanceID)
 				hs, _ := msg.Payload["health_status"].(string)
-				if idFloat == 0 || hs == "" {
+				if instanceID == 0 || hs == "" {
 					return
 				}
-				req := query.UpdateDatabaseInstanceRequest{HealthStatus: &hs}
-				_, _ = query.UpdateDatabaseInstance(db.DB, int(idFloat), req)
+				message, _ := msg.Payload["message"].(string)
+				dbLifecycle.SetHealth(instanceID, structs.DatabaseHealth(hs), message)
 			})
+
+		case socket.MsgDbSync:
+			// Full per-worker report of observed database containers. This is
+			// the level-triggered input the reconciler diffs against desired
+			// state, so a lost db_status can no longer strand an instance.
+			safeGo("db-sync", func() { handleDbSync(session.WorkerID, msg.Payload) })
 
 		case socket.MsgDbSnapshotProgress:
 			adminHub.BroadcastJSON(map[string]any{
@@ -375,9 +376,11 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				"payload":   msg.Payload,
 			})
 			safeGo("db-snapshot", func() {
-				snapIDFloat, _ := msg.Payload["snapshot_id"].(float64)
+				// snapshot_id arrives as a JSON number; payloadInt also tolerates
+				// the string form older runners sent.
+				snapshotID := payloadInt(msg.Payload, "snapshot_id")
 				status, _ := msg.Payload["status"].(string)
-				if snapIDFloat == 0 || status == "" {
+				if snapshotID == 0 || status == "" {
 					return
 				}
 				var sizeBytes *int64
@@ -389,7 +392,19 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				if em, ok := msg.Payload["error_message"].(string); ok && em != "" {
 					errMsg = &em
 				}
-				_ = query.UpdateSnapshotStatus(db.DB, int(snapIDFloat), status, sizeBytes, errMsg)
+				if err := query.UpdateSnapshotStatus(db.DB, snapshotID, status, sizeBytes, errMsg); err != nil {
+					logger.Error("database", "failed to update snapshot status", logger.F{
+						"snapshot_id": snapshotID, "status": status, "error": err,
+					})
+					return
+				}
+				if instanceID := payloadInt(msg.Payload, socket.PayloadDbInstanceID); instanceID != 0 && status == "failed" {
+					detail := "snapshot failed"
+					if errMsg != nil {
+						detail = *errMsg
+					}
+					dbLifecycle.RecordEvent(instanceID, structs.DBEventFailed, "snapshot "+detail, "worker")
+				}
 			})
 
 		case socket.MsgDbRestoreStatus:
@@ -397,6 +412,67 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				"type":      "db_restore_status",
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
+			})
+			safeGo("db-restore", func() {
+				instanceID := payloadInt(msg.Payload, socket.PayloadDbInstanceID)
+				status, _ := msg.Payload["status"].(string)
+				if instanceID == 0 || status == "" {
+					return
+				}
+				message, _ := msg.Payload["error_message"].(string)
+				if message == "" {
+					message = "restore " + status
+				}
+				kind := structs.DBEventTransition
+				if status == "failed" {
+					kind = structs.DBEventFailed
+				}
+				dbLifecycle.RecordEvent(instanceID, kind, message, "worker")
+			})
+
+		case socket.MsgDbDeleteSnapshotResult:
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "db_delete_snapshot_result",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
+			safeGo("db-delete-snapshot", func() {
+				snapshotID := payloadInt(msg.Payload, "snapshot_id")
+				status, _ := msg.Payload["status"].(string)
+				if snapshotID == 0 {
+					return
+				}
+				// The row is soft-deleted optimistically when the command is
+				// issued; a failure here means the remote file outlived it.
+				if status == "failed" || status == "error" {
+					detail, _ := msg.Payload["message"].(string)
+					logger.Warn("database", "worker failed to delete snapshot file", logger.F{
+						"snapshot_id": snapshotID, "message": detail,
+					})
+				}
+			})
+
+		case socket.MsgDbScheduleStatus:
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "db_schedule_status",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
+			safeGo("db-schedule-status", func() {
+				instanceID := payloadInt(msg.Payload, socket.PayloadDbInstanceID)
+				status, _ := msg.Payload["status"].(string)
+				if instanceID == 0 {
+					return
+				}
+				message, _ := msg.Payload["message"].(string)
+				if message == "" {
+					message = "snapshot schedule " + status
+				}
+				kind := structs.DBEventTransition
+				if status == "failed" || status == "error" {
+					kind = structs.DBEventFailed
+				}
+				dbLifecycle.RecordEvent(instanceID, kind, message, "worker")
 			})
 
 		case socket.MsgBackupDestTestResult:

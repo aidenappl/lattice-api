@@ -188,10 +188,17 @@ func main() {
 	admin.HandleFunc("/database-instances/{id}/restart", middleware.RequireEditor(app.databaseHandler.HandleDatabaseAction)).Methods(http.MethodPost)
 	admin.HandleFunc("/database-instances/{id}/remove", middleware.RequireEditor(app.databaseHandler.HandleDatabaseAction)).Methods(http.MethodPost)
 	admin.HandleFunc("/database-instances/{id}/credentials", middleware.RequireAdmin(app.databaseHandler.HandleGetDatabaseCredentials)).Methods(http.MethodGet)
+	admin.HandleFunc("/database-instances/{id}/connection", app.databaseHandler.HandleGetDatabaseConnection).Methods(http.MethodGet)
+	admin.HandleFunc("/database-instances/{id}/reveal", middleware.RequireAdmin(app.databaseHandler.HandleRevealDatabaseCredentials)).Methods(http.MethodPost)
+	admin.HandleFunc("/database-instances/{id}/events", routers.HandleListDatabaseInstanceEvents).Methods(http.MethodGet)
+	admin.HandleFunc("/database-instances/{id}/logs", routers.HandleGetDatabaseInstanceLogs).Methods(http.MethodGet)
+	admin.HandleFunc("/database-instances/{id}/lifecycle", routers.HandleGetDatabaseInstanceLifecycle).Methods(http.MethodGet)
+	admin.HandleFunc("/database-instances/{id}/console", middleware.RequireEditor(app.databaseHandler.HandleOpenDatabaseConsole)).Methods(http.MethodPost)
 	admin.HandleFunc("/database-instances/{id}/snapshots", routers.HandleListSnapshots).Methods(http.MethodGet)
 	admin.HandleFunc("/database-instances/{id}/snapshots", middleware.RequireEditor(app.databaseHandler.HandleCreateSnapshot)).Methods(http.MethodPost)
 	admin.HandleFunc("/database-instances/{id}/restore", middleware.RequireEditor(app.databaseHandler.HandleRestoreSnapshot)).Methods(http.MethodPost)
-	admin.HandleFunc("/database-snapshots/{id}", middleware.RequireEditor(routers.HandleDeleteSnapshot)).Methods(http.MethodDelete)
+	admin.HandleFunc("/database-snapshots/{id}", middleware.RequireEditor(app.databaseHandler.HandleDeleteSnapshot)).Methods(http.MethodDelete)
+	admin.HandleFunc("/workers/{id}/port-availability", routers.HandleGetWorkerPortAvailability).Methods(http.MethodGet)
 
 	// Backup Destinations
 	admin.HandleFunc("/backup-destinations", routers.HandleListBackupDestinations).Methods(http.MethodGet)

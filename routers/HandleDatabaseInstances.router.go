@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,16 +13,51 @@ import (
 	"strings"
 
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/socket"
+	"github.com/aidenappl/lattice-api/structs"
 	"github.com/aidenappl/lattice-api/tools"
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 )
 
 type DatabaseHandler struct {
 	WorkerHub *socket.WorkerHub
 	AdminHub  *socket.AdminHub
+}
+
+// dbEvent appends an entry to an instance's history. Failures are logged, never
+// surfaced — losing an audit line must not fail the operation that produced it.
+func dbEvent(instanceID int, kind, message string, r *http.Request) {
+	var actor *string
+	if r != nil {
+		if user, _ := middleware.GetUserFromContext(r.Context()); user != nil {
+			name := user.Email
+			actor = &name
+		}
+	}
+	if err := query.CreateDatabaseInstanceEvent(db.DB, query.CreateDatabaseInstanceEventRequest{
+		DatabaseInstanceID: instanceID,
+		Kind:               kind,
+		Message:            message,
+		Actor:              actor,
+	}); err != nil {
+		log.Printf("database instance %d: failed to record %s event: %v", instanceID, kind, err)
+	}
+}
+
+// dbCommandPayload builds the correlated envelope payload shared by every
+// database command. Every command carries the instance ID, a per-attempt
+// request ID and a stable idempotency key, and every worker reply echoes them
+// back — without which a reply cannot be matched to the row it should update.
+func dbCommandPayload(instanceID int, action string) map[string]any {
+	return map[string]any{
+		socket.PayloadDbInstanceID:   instanceID,
+		socket.PayloadRequestID:      uuid.NewString(),
+		socket.PayloadIdempotencyKey: fmt.Sprintf("%s:%d", action, instanceID),
+	}
 }
 
 // HandleListDatabaseInstances returns all active database instances with optional filters.
@@ -74,6 +110,90 @@ func HandleGetDatabaseInstance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	responder.New(w, instance, "database instance retrieved")
+}
+
+// HandleListDatabaseInstanceEvents returns an instance's lifecycle history —
+// the audit trail that explains how it reached its current state.
+func HandleListDatabaseInstanceEvents(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		responder.SendError(w, http.StatusBadRequest, "invalid database instance id")
+		return
+	}
+
+	req := query.ListDatabaseInstanceEventsRequest{DatabaseInstanceID: id}
+	if v := r.URL.Query().Get("kind"); v != "" {
+		req.Kind = &v
+	}
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, convErr := strconv.Atoi(v); convErr == nil {
+			req.Limit = n
+		}
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, convErr := strconv.Atoi(v); convErr == nil {
+			req.Offset = n
+		}
+	}
+
+	events, total, err := query.ListDatabaseInstanceEvents(db.DB, req)
+	if err != nil {
+		responder.QueryError(w, err, "failed to list database instance events")
+		return
+	}
+
+	responder.NewWithCount(w, events, total, "", "", "database instance events retrieved")
+}
+
+// HandleGetWorkerPortAvailability reports which host ports are already claimed
+// on a worker and suggests a free one, so the UI can validate before submitting
+// rather than surfacing a collision as an opaque provisioning failure.
+func HandleGetWorkerPortAvailability(w http.ResponseWriter, r *http.Request) {
+	workerID, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		responder.SendError(w, http.StatusBadRequest, "invalid worker id")
+		return
+	}
+
+	claimed, err := query.ClaimedPortsOnWorker(db.DB, workerID)
+	if err != nil {
+		responder.QueryError(w, err, "failed to read claimed ports")
+		return
+	}
+
+	// Callers can ask about one specific port, which is what the create form does.
+	if v := r.URL.Query().Get("port"); v != "" {
+		port, convErr := strconv.Atoi(v)
+		if convErr != nil {
+			responder.SendError(w, http.StatusBadRequest, "invalid port")
+			return
+		}
+		conflict, exists := claimed[port]
+		payload := map[string]any{"port": port, "available": !exists}
+		if exists {
+			payload["conflict"] = conflict
+		}
+		responder.New(w, payload, "port availability retrieved")
+		return
+	}
+
+	claimedList := make([]query.PortConflict, 0, len(claimed))
+	for _, c := range claimed {
+		claimedList = append(claimedList, c)
+	}
+
+	var suggested *int
+	if port, allocErr := query.AllocateDatabasePort(db.DB, workerID); allocErr == nil {
+		suggested = &port
+	}
+
+	responder.New(w, map[string]any{
+		"worker_id":      workerID,
+		"claimed":        claimedList,
+		"suggested_port": suggested,
+		"range_min":      query.DB_PORT_RANGE_MIN,
+		"range_max":      query.DB_PORT_RANGE_MAX,
+	}, "port availability retrieved")
 }
 
 // HandleCreateDatabaseInstance creates a new database instance and sends
@@ -149,13 +269,34 @@ func (h *DatabaseHandler) HandleCreateDatabaseInstance(w http.ResponseWriter, r 
 		}
 	}
 
-	// Default port
+	// Port: allocate one from the managed range when unspecified, otherwise
+	// honour the caller's choice after checking it is actually free. Either way
+	// a collision is reported here as a 409 rather than discovered later as an
+	// opaque Docker bind failure on the worker.
 	if body.Port == 0 {
-		switch body.Engine {
-		case "mysql", "mariadb":
-			body.Port = 3306
-		case "postgres":
-			body.Port = 5432
+		port, err := query.AllocateDatabasePort(db.DB, body.WorkerID)
+		if err != nil {
+			if errors.Is(err, query.ErrNoFreePort) {
+				responder.SendError(w, http.StatusConflict,
+					fmt.Sprintf("no free host port available on worker %d in range %d-%d",
+						body.WorkerID, query.DB_PORT_RANGE_MIN, query.DB_PORT_RANGE_MAX))
+				return
+			}
+			responder.QueryError(w, err, "failed to allocate a host port")
+			return
+		}
+		body.Port = port
+	} else {
+		conflict, err := query.FindPortConflict(db.DB, body.WorkerID, body.Port, 0)
+		if err != nil {
+			responder.QueryError(w, err, "failed to check port availability")
+			return
+		}
+		if conflict != nil {
+			responder.SendError(w, http.StatusConflict,
+				fmt.Sprintf("port %d is already in use on worker %d by %s %q",
+					body.Port, body.WorkerID, conflict.Kind, conflict.Name))
+			return
 		}
 	}
 
@@ -209,31 +350,49 @@ func (h *DatabaseHandler) HandleCreateDatabaseInstance(w http.ResponseWriter, r 
 		return
 	}
 
+	dbEvent(instance.ID, structs.DBEventRequested,
+		fmt.Sprintf("create requested on worker %d, port %d", body.WorkerID, body.Port), r)
+
 	// Send db_create to worker
-	payload := map[string]any{
-		"database_instance_id": instance.ID,
-		"container_name":       containerName,
-		"volume_name":          volumeName,
-		"engine":               body.Engine,
-		"engine_version":       body.EngineVersion,
-		"port":                 body.Port,
-		"root_password":        body.RootPassword,
-		"database_name":        body.DatabaseName,
-		"username":             body.Username,
-		"password":             body.Password,
-	}
+	payload := dbCommandPayload(instance.ID, socket.MsgDbCreate)
+	payload["container_name"] = containerName
+	payload["volume_name"] = volumeName
+	payload["engine"] = body.Engine
+	payload["engine_version"] = body.EngineVersion
+	payload["port"] = body.Port
+	payload["root_password"] = body.RootPassword
+	payload["database_name"] = body.DatabaseName
+	payload["username"] = body.Username
+	payload["password"] = body.Password
+
 	if body.CPULimit != nil {
 		payload["cpu_limit"] = *body.CPULimit
 	}
 	if body.MemoryLimit != nil {
-		payload["memory_limit"] = *body.MemoryLimit
+		// The API and UI speak megabytes; Docker's resource limit is bytes.
+		// Sending the raw value made every create fail — Docker rejects any
+		// limit below 6MB, so a 512 "MB" request became 512 bytes.
+		payload["memory_limit"] = int64(*body.MemoryLimit) * 1024 * 1024
 	}
 
 	if err := h.WorkerHub.SendJSONToWorker(body.WorkerID, socket.Envelope{
 		Type:    socket.MsgDbCreate,
 		Payload: payload,
 	}); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send db_create command: %v", err))
+		// The row exists but the worker never heard about it. Record that
+		// plainly instead of leaving it to sit in pending forever.
+		msg := fmt.Sprintf("failed to send create command to worker: %v", err)
+		failed := string(structs.DBStatusError)
+		_, _ = query.UpdateDatabaseInstance(db.DB, instance.ID, query.UpdateDatabaseInstanceRequest{
+			Status: &failed,
+			LastError: &structs.DatabaseError{
+				Code:      structs.DBErrCodeWorkerOffline,
+				Message:   msg,
+				Retryable: true,
+			},
+		})
+		dbEvent(instance.ID, structs.DBEventFailed, msg, r)
+		responder.SendError(w, http.StatusInternalServerError, msg)
 		return
 	}
 
@@ -266,6 +425,41 @@ func (h *DatabaseHandler) HandleUpdateDatabaseInstance(w http.ResponseWriter, r 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		responder.BadBody(w, err)
 		return
+	}
+
+	// Status and health are a closed vocabulary. They used to accept any
+	// string, which meant a typo could put an instance into a state no part of
+	// the platform knows how to render or reconcile.
+	if body.Status != nil && !structs.DatabaseStatus(*body.Status).IsValid() {
+		responder.SendError(w, http.StatusBadRequest,
+			"status must be one of: pending, provisioning, running, stopped, restarting, degraded, deleting, error")
+		return
+	}
+	if body.HealthStatus != nil && !structs.DatabaseHealth(*body.HealthStatus).IsValid() {
+		responder.SendError(w, http.StatusBadRequest,
+			"health_status must be one of: none, starting, healthy, unhealthy")
+		return
+	}
+
+	// Moving an instance to a new host port must respect the same ledger the
+	// create path does.
+	if body.Port != nil {
+		existing, getErr := query.GetDatabaseInstanceByID(db.DB, id)
+		if getErr != nil {
+			responder.NotFound(w)
+			return
+		}
+		conflict, convErr := query.FindPortConflict(db.DB, existing.WorkerID, *body.Port, id)
+		if convErr != nil {
+			responder.QueryError(w, convErr, "failed to check port availability")
+			return
+		}
+		if conflict != nil {
+			responder.SendError(w, http.StatusConflict,
+				fmt.Sprintf("port %d is already in use on worker %d by %s %q",
+					*body.Port, existing.WorkerID, conflict.Kind, conflict.Name))
+			return
+		}
 	}
 
 	instance, err := query.UpdateDatabaseInstance(db.DB, id, query.UpdateDatabaseInstanceRequest{
@@ -308,16 +502,20 @@ func (h *DatabaseHandler) HandleDeleteDatabaseInstance(w http.ResponseWriter, r 
 
 	// Best-effort: send remove command to the worker
 	if h.WorkerHub.IsConnected(instance.WorkerID) {
+		payload := dbCommandPayload(id, socket.MsgDbRemove)
+		payload["container_name"] = instance.ContainerName
+		payload["volume_name"] = instance.VolumeName
 		if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
-			Type: socket.MsgDbRemove,
-			Payload: map[string]any{
-				"container_name": instance.ContainerName,
-				"volume_name":    instance.VolumeName,
-			},
+			Type:    socket.MsgDbRemove,
+			Payload: payload,
 		}); err != nil {
 			log.Printf("delete database instance %d: failed to send db_remove to worker %d: %v", id, instance.WorkerID, err)
 		}
+	} else {
+		log.Printf("delete database instance %d: worker %d offline, container and volume left in place", id, instance.WorkerID)
 	}
+
+	dbEvent(id, structs.DBEventRequested, "delete requested", r)
 
 	if err := query.DeleteDatabaseInstance(db.DB, id); err != nil {
 		responder.QueryError(w, err, "failed to delete database instance")
@@ -367,22 +565,135 @@ func (h *DatabaseHandler) HandleDatabaseAction(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	payload := dbCommandPayload(id, msgType)
+	payload["container_name"] = instance.ContainerName
+	if msgType == socket.MsgDbRemove {
+		payload["volume_name"] = instance.VolumeName
+	}
+
 	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
-		Type: msgType,
-		Payload: map[string]any{
-			"container_name": instance.ContainerName,
-		},
+		Type:    msgType,
+		Payload: payload,
 	}); err != nil {
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send %s command: %v", action, err))
 		return
 	}
 
+	dbEvent(id, structs.DBEventRequested, action+" requested", r)
+
 	logAudit(r, action, "database_instance", intPtr(id), strPtr(instance.Name))
 	responder.New(w, nil, fmt.Sprintf("database instance %s command sent", action))
 }
 
-// HandleGetDatabaseCredentials returns the connection credentials and
-// connection string for a database instance.
+// HandleGetDatabaseConnection returns everything needed to connect *except* the
+// secrets: host, port, database and the application username. Safe for the
+// detail page to render on load.
+func (h *DatabaseHandler) HandleGetDatabaseConnection(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		responder.SendError(w, http.StatusBadRequest, "invalid database instance id")
+		return
+	}
+
+	instance, err := query.GetDatabaseInstanceByID(db.DB, id)
+	if err != nil {
+		responder.NotFound(w)
+		return
+	}
+
+	worker, err := query.GetWorkerByID(db.DB, instance.WorkerID)
+	if err != nil {
+		responder.QueryError(w, err, "failed to get worker")
+		return
+	}
+
+	responder.New(w, map[string]any{
+		"host":          worker.Hostname,
+		"port":          instance.Port,
+		"database_name": instance.DatabaseName,
+		"username":      instance.Username,
+		"engine":        instance.Engine,
+	}, "database connection details retrieved")
+}
+
+// HandleRevealDatabaseCredentials returns live secrets for an instance.
+//
+// This is deliberately a POST with its own audit trail rather than a field on
+// the instance GET: credentials should leave the control plane only when
+// somebody explicitly asks for them, and every such request should be
+// attributable. Root credentials are included only when explicitly requested,
+// since routine use should go through the scoped application user.
+func (h *DatabaseHandler) HandleRevealDatabaseCredentials(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(mux.Vars(r)["id"])
+	if err != nil {
+		responder.SendError(w, http.StatusBadRequest, "invalid database instance id")
+		return
+	}
+
+	var body struct {
+		IncludeRoot bool `json:"include_root"`
+	}
+	// An empty body is valid and means "application credentials only".
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	instance, err := query.GetDatabaseInstanceByID(db.DB, id)
+	if err != nil {
+		responder.NotFound(w)
+		return
+	}
+
+	worker, err := query.GetWorkerByID(db.DB, instance.WorkerID)
+	if err != nil {
+		responder.QueryError(w, err, "failed to get worker")
+		return
+	}
+
+	// Passwords are already decrypted by the query layer.
+	password := ""
+	if instance.Password != nil {
+		password = *instance.Password
+	}
+
+	var connString string
+	switch instance.Engine {
+	case "mysql", "mariadb":
+		connString = fmt.Sprintf("mysql://%s:%s@%s:%d/%s",
+			url.QueryEscape(instance.Username), url.QueryEscape(password), worker.Hostname, instance.Port, instance.DatabaseName)
+	case "postgres":
+		connString = fmt.Sprintf("postgresql://%s:%s@%s:%d/%s",
+			url.QueryEscape(instance.Username), url.QueryEscape(password), worker.Hostname, instance.Port, instance.DatabaseName)
+	}
+
+	payload := map[string]any{
+		"username":          instance.Username,
+		"password":          password,
+		"connection_string": connString,
+		"host":              worker.Hostname,
+		"port":              instance.Port,
+		"database_name":     instance.DatabaseName,
+	}
+
+	detail := "application credentials revealed"
+	if body.IncludeRoot {
+		rootPassword := ""
+		if instance.RootPassword != nil {
+			rootPassword = *instance.RootPassword
+		}
+		payload["root_password"] = rootPassword
+		detail = "root credentials revealed"
+	}
+
+	dbEvent(id, structs.DBEventReveal, detail, r)
+	logAudit(r, "reveal_credentials", "database_instance", intPtr(id), strPtr(detail))
+
+	responder.New(w, payload, "database credentials retrieved")
+}
+
+// HandleGetDatabaseCredentials is the legacy credentials endpoint.
+//
+// Deprecated: it returns root credentials from a plain GET, so any request that
+// merely reads an instance leaks them. Kept working for existing clients;
+// use POST /database-instances/{id}/reveal instead, which is audited.
 func (h *DatabaseHandler) HandleGetDatabaseCredentials(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(mux.Vars(r)["id"])
 	if err != nil {
@@ -402,7 +713,6 @@ func (h *DatabaseHandler) HandleGetDatabaseCredentials(w http.ResponseWriter, r 
 		return
 	}
 
-	// Passwords are already decrypted by the query layer.
 	rootPassword := ""
 	if instance.RootPassword != nil {
 		rootPassword = *instance.RootPassword
@@ -412,7 +722,6 @@ func (h *DatabaseHandler) HandleGetDatabaseCredentials(w http.ResponseWriter, r 
 		password = *instance.Password
 	}
 
-	// Build connection string based on engine.
 	var connString string
 	switch instance.Engine {
 	case "mysql", "mariadb":
@@ -422,6 +731,9 @@ func (h *DatabaseHandler) HandleGetDatabaseCredentials(w http.ResponseWriter, r 
 		connString = fmt.Sprintf("postgresql://%s:%s@%s:%d/%s",
 			url.QueryEscape(instance.Username), url.QueryEscape(password), worker.Hostname, instance.Port, instance.DatabaseName)
 	}
+
+	dbEvent(id, structs.DBEventReveal, "credentials read via deprecated GET endpoint", r)
+	logAudit(r, "reveal_credentials", "database_instance", intPtr(id), strPtr("legacy GET endpoint"))
 
 	responder.New(w, map[string]any{
 		"root_password":     rootPassword,

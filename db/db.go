@@ -280,6 +280,49 @@ func Init() {
 		INDEX idx_snapshot_instance (database_instance_id)
 	)`)
 
+	// Structured failure detail for database instances (JSON: code, message,
+	// occurred_at, retryable). Cleared when an instance recovers.
+	migrate(db, "ALTER TABLE database_instances ADD COLUMN last_error TEXT DEFAULT NULL")
+
+	// Replace UNIQUE (name, active) with a claim-based index.
+	//
+	// The original index makes a database undeletable once a same-named
+	// instance has already been deleted: soft-deleting sets active = 0, which
+	// collides with the existing (name, 0) row and fails the UPDATE with a
+	// duplicate-key error. The name is then permanently unusable and the row
+	// permanently undeletable through the API.
+	//
+	// A virtual column that is NULL for inactive rows fixes it — NULLs never
+	// collide in a unique index — while still enforcing that no two *active*
+	// instances share a name.
+	migrate(db, "ALTER TABLE database_instances ADD COLUMN name_claim VARCHAR(255) AS (IF(active, name, NULL)) VIRTUAL")
+	migrate(db, "ALTER TABLE database_instances ADD UNIQUE INDEX idx_db_instance_name_claim (name_claim)")
+	migrate(db, "ALTER TABLE database_instances DROP INDEX idx_db_instance_name")
+
+	// A host port may only be claimed once per worker by an *active* instance.
+	// This is the allocation ledger; the runner's bind attempt is the ground
+	// truth that backs it up.
+	//
+	// The claim is a virtual column that is NULL for soft-deleted rows. NULLs
+	// never collide in a unique index, so deleting two instances that used the
+	// same port doesn't wedge on a duplicate key — which is exactly what a
+	// naive UNIQUE (worker_id, port, active) would do.
+	migrate(db, "ALTER TABLE database_instances ADD COLUMN port_claim INT AS (IF(active, port, NULL)) VIRTUAL")
+	migrate(db, "ALTER TABLE database_instances ADD UNIQUE INDEX idx_db_instance_worker_port (worker_id, port_claim)")
+
+	// Append-only audit trail of everything that happened to an instance.
+	migrate(db, `CREATE TABLE IF NOT EXISTS database_instance_events (
+		id INT AUTO_INCREMENT PRIMARY KEY,
+		database_instance_id INT NOT NULL,
+		kind VARCHAR(20) NOT NULL,
+		status VARCHAR(20) DEFAULT NULL,
+		message TEXT NOT NULL,
+		code VARCHAR(50) DEFAULT NULL,
+		actor VARCHAR(255) DEFAULT NULL,
+		recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		INDEX idx_db_event_instance (database_instance_id, recorded_at)
+	)`)
+
 	migrate(db, `CREATE TABLE IF NOT EXISTS api_tokens (
 		id INT AUTO_INCREMENT PRIMARY KEY,
 		user_id INT NOT NULL,

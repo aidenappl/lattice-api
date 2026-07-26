@@ -95,6 +95,13 @@ func initApp() *appContext {
 	adminHandler := socket.NewAdminHandler(adminHub)
 	configureAdminHandler(adminHandler, workerHub)
 
+	// Database lifecycle owner and reconciler. The lifecycle owner must exist
+	// before any worker message is dispatched, since every database status
+	// write goes through it.
+	dbLifecycle = &databaseLifecycle{adminHub: adminHub}
+	dbReconciler = newDatabaseReconciler(workerHub)
+	dbReconciler.Start()
+
 	return &appContext{
 		workerHub:     workerHub,
 		adminHub:      adminHub,

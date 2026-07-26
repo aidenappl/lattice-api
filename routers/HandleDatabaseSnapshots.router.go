@@ -3,6 +3,7 @@ package routers
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/socket"
+	"github.com/aidenappl/lattice-api/structs"
 	"github.com/gorilla/mux"
 )
 
@@ -77,17 +79,15 @@ func (h *DatabaseHandler) HandleCreateSnapshot(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	payload := map[string]any{
-		"snapshot_id":          snapshot.ID,
-		"database_instance_id": instance.ID,
-		"container_name":       instance.ContainerName,
-		"engine":               instance.Engine,
-		"database_name":        instance.DatabaseName,
-		"username":             instance.Username,
-		"filename":             filename,
-		"backup_destination": map[string]any{
-			"type": destination.Type,
-		},
+	payload := dbCommandPayload(instance.ID, socket.MsgDbSnapshot)
+	payload["snapshot_id"] = snapshot.ID
+	payload["container_name"] = instance.ContainerName
+	payload["engine"] = instance.Engine
+	payload["database_name"] = instance.DatabaseName
+	payload["username"] = instance.Username
+	payload["filename"] = filename
+	payload["backup_destination"] = map[string]any{
+		"type": destination.Type,
 	}
 	if instance.Password != nil {
 		payload["password"] = *instance.Password
@@ -109,6 +109,7 @@ func (h *DatabaseHandler) HandleCreateSnapshot(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	dbEvent(instance.ID, structs.DBEventRequested, "snapshot requested: "+filename, r)
 	logAudit(r, "create", "database_snapshot", intPtr(snapshot.ID), strPtr(instance.Name))
 	responder.NewCreated(w, snapshot, "snapshot created")
 }
@@ -166,17 +167,15 @@ func (h *DatabaseHandler) HandleRestoreSnapshot(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	payload := map[string]any{
-		"snapshot_id":          snapshot.ID,
-		"database_instance_id": instance.ID,
-		"container_name":       instance.ContainerName,
-		"engine":               instance.Engine,
-		"database_name":        instance.DatabaseName,
-		"username":             instance.Username,
-		"filename":             snapshot.Filename,
-		"backup_destination": map[string]any{
-			"type": destination.Type,
-		},
+	payload := dbCommandPayload(instance.ID, socket.MsgDbRestore)
+	payload["snapshot_id"] = snapshot.ID
+	payload["container_name"] = instance.ContainerName
+	payload["engine"] = instance.Engine
+	payload["database_name"] = instance.DatabaseName
+	payload["username"] = instance.Username
+	payload["filename"] = snapshot.Filename
+	payload["backup_destination"] = map[string]any{
+		"type": destination.Type,
 	}
 	if instance.Password != nil {
 		payload["password"] = *instance.Password
@@ -198,16 +197,64 @@ func (h *DatabaseHandler) HandleRestoreSnapshot(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	dbEvent(instance.ID, structs.DBEventRequested, "restore requested from "+snapshot.Filename, r)
 	logAudit(r, "restore", "database_snapshot", intPtr(snapshot.ID), strPtr(instance.Name))
 	responder.New(w, nil, "restore command sent")
 }
 
-// HandleDeleteSnapshot soft-deletes a database snapshot.
-func HandleDeleteSnapshot(w http.ResponseWriter, r *http.Request) {
+// HandleDeleteSnapshot soft-deletes a database snapshot and instructs the
+// worker to remove the backing file from its remote destination.
+//
+// The remote delete used to be missing entirely: the row was soft-deleted and
+// the file was left behind on S3/Drive/Samba indefinitely, silently accruing
+// storage cost with no way to find the orphans afterwards.
+func (h *DatabaseHandler) HandleDeleteSnapshot(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(mux.Vars(r)["id"])
 	if err != nil {
 		responder.SendError(w, http.StatusBadRequest, "invalid snapshot id")
 		return
+	}
+
+	snapshot, err := query.GetSnapshotByID(db.DB, id)
+	if err != nil {
+		responder.NotFound(w)
+		return
+	}
+
+	// Best-effort remote cleanup. A failure here must not block removing the
+	// row — but it is logged and reported back over the admin socket.
+	if snapshot.BackupDestinationID != nil {
+		instance, instErr := query.GetDatabaseInstanceByID(db.DB, snapshot.DatabaseInstanceID)
+		destination, destErr := query.GetBackupDestinationByID(db.DB, *snapshot.BackupDestinationID)
+
+		switch {
+		case instErr != nil || destErr != nil:
+			log.Printf("delete snapshot %d: cannot resolve instance/destination, remote file %q left in place",
+				id, snapshot.Filename)
+		case !h.WorkerHub.IsConnected(instance.WorkerID):
+			log.Printf("delete snapshot %d: worker %d offline, remote file %q left in place",
+				id, instance.WorkerID, snapshot.Filename)
+		default:
+			payload := dbCommandPayload(instance.ID, socket.MsgDbDeleteSnapshot)
+			payload["snapshot_id"] = snapshot.ID
+			payload["filename"] = snapshot.Filename
+			destPayload := map[string]any{"type": destination.Type}
+			if destination.Config != nil {
+				var configMap map[string]any
+				if jsonErr := json.Unmarshal([]byte(*destination.Config), &configMap); jsonErr == nil {
+					destPayload["config"] = configMap
+				}
+			}
+			payload["backup_destination"] = destPayload
+
+			if sendErr := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
+				Type:    socket.MsgDbDeleteSnapshot,
+				Payload: payload,
+			}); sendErr != nil {
+				log.Printf("delete snapshot %d: failed to send remote delete to worker %d: %v",
+					id, instance.WorkerID, sendErr)
+			}
+		}
 	}
 
 	if err := query.DeleteSnapshot(db.DB, id); err != nil {
@@ -215,6 +262,6 @@ func HandleDeleteSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logAudit(r, "delete", "database_snapshot", intPtr(id), nil)
+	logAudit(r, "delete", "database_snapshot", intPtr(id), strPtr(snapshot.Filename))
 	responder.New(w, nil, "snapshot deleted")
 }

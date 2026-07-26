@@ -30,7 +30,7 @@ rows in this database.
 **What it owns:**
 
 - The **data model** — `workers`, `stacks`, `containers`, `deployments`, `deployment_containers`,
-  `registries`, `database_instances`, `database_snapshots`, `backup_destinations`, `networks`,
+  `registries`, `database_instances`, `database_instance_events`, `database_snapshots`, `backup_destinations`, `networks`,
   `volumes`, `global_env_vars`, `templates`, `webhook_configs`, `deploy_tokens`, `api_tokens`,
   `worker_tokens`, `users`, `sso_sessions`, `audit_log`, `settings`, and the log/metric tables.
 - **Command dispatch** — translating REST calls (deploy, restart, rollback, exec, DB actions)
@@ -367,7 +367,9 @@ Two independent hubs, both created in `initApp()`:
 runner — is allowed). The connect/disconnect/message callbacks are set in `message_handlers.go`:
 
 - **OnConnect:** mark worker online, cancel any pending disconnect alert, broadcast
-  `worker_connected`, and re-push DB snapshot schedules to the runner (`distributeDbSchedules`).
+  `worker_connected`, re-push DB snapshot schedules to the runner (`distributeDbSchedules`), and
+  request a full database-container report (`dbReconciler.RequestSync`) so anything that changed
+  while the worker was unreachable is corrected immediately.
 - **OnDisconnect:** mark offline, broadcast `worker_disconnected`, fire the
   `worker.disconnected` webhook, and schedule a grace-delayed email alert.
 - **OnMessage:** switch on `msg.Type` — heartbeat (metrics + container-name reconciliation),
@@ -384,9 +386,61 @@ runner — is allowed). The connect/disconnect/message callbacks are set in `mes
 
 | Direction | Message types |
 |-----------|---------------|
-| **API → worker** | `connected`, `deploy`, `start`, `stop`, `kill`, `restart`, `pause`, `unpause`, `remove`, `recreate`, `pull_image`, `reboot_os`, `upgrade_runner`, `stop_all`, `start_all`, `list_volumes`, `create_volume`, `remove_volume`, `list_networks`, `create_network`, `remove_network`, `force_remove`, `deployment_ping`, exec (`exec_start`/`exec_input`/`exec_resize`/`exec_close`), db (`db_create`/`db_start`/`db_stop`/`db_restart`/`db_remove`/`db_snapshot`/`db_restore`/`db_update_schedule`/`db_delete_snapshot_file`/`backup_dest_test`) |
-| **worker → API** | `heartbeat`, `registration`, `container_status`, `container_health_status`, `container_sync`, `container_logs`, `deployment_progress`, `deployment_status`, `lifecycle_log`, `worker_action_status`, `worker_shutdown`, `worker_crash`, `list_volumes_response`, `list_networks_response`, `exec_output`, db responses (`db_status`/`db_health_status`/`db_snapshot_status`/`db_restore_status`/`backup_dest_test_result`) |
+| **API → worker** | `connected`, `deploy`, `start`, `stop`, `kill`, `restart`, `pause`, `unpause`, `remove`, `recreate`, `pull_image`, `reboot_os`, `upgrade_runner`, `stop_all`, `start_all`, `list_volumes`, `create_volume`, `remove_volume`, `list_networks`, `create_network`, `remove_network`, `force_remove`, `deployment_ping`, exec (`exec_start`/`exec_input`/`exec_resize`/`exec_close`), db (`db_create`/`db_start`/`db_stop`/`db_restart`/`db_remove`/`db_snapshot`/`db_restore`/`db_update_schedule`/`db_delete_snapshot_file`/`db_sync_request`/`backup_dest_test`) |
+| **worker → API** | `heartbeat`, `registration`, `container_status`, `container_health_status`, `container_sync`, `container_logs`, `deployment_progress`, `deployment_status`, `lifecycle_log`, `worker_action_status`, `worker_shutdown`, `worker_crash`, `list_volumes_response`, `list_networks_response`, `exec_output`, db responses (`db_status`/`db_health_status`/`db_snapshot_status`/`db_restore_status`/`db_delete_snapshot_result`/`db_schedule_status`/`db_sync`/`backup_dest_test_result`) |
 | **admin client → API** | `subscribe`, `unsubscribe`, and the exec messages (relayed straight through to the target worker) |
+
+### Managed database lifecycle
+
+Database instances are **not** rows in `containers` — they are their own resource with their own
+table, and their containers are labelled `managed-by=lattice`, `lattice-type=database`. Logs,
+lifecycle messages and exec are nonetheless shared with ordinary containers, because all three
+address a container by **name**, not by `containers.id`. That is why a managed database gets a log
+viewer and a console without being registered in `containers`.
+
+**Status vocabulary** — `structs/DatabaseInstance.struct.go` defines `DatabaseStatus`
+(`pending` → `provisioning` → `running`, plus `stopped`, `restarting`, `degraded`, `deleting`,
+`error`) and `DatabaseHealth` (`none`, `starting`, `healthy`, `unhealthy`). Both have `IsValid()`
+and both are enforced at the API boundary. Failure detail never goes in the status: it goes in
+`database_instances.last_error` as JSON (`code`, `message`, `occurred_at`, `retryable`), with a
+stable `DBErrCode*` code. `degraded` is deliberately non-terminal — a restart-looping container is
+impaired, not dead.
+
+**`databaseLifecycle` (`database_lifecycle.go`) owns every status write.** Nothing else may write
+`status`, `health_status` or `last_error`. `Transition` is idempotent, records an event in
+`database_instance_events`, and broadcasts to the admin hub, so a state change cannot happen
+invisibly. Recovery into `running`/`stopped` clears a stale `last_error` automatically.
+
+**Reconciliation (`database_reconciler.go`)** is level-triggered and is what makes the subsystem
+self-correcting:
+
+- Every 60s, and on every worker reconnect, the API sends `db_sync_request`. The runner answers
+  with `db_sync` — a full report of the database containers it can actually see, with Docker
+  state, health, restart count and (when it recognises a fatal startup failure) a `fatal_hint`.
+- `handleDbSync`/`reconcileDatabaseInstance` diff observed against desired state and correct the
+  difference in either direction. A lost `db_status` is therefore survivable.
+- A watchdog runs every 30s and fails out any instance that has sat in a transitional status for
+  more than `dbProvisionTimeout` (10m), with `provision_timeout` or `worker_offline`. **This is
+  the backstop that makes "stuck in pending forever" impossible.**
+
+**Command correlation** — every `db_*` command carries `database_instance_id`, `request_id` (per
+attempt) and `idempotency_key` (stable per logical operation), and every reply echoes all three
+plus a `phase` (`ack` → `completed`/`failed`). `dbCommandPayload` in
+`routers/HandleDatabaseInstances.router.go` builds them. The runner reports *what it did*; the
+control plane decides *what the instance is* (`dbActionOutcome` in `database_handlers.go`) — never
+write a runner outcome string into `status`.
+
+**Host ports** are allocated from `DB_PORT_RANGE_MIN`–`DB_PORT_RANGE_MAX` (20000-29999, below the
+Linux ephemeral range). `query.FindPortConflict` checks both other instances and stack containers'
+published ports on the target worker and the create path returns **409 naming the conflict**; the
+`idx_db_instance_worker_port` unique index over a `port_claim` virtual column (NULL when inactive,
+so soft-deleted rows never collide) is the ledger. The runner additionally binds the port for real
+before pulling the image — the ledger cannot see a foreign process, and there is a race between
+checking and binding.
+
+**Credentials** — `POST /database-instances/{id}/reveal` is the supported path: audited, recorded
+as a `reveal` event, and root-only on explicit request. `GET .../credentials` is deprecated and
+returns root from a plain GET; it is kept only for existing clients.
 
 ### Deploy strategies & the deployment monitor
 
@@ -539,10 +593,17 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 | GET / POST | `/database-instances` | `HandleListDatabaseInstances` / `DatabaseHandler.HandleCreateDatabaseInstance` `[E]` |
 | GET / PUT / DELETE | `/database-instances/{id}` | `HandleGetDatabaseInstance` / `DatabaseHandler.HandleUpdateDatabaseInstance` `[E]` / `HandleDeleteDatabaseInstance` `[E]` |
 | POST | `/database-instances/{id}/{start,stop,restart,remove}` | `DatabaseHandler.HandleDatabaseAction` `[E]` (action derived from the last path segment) |
-| GET | `/database-instances/{id}/credentials` | `DatabaseHandler.HandleGetDatabaseCredentials` `[A]` (returns live secrets — admin only) |
+| GET | `/database-instances/{id}/credentials` | `DatabaseHandler.HandleGetDatabaseCredentials` `[A]` (**deprecated** — returns root from a plain GET; use `/reveal`) |
+| POST | `/database-instances/{id}/reveal` | `DatabaseHandler.HandleRevealDatabaseCredentials` `[A]` (audited; root only when `include_root` is set) |
+| GET | `/database-instances/{id}/connection` | `DatabaseHandler.HandleGetDatabaseConnection` (host/port/database/username — no secrets) |
+| GET | `/database-instances/{id}/events` | `HandleListDatabaseInstanceEvents` (lifecycle history) |
+| GET | `/database-instances/{id}/logs` | `HandleGetDatabaseInstanceLogs` (container stdout/stderr, resolved by container name) |
+| GET | `/database-instances/{id}/lifecycle` | `HandleGetDatabaseInstanceLifecycle` (worker lifecycle messages) |
+| POST | `/database-instances/{id}/console` | `DatabaseHandler.HandleOpenDatabaseConsole` `[E]` (authorises an exec session; returns the SQL client argv) |
+| GET | `/workers/{id}/port-availability` | `HandleGetWorkerPortAvailability` (claimed host ports + a free suggestion; pass `?port=` to check one) |
 | GET / POST | `/database-instances/{id}/snapshots` | `HandleListSnapshots` / `DatabaseHandler.HandleCreateSnapshot` `[E]` |
 | POST | `/database-instances/{id}/restore` | `DatabaseHandler.HandleRestoreSnapshot` `[E]` |
-| DELETE | `/database-snapshots/{id}` | `HandleDeleteSnapshot` `[E]` |
+| DELETE | `/database-snapshots/{id}` | `DatabaseHandler.HandleDeleteSnapshot` `[E]` (also sends `db_delete_snapshot_file` so the remote file is removed) |
 | GET / POST | `/backup-destinations` | `HandleListBackupDestinations` / `HandleCreateBackupDestination` `[E]` |
 | GET / PUT / DELETE | `/backup-destinations/{id}` | `HandleGetBackupDestination` / `HandleUpdateBackupDestination` `[E]` / `HandleDeleteBackupDestination` `[E]` |
 | POST | `/backup-destinations/{id}/test` | `DatabaseHandler.HandleTestBackupDestination` `[E]` |
@@ -667,11 +728,28 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
 gofmt -l .        # must print nothing (CI rejects unformatted code); `gofmt -w -s .` to fix
 go build ./...    # must succeed
 go vet ./...      # must be clean
-go test ./...     # must pass (crypto, jwt, healthscan, middleware, responder, socket, tools)
+go test ./...     # must pass (crypto, jwt, healthscan, middleware, responder, socket, structs, tools)
 ```
 
+**`go test ./...` needs `DATABASE_DSN` and `JWT_SIGNING_KEY` set to *anything*.** `env/env.go`
+resolves both at package-init time via `getEnvOrPanic`, so every package that imports `env` —
+`middleware` among them — panics on load without them, and no test in `package main` can run at
+all. No test opens a connection; `db.Init()` is only reached from `initApp()`. Dummy values are
+fine:
+
+```bash
+DATABASE_DSN="ci:ci@tcp(127.0.0.1:3306)" \
+JWT_SIGNING_KEY="local-test-key-at-least-32-characters-long" \
+  go test ./...
+```
+
+This is also why the database protocol-contract tests live in `socket/` rather than next to
+`ws_dispatch.go` — see `socket/db_dispatch_test.go`.
+
 `dev check` runs fmt + vet + test together. There is **no** integration/Docker test suite in this
-repo, so a green `go test ./...` is sufficient here (unlike the Trailblaze repos). If you changed
+repo, so a green `go test ./...` is sufficient here (unlike the Trailblaze repos). **CI runs all
+four of the above in a `test` job that `build-and-push` depends on**, so unformatted code or a
+failing test now blocks the image build and the deploy. If you changed
 a route, exercise it against a running instance or via `lattice-mcp` — schema-level confidence is
 not enough for a control-plane that dispatches real Docker commands.
 

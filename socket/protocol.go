@@ -75,15 +75,62 @@ const (
 	MsgDbUpdateSchedule = "db_update_schedule"
 	MsgDbDeleteSnapshot = "db_delete_snapshot_file"
 	MsgBackupDestTest   = "backup_dest_test"
+	// MsgDbSyncRequest asks a worker to report every database container it can
+	// see. The reply (MsgDbSync) is the observed state the reconciler diffs
+	// desired state against.
+	MsgDbSyncRequest = "db_sync_request"
 )
 
 // Database management: Worker -> Orchestrator
 const (
-	MsgDbStatus             = "db_status"
-	MsgDbHealthStatus       = "db_health_status"
-	MsgDbSnapshotProgress   = "db_snapshot_status"
-	MsgDbRestoreStatus      = "db_restore_status"
-	MsgBackupDestTestResult = "backup_dest_test_result"
+	MsgDbStatus               = "db_status"
+	MsgDbHealthStatus         = "db_health_status"
+	MsgDbSnapshotProgress     = "db_snapshot_status"
+	MsgDbRestoreStatus        = "db_restore_status"
+	MsgDbDeleteSnapshotResult = "db_delete_snapshot_result"
+	MsgDbScheduleStatus       = "db_schedule_status"
+	MsgDbSync                 = "db_sync"
+	MsgBackupDestTestResult   = "backup_dest_test_result"
+)
+
+// DbReplyTypes is every worker -> orchestrator message the database subsystem
+// can produce. TestDbReplyTypesHaveHandlers asserts each one is dispatched.
+//
+// This list exists because db_delete_snapshot_result shipped with no constant
+// and no handler, so snapshot deletions were silently discarded for months.
+// Adding a reply type without wiring it now fails the build's test run.
+var DbReplyTypes = []string{
+	MsgDbStatus,
+	MsgDbHealthStatus,
+	MsgDbSnapshotProgress,
+	MsgDbRestoreStatus,
+	MsgDbDeleteSnapshotResult,
+	MsgDbScheduleStatus,
+	MsgDbSync,
+	MsgBackupDestTestResult,
+}
+
+// Payload keys that correlate a database command with its replies. Every
+// db_* command carries all three and every reply echoes them back.
+const (
+	// PayloadDbInstanceID ties a reply to the row it should update. Its absence
+	// from runner replies is why no managed database could ever leave "pending".
+	PayloadDbInstanceID = "database_instance_id"
+	// PayloadRequestID is unique per attempt.
+	PayloadRequestID = "request_id"
+	// PayloadIdempotencyKey is stable across retries of the same logical
+	// operation, so a redelivered command after a reconnect is a no-op.
+	PayloadIdempotencyKey = "idempotency_key"
+	// PayloadPhase distinguishes a fast receipt acknowledgement from the
+	// terminal outcome: "ack", "completed" or "failed".
+	PayloadPhase = "phase"
+)
+
+// Reply phases for PayloadPhase.
+const (
+	PhaseAck       = "ack"
+	PhaseCompleted = "completed"
+	PhaseFailed    = "failed"
 )
 
 // Admin client -> API message types
