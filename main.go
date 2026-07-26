@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"net/http"
+	"os"
 
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/middleware"
@@ -19,6 +20,12 @@ var installRunnerScript []byte
 var Version = "dev"
 
 func main() {
+	// One-off subcommands run instead of the server and exit.
+	if len(os.Args) > 1 && os.Args[1] == "migrate-encrypt" {
+		runMigrateEncrypt(os.Args[2:])
+		return
+	}
+
 	app := initApp()
 
 	r := mux.NewRouter()

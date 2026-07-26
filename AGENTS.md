@@ -100,6 +100,7 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `middleware/` | `middleware.go` (RequestID, Logging, MuxHeader, SecurityHeaders, MaxBodySize, `statusResponseWriter` with Hijack), `auth.go` (DualAuth, RejectPending, RequireAdmin, RequireEditor, WorkerTokenAuth, SSO checkpoint), `csrf.go` (double-submit), `ratelimit.go` (per-IP token bucket). |
 | `jwt/jwt.go` | HS512 local tokens. 15-min access / 7-day refresh. `Claims{UserID, Type}`. Validation pins the alg to HS512 (`WithValidMethods`), requires an expiry (`WithExpirationRequired`) and the issuer, and rejects a token with no `iat` (so it can't bypass `tokens_revoked_at`). Revocation compare is `!IssuedAt.After(revokedAt)` (a token minted in the same second as revocation is rejected). |
 | `crypto/crypto.go` | AES-256-GCM encrypt/decrypt for secrets at rest. Passthrough (no-op) when `ENCRYPTION_KEY` unset **only in non-production** — `Init()` **panics at boot** if the key is empty and `ENVIRONMENT=production`. `Decrypt` returns a real error on bad base64 / short input / auth failure (no silent plaintext fallthrough); callers propagate it. |
+| `migrate/encrypt.go` | One-off `migrate-encrypt` subcommand logic: encrypts existing plaintext secret values in-place (idempotent, transactional) so the DB can be moved from passthrough to an active `ENCRYPTION_KEY`. Target list must track every encrypted column/setting. |
 | `sso/` | `sso.go` (generic OAuth2/OIDC client, DB-backed config, state handling), `introspect.go` (RFC 7662 introspection used by the auth checkpoint). |
 | `responder/` | `responder.go` (success envelope: `New`/`NewCreated`/`NewWithCount`), `errors.go` (`SendError`/`SendErrorWithCode`), `templates.responder.go` (`BadBody`/`MissingBodyFields`/`QueryError`/`NotFound`). |
 | `routers/` | ~80 handler files, `Handle<Verb><Entity>.router.go`. Most are plain funcs; six use struct receivers that hold hub refs (see *Handler types*). Also `deployment_monitor.go` (watchdog), `backfill_networks.go` (startup migration), `audit.go` (`logAudit` helper). |
@@ -157,6 +158,22 @@ MySQL "already exists" errors (1050/1054/1060/1061/1062/1091). The `docker-compo
 mounts a `./migrations` dir into MariaDB's init hook for a fresh volume, but the running binary
 does not depend on it.
 
+**One-off subcommands:** the binary runs the server by default, but `lattice-api migrate-encrypt
+[--dry-run]` runs the secrets-at-rest migration instead and exits (wired in `main.go`, implemented
+in `migrate/`). It does minimal init (logger + `db.Init` + `crypto.Init`), so it needs
+`ENCRYPTION_KEY` and `DATABASE_DSN` in the environment. Run it as a one-off against the prod stack
+before booting the server with a newly-set key:
+
+```bash
+# on the host, image pinned to the new tag, ENCRYPTION_KEY already in .env:
+docker compose -f /opt/lattice/docker-compose.yml run --rm lattice-api migrate-encrypt --dry-run
+docker compose -f /opt/lattice/docker-compose.yml run --rm lattice-api migrate-encrypt
+docker compose -f /opt/lattice/docker-compose.yml up -d lattice-api   # server boots, data already ciphertext
+```
+
+`--dry-run` reports encrypt/already/empty counts per target and rolls back. The real run is
+idempotent and transactional.
+
 ---
 
 ## How code is written here
@@ -195,10 +212,19 @@ This repo follows the global Go standards. Specifics and deviations:
   `global_env_vars` (decrypted, base layer) then stack-level env vars (override). See
   `resolveEnvRef` / `resolveVarsInValue` in `HandleDeployStack.router.go`. Memory limits are
   stored in MB and converted to bytes (`*1024*1024`) before being sent to the runner.
-- **Secrets at rest.** Registry passwords, DB passwords, SSO client secret, and global env-var
-  values are AES-256-GCM encrypted via `crypto.Encrypt` when `ENCRYPTION_KEY` is set; `crypto`
-  degrades to passthrough when it is not (so existing plaintext keeps working). **Never log a
-  decrypted value.**
+- **Secrets at rest.** These fields are AES-256-GCM encrypted via `crypto.Encrypt` when
+  `ENCRYPTION_KEY` is set: `registries.password`, `global_env_vars.encrypted_value`,
+  `database_instances.root_password`/`.password`, `backup_destinations.config`, and the
+  `settings` rows `sso.client_secret` and `smtp.password` (SSO session tokens too, but those are
+  ephemeral). `crypto` degrades to passthrough when the key is unset (so existing plaintext keeps
+  working). **Never log a decrypted value.**
+- **Turning encryption on for an existing DB is a migration, not a config toggle.** If rows were
+  written in passthrough (plaintext), setting `ENCRYPTION_KEY` makes reads either error
+  (`registries` propagates it → deploys fail) or silently blank (`global_env_vars` swallows it).
+  Run the one-off `migrate-encrypt` subcommand *before* the server boots with the key active — it
+  encrypts every plaintext value in one transaction and is idempotent (already-ciphertext rows are
+  skipped). See **Running, building & testing**. Keep `migrate/encrypt.go`'s target list in sync
+  with every encrypted column/setting above.
 - **Goroutine discipline.** Background message handling goes through `safeGo` (semaphore of 100,
   panic-recovered). Deployment monitors are bounded by `maxConcurrentDeploys = 10`. Follow this
   pattern for any new fan-out — do not spawn unbounded goroutines per message.

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/aidenappl/lattice-api/bootstrap"
 	"github.com/aidenappl/lattice-api/crypto"
@@ -13,6 +14,7 @@ import (
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/mailer"
 	"github.com/aidenappl/lattice-api/middleware"
+	"github.com/aidenappl/lattice-api/migrate"
 	"github.com/aidenappl/lattice-api/retention"
 	"github.com/aidenappl/lattice-api/routers"
 	"github.com/aidenappl/lattice-api/socket"
@@ -121,4 +123,33 @@ func initApp() *appContext {
 			AdminHub:  adminHub,
 		},
 	}
+}
+
+// runMigrateEncrypt runs the one-off plaintext->ciphertext secret migration and
+// exits. It performs the minimal init the migration needs (logger, DB, crypto)
+// instead of the full server boot, so it never starts watchers, hubs, or the
+// HTTP listener. Requires ENCRYPTION_KEY to be set (crypto.Init panics otherwise
+// in production, and RunEncrypt refuses to run if the key is inactive).
+func runMigrateEncrypt(args []string) {
+	dryRun := false
+	for _, a := range args {
+		if a == "--dry-run" || a == "-dry-run" {
+			dryRun = true
+		}
+	}
+
+	logger.Init(env.LogLevel, env.LogFormat)
+	db.Init()
+	crypto.Init()
+
+	fmt.Printf("lattice-api migrate-encrypt (dry-run=%v)\n\n", dryRun)
+	if err := migrate.RunEncrypt(dryRun); err != nil {
+		log.Fatalf("migrate-encrypt failed: %v", err)
+	}
+	if dryRun {
+		fmt.Println("\ndry-run complete — no changes written. Re-run without --dry-run to apply.")
+	} else {
+		fmt.Println("\nmigrate-encrypt complete — secrets encrypted at rest.")
+	}
+	os.Exit(0)
 }
