@@ -438,6 +438,11 @@ so soft-deleted rows never collide) is the ledger. The runner additionally binds
 before pulling the image — the ledger cannot see a foreign process, and there is a race between
 checking and binding.
 
+**Data volumes** — creating an instance whose `lattice-dbdata-<name>` volume already exists fails
+with an explanatory error unless `adopt_existing_volume` is passed. Reusing a populated volume makes
+the engine skip initialisation and keep its old credentials while the control plane stores newly
+generated ones — a mismatch nothing surfaces until a connection is attempted.
+
 **Credentials** — `POST /database-instances/{id}/reveal` is the supported path: audited, recorded
 as a `reveal` event, and root-only on explicit request. `GET .../credentials` is deprecated and
 returns root from a plain GET; it is kept only for existing clients.

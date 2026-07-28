@@ -214,6 +214,10 @@ func (h *DatabaseHandler) HandleCreateDatabaseInstance(w http.ResponseWriter, r 
 		SnapshotSchedule    *string  `json:"snapshot_schedule"`
 		RetentionCount      *int     `json:"retention_count"`
 		BackupDestinationID *int     `json:"backup_destination_id"`
+		// AdoptExistingVolume reuses a leftover data volume of the same name.
+		// Off by default because the engine then skips initialisation and keeps
+		// its previous credentials, silently ignoring the ones generated here.
+		AdoptExistingVolume bool `json:"adopt_existing_volume"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		responder.BadBody(w, err)
@@ -364,6 +368,7 @@ func (h *DatabaseHandler) HandleCreateDatabaseInstance(w http.ResponseWriter, r 
 	payload["database_name"] = body.DatabaseName
 	payload["username"] = body.Username
 	payload["password"] = body.Password
+	payload["adopt_existing_volume"] = body.AdoptExistingVolume
 
 	if body.CPULimit != nil {
 		payload["cpu_limit"] = *body.CPULimit
