@@ -669,24 +669,25 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
   because `POST /admin/update/api` and `/update/web` shell out to `docker compose` in
   `DOCKER_COMPOSE_DIR` to pull and recreate the API/web containers — hence the runtime
   image includes `docker-cli` + `docker-cli-compose` and runs as root.
-- **`lattice-api` is pinned to an explicit version tag in the host compose file; `lattice-web`
-  floats on `:latest`.** This is deliberate. `:latest` on the control plane means any restart can
-  silently change the version, and if a bad API ships you cannot use the control plane to fix the
-  control plane — so API rollout is an explicit compose edit. The consequence is that
-  **`POST /admin/update/api` cannot move the API version at all** while it stays pinned: the pull
-  fetches the pinned tag (already local) and the recreate faithfully reproduces the same image.
-  Updating the API is:
+- **Both `lattice-api` and `lattice-web` float on `:latest` in the host compose file**, so
+  `POST /admin/update/api` and `/update/web` can move them. `lattice-api` was pinned to an explicit
+  version until 2026-07-28; the pin is worth understanding because it may come back. While pinned,
+  the self-update endpoint could not move the API at all — the pull fetched the already-local pinned
+  tag and the recreate faithfully reproduced the same image — and the endpoint reported success
+  regardless, so it looked like an update that silently refused to stick.
+
+  The tradeoff `:latest` accepts: any restart can pick up a new version unintentionally, and a bad
+  API build cannot be rolled back using the control plane it just broke. To pin again, set an
+  explicit tag and update it by hand:
 
   ```bash
   cd /opt/lattice
-  sudo sed -i 's|lattice-api:vOLD|lattice-api:vNEW|' docker-compose.yml
+  sudo sed -i -E 's|(lattice-api):(v[0-9]+\.[0-9]+\.[0-9]+|latest)|\1:vNEW|' docker-compose.yml
   sudo docker compose pull lattice-api && sudo docker compose up -d --force-recreate lattice-api
   ```
 
-  The endpoint now detects this and answers **"already up to date"** with the pinned reference and
-  the edit to make, instead of reporting `"pull complete, restarting"` regardless. It previously
-  could not distinguish a version-changing update from an impossible one, so a pinned service
-  looked like a self-update that silently refused to stick.
+  Either way the endpoint now tells the truth: it answers **"already up to date"** with the resolved
+  reference (and, when the tag is pinned, the edit required) instead of implying a restart.
 - **Self-update pre-flight.** `HandleUpdateAPI` compares the running container's image ID against
   the ID the pull resolved, and verifies `DOCKER_HELPER_CONTAINER` is running before claiming
   success — the API cannot recreate itself (Docker kills every process in the container during the
