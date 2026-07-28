@@ -669,25 +669,28 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
   because `POST /admin/update/api` and `/update/web` shell out to `docker compose` in
   `DOCKER_COMPOSE_DIR` to pull and recreate the API/web containers — hence the runtime
   image includes `docker-cli` + `docker-cli-compose` and runs as root.
-- **Both `lattice-api` and `lattice-web` float on `:latest` in the host compose file**, so
-  `POST /admin/update/api` and `/update/web` can move them. `lattice-api` was pinned to an explicit
-  version until 2026-07-28; the pin is worth understanding because it may come back. While pinned,
-  the self-update endpoint could not move the API at all — the pull fetched the already-local pinned
-  tag and the recreate faithfully reproduced the same image — and the endpoint reported success
-  regardless, so it looked like an update that silently refused to stick.
+- **Image tags are parameterised in the host compose file** and set by the self-update endpoint:
 
-  The tradeoff `:latest` accepts: any restart can pick up a new version unintentionally, and a bad
-  API build cannot be rolled back using the control plane it just broke. To pin again, set an
-  explicit tag and update it by hand:
-
-  ```bash
-  cd /opt/lattice
-  sudo sed -i -E 's|(lattice-api):(v[0-9]+\.[0-9]+\.[0-9]+|latest)|\1:vNEW|' docker-compose.yml
-  sudo docker compose pull lattice-api && sudo docker compose up -d --force-recreate lattice-api
+  ```yaml
+  image: ${REGISTRY_URL:-registry.appleby.cloud}/lattice-api:${LATTICE_API_TAG:-latest}
   ```
 
-  Either way the endpoint now tells the truth: it answers **"already up to date"** with the resolved
-  reference (and, when the tag is pinned, the edit required) instead of implying a restart.
+  `POST /admin/update/api` (and `/update/web`) accept an optional `version`. When given, the tag is
+  written to `LATTICE_API_TAG` / `LATTICE_WEB_TAG` in `DOCKER_COMPOSE_DIR/.env` **before** anything
+  is resolved, so the pull, the image comparison and the recreate all agree on the target. The value
+  persists, so a restart redeploys the same version rather than drifting. Rolling back is the same
+  call with an older tag. Omitting `version` follows whatever the file already resolves to —
+  `:latest` when the variable is unset.
+
+  The env file is rewritten atomically (temp file + rename); `upsertEnvVar` replaces an existing
+  assignment in place and leaves comments, blanks and prefix-sharing keys alone. Requesting a version
+  when the compose file does not interpolate the variable is a 400 rather than a silent no-op —
+  writing a variable nothing reads would deploy the old image and report success.
+
+  History worth knowing: `lattice-api` was hard-pinned in the compose file until 2026-07-28. While
+  pinned, self-update could not move it at all — the pull fetched the already-local tag and the
+  recreate reproduced the same image — and before v1.3.19 the endpoint reported success anyway, so
+  it looked like an update that refused to stick.
 - **Self-update pre-flight.** `HandleUpdateAPI` compares the running container's image ID against
   the ID the pull resolved, and verifies `DOCKER_HELPER_CONTAINER` is running before claiming
   success — the API cannot recreate itself (Docker kills every process in the container during the

@@ -60,9 +60,15 @@ var (
 	APIServiceName        = getEnv("API_SERVICE_NAME", "lattice-api")
 	WebServiceName        = getEnv("WEB_SERVICE_NAME", "lattice-web")
 	DockerHelperContainer = getEnv("DOCKER_HELPER_CONTAINER", "lattice-docker-helper")
-	RegistryURL           = getEnv("REGISTRY_URL", "")
-	RegistryUsername      = getEnv("REGISTRY_USERNAME", "")
-	RegistryPassword      = getEnv("REGISTRY_PASSWORD", "")
+	// Compose variables holding each service's image tag. The compose file
+	// interpolates these (image: .../lattice-api:${LATTICE_API_TAG:-latest}) so
+	// a targeted update can pin a version by writing the env file instead of
+	// editing docker-compose.yml by hand.
+	APITagEnvVar     = getEnv("API_TAG_ENV_VAR", "LATTICE_API_TAG")
+	WebTagEnvVar     = getEnv("WEB_TAG_ENV_VAR", "LATTICE_WEB_TAG")
+	RegistryURL      = getEnv("REGISTRY_URL", "")
+	RegistryUsername = getEnv("REGISTRY_USERNAME", "")
+	RegistryPassword = getEnv("REGISTRY_PASSWORD", "")
 )
 
 // weakJWTKeys is a blocklist of known-insecure default signing keys that must
