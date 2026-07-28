@@ -212,6 +212,9 @@ func reconcileDatabaseInstance(instance structs.DatabaseInstance, obs observedDb
 	current := structs.DatabaseStatus(instance.Status)
 
 	if !present {
+		// A container that doesn't exist has no health to report.
+		dbLifecycle.SetHealth(instance.ID, structs.DBHealthNone, "container is not present on the worker")
+
 		// Never provisioned, or provisioning is still in flight — the watchdog
 		// owns those, not the reconciler.
 		if current.IsTransitional() {
@@ -281,6 +284,15 @@ func reconcileDatabaseInstance(instance structs.DatabaseInstance, obs observedDb
 				Actor:   "reconciler",
 			})
 		}
+	}
+
+	// Health is only meaningful while the container is actually up. Docker keeps
+	// reporting the last health state of an exited container, so trusting it
+	// verbatim leaves a stopped database sitting at "healthy" indefinitely —
+	// the same staleness the container sync path guards against.
+	if obs.State != "running" && obs.State != "paused" {
+		dbLifecycle.SetHealth(instance.ID, structs.DBHealthNone, "container is not running")
+		return
 	}
 
 	if obs.Health != "" {

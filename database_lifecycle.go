@@ -104,6 +104,17 @@ func (l *databaseLifecycle) Transition(instanceID int, to structs.DatabaseStatus
 		code = &c
 	}
 
+	// Health describes a running container. Once an instance is stopped,
+	// deleted or failed, any health we hold is stale — Docker keeps reporting
+	// the last health state of an exited container, so leaving it would show a
+	// stopped database as "healthy" until something else corrected it.
+	// `degraded` is excluded: the container is still there and its health is
+	// exactly what makes it interesting.
+	if to != structs.DBStatusRunning && to != structs.DBStatusDegraded &&
+		current.HealthStatus != string(structs.DBHealthNone) {
+		l.SetHealth(instanceID, structs.DBHealthNone, "container is no longer running")
+	}
+
 	l.recordEvent(instanceID, kind, &statusStr, message, code, opts.Actor)
 	l.broadcast("db_instance_changed", map[string]any{
 		"database_instance_id": instanceID,
