@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aidenappl/lattice-api/db"
@@ -30,6 +31,20 @@ func payloadInt(payload map[string]any, key string) int {
 		}
 	}
 	return 0
+}
+
+// payloadBool coerces a WebSocket payload field to a bool, tolerating the
+// stringly-typed forms a runner might send. A missing key is false — which for
+// volume_removed is the safe reading: a runner that never confirms the purge
+// must not be taken to have performed it.
+func payloadBool(payload map[string]any, key string) bool {
+	switch v := payload[key].(type) {
+	case bool:
+		return v
+	case string:
+		return v == "true"
+	}
+	return false
 }
 
 // dbActionOutcome maps a completed worker action to the lifecycle status the
@@ -68,6 +83,26 @@ func dbActionFailureCode(action string) string {
 		return structs.DBErrCodeRestoreFailed
 	}
 	return structs.DBErrCodeCreateFailed
+}
+
+// isAbsentContainerMessage recognises the "there was nothing there" failure a
+// pre-idempotency runner reports. Matching on the message is unpleasant, but
+// those runners send no code to match on, and the alternative is an instance
+// stranded in `error` until someone upgrades the worker.
+func isAbsentContainerMessage(message string) bool {
+	m := strings.ToLower(message)
+	return strings.Contains(m, "container not found") ||
+		strings.Contains(m, "no such container")
+}
+
+// dbInstanceStatus reads an instance's current status, or "" if it cannot be
+// loaded.
+func dbInstanceStatus(instanceID int) string {
+	instance, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
+	if err != nil {
+		return ""
+	}
+	return instance.Status
 }
 
 // handleDbStatus processes a db_status reply from a worker.
@@ -119,6 +154,14 @@ func handleDbStatus(workerID int, payload map[string]any) {
 			fmt.Sprintf("worker accepted %s", action), "worker")
 
 	case socket.PhaseCompleted:
+		// A delete rides on the same db_remove command as the `remove` action;
+		// what separates them is the instance being in `deleting`. When it is,
+		// this reply retires the row instead of parking it in `stopped`.
+		if action == socket.MsgDbRemove &&
+			dbLifecycle.FinalizeDeletion(instanceID, payloadBool(payload, "volume_removed")) {
+			return
+		}
+
 		next, _ := dbActionOutcome(action)
 		if next == "" {
 			dbLifecycle.RecordEvent(instanceID, structs.DBEventTransition,
@@ -138,6 +181,21 @@ func handleDbStatus(workerID int, payload map[string]any) {
 	case socket.PhaseFailed:
 		if message == "" {
 			message = fmt.Sprintf("%s failed", action)
+		}
+
+		// A runner that predates idempotent removal reports an already-absent
+		// container as a failure. For the `remove` action that outcome is the
+		// goal, so it lands as stopped rather than poisoning the row into error
+		// — which is what made a second Remove click leave the instance stuck
+		// in `error` with nothing wrong. A delete deliberately does not get
+		// this pass: the data volume it was asked to purge is still there.
+		if action == socket.MsgDbRemove && isAbsentContainerMessage(message) &&
+			dbInstanceStatus(instanceID) != string(structs.DBStatusDeleting) {
+			dbLifecycle.Transition(instanceID, structs.DBStatusStopped, transitionOpts{
+				Message: "container was already absent; nothing to remove",
+				Actor:   "worker",
+			})
+			return
 		}
 		dbLifecycle.Transition(instanceID, structs.DBStatusError, transitionOpts{
 			Message: message,

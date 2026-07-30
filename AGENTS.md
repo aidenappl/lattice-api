@@ -438,6 +438,37 @@ so soft-deleted rows never collide) is the ledger. The runner additionally binds
 before pulling the image — the ledger cannot see a foreign process, and there is a race between
 checking and binding.
 
+**Remove vs delete — one command, two meanings.** Both ride on `db_remove`; what separates them is
+the `remove_volume` flag and the instance's status:
+
+| | `POST /database-instances/{id}/remove` | `DELETE /database-instances/{id}` |
+|---|---|---|
+| Container | destroyed | destroyed |
+| Data volume | **preserved** — the database can be started again with its data | **destroyed** (`remove_volume: true`) |
+| Row | kept, lands in `stopped` | retired (`active = 0`) once the worker confirms |
+| Snapshots | untouched | untouched — the only recovery path once the volume is gone |
+
+- **The delete is deferred, not optimistic.** `HandleDeleteDatabaseInstance` sends the command,
+  calls `Lifecycle.BeginDeleting` to put the instance in `deleting`, and returns. The row is retired
+  by `FinalizeDeletion` (`database_lifecycle.go`) when the worker's `completed` reply arrives with
+  `volume_removed: true`. It previously soft-deleted the row the instant the command was queued,
+  which orphaned a container and a full data volume whenever the removal failed — or was never sent,
+  because the worker was offline.
+- **`FinalizeDeletion` is how a delete is told apart from a `remove`**: same reply, but it only acts
+  when the instance is in `deleting`, and returns false otherwise so the reply falls through to the
+  normal `stopped` outcome. A `completed` reply *without* `volume_removed` (a runner predating volume
+  purging) is failed with `remove_failed` rather than retiring the row — never leak the volume.
+- **A delete on a disconnected worker returns 409.** `?force=true` overrides it: the record is
+  retired and the event trail records that the container and volume were abandoned on the worker.
+- **`db_remove` is idempotent on the runner side** — an absent container is the goal of a remove, not
+  a failure. It used to reply `failed: container not found`, so a second Remove click drove a
+  perfectly fine instance into `error`. The API additionally tolerates that old reply
+  (`isAbsentContainerMessage`) for a plain remove, but *not* mid-delete, where the volume it was
+  asked to purge is still there.
+- The watchdog fails a stuck `deleting` out to `error` like any other transitional status, naming the
+  container and volume that may still exist. It used to only record an event, which left an
+  interrupted delete stranded in `deleting` forever once deletion stopped being optimistic.
+
 **Data volumes** — creating an instance whose `lattice-dbdata-<name>` volume already exists fails
 with an explanatory error unless `adopt_existing_volume` is passed. Reusing a populated volume makes
 the engine skip initialisation and keep its old credentials while the control plane stores newly
@@ -596,8 +627,8 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 | Method | Path | Handler |
 |--------|------|---------|
 | GET / POST | `/database-instances` | `HandleListDatabaseInstances` / `DatabaseHandler.HandleCreateDatabaseInstance` `[E]` |
-| GET / PUT / DELETE | `/database-instances/{id}` | `HandleGetDatabaseInstance` / `DatabaseHandler.HandleUpdateDatabaseInstance` `[E]` / `HandleDeleteDatabaseInstance` `[E]` |
-| POST | `/database-instances/{id}/{start,stop,restart,remove}` | `DatabaseHandler.HandleDatabaseAction` `[E]` (action derived from the last path segment) |
+| GET / PUT / DELETE | `/database-instances/{id}` | `HandleGetDatabaseInstance` / `DatabaseHandler.HandleUpdateDatabaseInstance` `[E]` / `HandleDeleteDatabaseInstance` `[E]` (destroys container **and data volume**, async; `409` if the worker is offline unless `?force=true`) |
+| POST | `/database-instances/{id}/{start,stop,restart,remove}` | `DatabaseHandler.HandleDatabaseAction` `[E]` (action derived from the last path segment; `remove` is container-only — the volume survives) |
 | GET | `/database-instances/{id}/credentials` | `DatabaseHandler.HandleGetDatabaseCredentials` `[A]` (**deprecated** — returns root from a plain GET; use `/reveal`) |
 | POST | `/database-instances/{id}/reveal` | `DatabaseHandler.HandleRevealDatabaseCredentials` `[A]` (audited; root only when `include_root` is set) |
 | GET | `/database-instances/{id}/connection` | `DatabaseHandler.HandleGetDatabaseConnection` (host/port/database/username — no secrets) |

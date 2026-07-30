@@ -26,6 +26,32 @@ import (
 type DatabaseHandler struct {
 	WorkerHub *socket.WorkerHub
 	AdminHub  *socket.AdminHub
+	// Lifecycle is the control plane's single owner of status writes. Handlers
+	// go through it rather than writing database_instances.status directly, so
+	// no state change can happen without an event and a broadcast. Optional:
+	// nil-safe for tests that exercise a handler without the full app.
+	Lifecycle DatabaseLifecycle
+}
+
+// DatabaseLifecycle is the slice of the lifecycle owner that HTTP handlers
+// need. Kept as an interface here because the implementation lives in package
+// main alongside the reconciler that shares it.
+type DatabaseLifecycle interface {
+	// BeginDeleting marks an instance as being torn down, so a concurrent
+	// reconcile does not read the still-present container as drift and the UI
+	// shows the teardown while it is in flight.
+	BeginDeleting(instanceID int, actor string)
+}
+
+// dbActor names whoever made a request, for the lifecycle event trail.
+func dbActor(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if user, _ := middleware.GetUserFromContext(r.Context()); user != nil {
+		return user.Email
+	}
+	return ""
 }
 
 // dbEvent appends an entry to an instance's history. Failures are logged, never
@@ -490,8 +516,19 @@ func (h *DatabaseHandler) HandleUpdateDatabaseInstance(w http.ResponseWriter, r 
 	responder.New(w, instance, "database instance updated")
 }
 
-// HandleDeleteDatabaseInstance soft-deletes a database instance and sends
-// db_remove to the worker if connected.
+// HandleDeleteDatabaseInstance destroys a database for good: the container and
+// its data volume are removed on the worker, and the row is retired only once
+// the worker confirms both are gone.
+//
+// Deletion is deliberately deferred rather than optimistic. The row used to be
+// soft-deleted the instant the command was queued, which meant a worker that
+// failed the removal — or was never asked, because it was offline — left an
+// orphaned container and a full data volume with nothing left in the control
+// plane pointing at them. Snapshots are never touched: they are the only
+// recovery path once the volume is gone.
+//
+// ?force=true is the escape hatch for a worker that is gone for good: it
+// retires the record and records that the on-disk resources were abandoned.
 func (h *DatabaseHandler) HandleDeleteDatabaseInstance(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(mux.Vars(r)["id"])
 	if err != nil {
@@ -505,30 +542,53 @@ func (h *DatabaseHandler) HandleDeleteDatabaseInstance(w http.ResponseWriter, r 
 		return
 	}
 
-	// Best-effort: send remove command to the worker
-	if h.WorkerHub.IsConnected(instance.WorkerID) {
-		payload := dbCommandPayload(id, socket.MsgDbRemove)
-		payload["container_name"] = instance.ContainerName
-		payload["volume_name"] = instance.VolumeName
-		if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
-			Type:    socket.MsgDbRemove,
-			Payload: payload,
-		}); err != nil {
-			log.Printf("delete database instance %d: failed to send db_remove to worker %d: %v", id, instance.WorkerID, err)
+	if !h.WorkerHub.IsConnected(instance.WorkerID) {
+		if r.URL.Query().Get("force") != "true" {
+			responder.SendError(w, http.StatusConflict, fmt.Sprintf(
+				"worker %d is not connected, so container %s and data volume %s cannot be destroyed; retry once it reconnects, or pass ?force=true to retire the record and abandon them",
+				instance.WorkerID, instance.ContainerName, instance.VolumeName))
+			return
 		}
-	} else {
-		log.Printf("delete database instance %d: worker %d offline, container and volume left in place", id, instance.WorkerID)
-	}
 
-	dbEvent(id, structs.DBEventRequested, "delete requested", r)
+		log.Printf("delete database instance %d: forced while worker %d offline, container %s and volume %s left in place",
+			id, instance.WorkerID, instance.ContainerName, instance.VolumeName)
+		dbEvent(id, structs.DBEventRequested, fmt.Sprintf(
+			"delete forced while worker %d was offline — container %s and data volume %s abandoned on the worker",
+			instance.WorkerID, instance.ContainerName, instance.VolumeName), r)
 
-	if err := query.DeleteDatabaseInstance(db.DB, id); err != nil {
-		responder.QueryError(w, err, "failed to delete database instance")
+		if err := query.DeleteDatabaseInstance(db.DB, id); err != nil {
+			responder.QueryError(w, err, "failed to delete database instance")
+			return
+		}
+
+		logAudit(r, "delete", "database_instance", intPtr(id), strPtr(instance.Name))
+		responder.New(w, nil, "database instance record deleted; container and data volume left on the offline worker")
 		return
 	}
 
+	payload := dbCommandPayload(id, socket.MsgDbRemove)
+	payload["container_name"] = instance.ContainerName
+	payload["volume_name"] = instance.VolumeName
+	// The one difference from the `remove` action: a delete takes the data with
+	// it. The worker retires the row for us when it confirms.
+	payload["remove_volume"] = true
+
+	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
+		Type:    socket.MsgDbRemove,
+		Payload: payload,
+	}); err != nil {
+		responder.SendError(w, http.StatusInternalServerError,
+			fmt.Sprintf("failed to send delete command to worker %d: %v", instance.WorkerID, err))
+		return
+	}
+
+	dbEvent(id, structs.DBEventRequested, "delete requested — container and data volume", r)
+	if h.Lifecycle != nil {
+		h.Lifecycle.BeginDeleting(id, dbActor(r))
+	}
+
 	logAudit(r, "delete", "database_instance", intPtr(id), strPtr(instance.Name))
-	responder.New(w, nil, "database instance deleted")
+	responder.New(w, nil, "deleting database: destroying container and data volume")
 }
 
 // HandleDatabaseAction dispatches start/stop/restart/remove actions for a

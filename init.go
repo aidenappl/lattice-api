@@ -128,6 +128,7 @@ func initApp() *appContext {
 		databaseHandler: &routers.DatabaseHandler{
 			WorkerHub: workerHub,
 			AdminHub:  adminHub,
+			Lifecycle: dbLifecycle,
 		},
 	}
 }

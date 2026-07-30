@@ -155,12 +155,16 @@ func (rc *databaseReconciler) failStuckInstances() {
 				instance.Status, dbProvisionTimeout, instance.WorkerID)
 		}
 
-		// A delete that never completed shouldn't be resurrected as an error —
-		// the row is already soft-deleted, so just record what happened.
+		// A delete holds the row open until the worker confirms the container
+		// and data volume are gone, so a delete that never completed must fail
+		// out like anything else — it is retryable, and the resources it was
+		// meant to destroy are still on the worker. Recording an event and
+		// leaving it in `deleting` (as this did while deletion was optimistic)
+		// stranded it there permanently.
 		if status == structs.DBStatusDeleting {
-			dbLifecycle.RecordEvent(instance.ID, structs.DBEventFailed, message, "watchdog")
-			rc.release(instance.ID)
-			continue
+			message = fmt.Sprintf("delete did not complete: %s; container %s and data volume %s may still exist",
+				message, instance.ContainerName, instance.VolumeName)
+			code = structs.DBErrCodeRemoveFailed
 		}
 
 		dbLifecycle.Transition(instance.ID, structs.DBStatusError, transitionOpts{

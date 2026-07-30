@@ -132,6 +132,81 @@ func (l *databaseLifecycle) Transition(instanceID int, to structs.DatabaseStatus
 	})
 }
 
+// BeginDeleting marks an instance as being torn down. The row stays active
+// until the worker confirms the container and volume are gone — see
+// FinalizeDeletion — so a failed teardown is visible and retryable instead of
+// vanishing from the UI with its resources still on disk.
+func (l *databaseLifecycle) BeginDeleting(instanceID int, actor string) {
+	if actor == "" {
+		actor = "api"
+	}
+	l.Transition(instanceID, structs.DBStatusDeleting, transitionOpts{
+		Message: "destroying container and data volume",
+		Actor:   actor,
+	})
+}
+
+// FinalizeDeletion retires the row of an instance whose worker has confirmed
+// the container and data volume are gone.
+//
+// Returns false when the instance was not being deleted, which is how a plain
+// `remove` action — same command, container only — is told apart from a delete.
+func (l *databaseLifecycle) FinalizeDeletion(instanceID int, volumeRemoved bool) bool {
+	instance, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
+	if err != nil {
+		logger.Error("database", "delete finalisation failed to load instance", logger.F{
+			"database_instance_id": instanceID, "error": err,
+		})
+		return false
+	}
+	if instance.Status != string(structs.DBStatusDeleting) {
+		return false
+	}
+
+	// A runner that predates volume purging removes the container and reports
+	// success without the confirmation. Retiring the row on that reply would
+	// leak the data volume with nothing left pointing at it, so the delete is
+	// held open as a retryable error instead.
+	if !volumeRemoved {
+		message := fmt.Sprintf("worker did not confirm removal of data volume %s; upgrade the runner on worker %d and retry the delete",
+			instance.VolumeName, instance.WorkerID)
+		l.Transition(instanceID, structs.DBStatusError, transitionOpts{
+			Message: message,
+			Err:     newDatabaseError(structs.DBErrCodeRemoveFailed, message, true),
+			Actor:   "worker",
+		})
+		return true
+	}
+
+	if err := query.DeleteDatabaseInstance(db.DB, instanceID); err != nil {
+		message := fmt.Sprintf("container and data volume were destroyed but the record could not be retired: %v", err)
+		logger.Error("database", "delete finalisation failed to retire row", logger.F{
+			"database_instance_id": instanceID, "error": err,
+		})
+		l.Transition(instanceID, structs.DBStatusError, transitionOpts{
+			Message: message,
+			Err:     newDatabaseError(structs.DBErrCodeRemoveFailed, message, true),
+			Actor:   "worker",
+		})
+		return true
+	}
+
+	l.recordEvent(instanceID, structs.DBEventTransition, nil,
+		fmt.Sprintf("deleted: container %s and data volume %s destroyed, record retired",
+			instance.ContainerName, instance.VolumeName), nil, "worker")
+	l.broadcast("db_instance_deleted", map[string]any{
+		"database_instance_id": instanceID,
+		"name":                 instance.Name,
+	})
+	logger.Info("database", "instance deleted", logger.F{
+		"database_instance_id": instanceID,
+		"name":                 instance.Name,
+		"worker_id":            instance.WorkerID,
+		"volume":               instance.VolumeName,
+	})
+	return true
+}
+
 // SetHealth records observed container health, independently of status. A
 // running instance can legitimately be unhealthy.
 func (l *databaseLifecycle) SetHealth(instanceID int, health structs.DatabaseHealth, message string) {
