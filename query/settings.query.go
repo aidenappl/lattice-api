@@ -43,3 +43,35 @@ func GetSettingsByPrefix(engine db.Queryable, prefix string) (map[string]string,
 	}
 	return result, rows.Err()
 }
+
+// DeleteSettingExisted deletes a key and reports whether a row was actually
+// removed.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// ⚠️ THIS EXISTS TO MAKE SSO STATE CONSUMPTION ATOMIC, AND THE RETURN VALUE IS
+// THE WHOLE POINT.
+//
+// The SSO callback must accept a `state` at most once — a state that can be
+// consumed twice is a state an attacker can replay by capturing the callback URL,
+// letting the real one complete, then replaying it.
+//
+// `DeleteSetting` cannot express that: it reports success whether or not a row
+// was there, so two concurrent callbacks would both "succeed" and both proceed.
+// This variant returns RowsAffected, and MariaDB's row lock guarantees exactly
+// one of N concurrent callers sees true. The caller treats winning the DELETE —
+// not having read the row — as authorisation to use it.
+//
+// Do not "simplify" this into a SELECT followed by DeleteSetting. That
+// reintroduces the exact window the design closes.
+// ─────────────────────────────────────────────────────────────────────────────
+func DeleteSettingExisted(engine db.Queryable, key string) (bool, error) {
+	res, err := engine.Exec("DELETE FROM settings WHERE `key` = ?", key)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}

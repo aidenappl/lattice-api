@@ -33,6 +33,12 @@ rows in this database.
   `registries`, `database_instances`, `database_instance_events`, `database_snapshots`, `backup_destinations`, `networks`,
   `volumes`, `global_env_vars`, `templates`, `webhook_configs`, `deploy_tokens`, `api_tokens`,
   `worker_tokens`, `users`, `sso_sessions`, `audit_log`, `settings`, and the log/metric tables.
+
+  ⚠️ **`sso_sessions` was listed here for a long time before any migration created it.** That
+  line is why nobody checked: the docs asserted the table existed, `query/sso_sessions.query.go`
+  read it, and every read failed with *table doesn't exist* — which the checkpoint swallowed as a
+  generic DB error and allowed. The table is now genuinely created in `db.migrate()`. When you
+  add a table to this list, add the `migrate()` call in the same change.
 - **Command dispatch** — translating REST calls (deploy, restart, rollback, exec, DB actions)
   into `Envelope` messages pushed to the right worker over its WebSocket.
 - **Deployment orchestration bookkeeping** — creating deployment records, resolving env
@@ -69,9 +75,18 @@ rows in this database.
 - **Crypto:** `golang.org/x/crypto` v0.50.0 — bcrypt for passwords.
 - **YAML:** `gopkg.in/yaml.v3` v3.0.1 — compose import/parsing.
 
-**Internal SDKs:** none imported as Go modules. Notably this repo does **not** import
-`go-forta` or `go-keyring` — Forta OAuth was removed and replaced with a self-contained,
-provider-agnostic OAuth2/OIDC client under `sso/` (see *Domain & architecture*). Keyring is used
+- **SSO:** `github.com/aidenappl/go-forta/sso` **v1.6.0** — the shared relying-party SSO
+  implementation. Brings `coreos/go-oidc/v3` and `golang.org/x/oauth2` transitively.
+
+**Internal SDKs:** `go-forta/sso` only, and ⚠️ **that is NOT the same as importing `go-forta`
+itself.** The root `forta` package validates Forta's own tokens for a service that has delegated
+identity to Forta; this repo has its own users and its own JWTs, and imports only the `sso`
+subpackage, which runs a login flow against *any* OIDC provider. Forta OAuth-as-identity was
+removed and has not returned.
+
+The `sso/` package used to be a self-contained OAuth2 client. It was replaced because it had
+drifted: no PKCE at all, a three-attempt token exchange that could not work against single-use
+codes, and an identity keyed on email. See *Domain & architecture*. Keyring is used
 only at **CI** time via the `aidenappl/keyring-actions` GitHub Action to inject registry
 credentials for the image build; the running binary reads plain env vars.
 
@@ -296,17 +311,36 @@ individual mutating routes wrap the handler in `RequireEditor` or `RequireAdmin`
 SSO users are **not** a separate auth path at request time: the SSO callback issues them a
 Lattice JWT, so they authenticate exactly like local users. The one extra step is
 `checkpointSSOGrant` — for users with `auth_type == "sso"`, the middleware re-introspects the
-stored refresh token against the IDP at most every **5 minutes** (`ssoCheckpointTTL`). If the IDP
-reports `active: false`, the middleware **stamps `users.tokens_revoked_at = NOW()`** (via
-`RevokeUserTokens`) — this is what actually locks the user out: `validateLatticeToken` then rejects
-every existing access/refresh JWT issued before that moment. The `sso_sessions` row is also
-deleted and the request 401s. (Revoking tokens is essential — deleting the session alone would
-drop the *next* request into the `sess == nil` allow-path, keeping a revoked user authenticated
-for the full JWT window.) Network/decrypt errors **fail open** (allow) only within a bounded
-grace window (`ssoCheckpointGrace`, 30 min) measured from the last positive confirmation
-(`last_checked_at`); once the grant has gone that long unconfirmed the checkpoint **fails closed**
-(denies the request) rather than trusting it indefinitely. It does not revoke tokens in that case,
-so a recovered IDP re-admits the user without a re-login.
+stored refresh token against the IdP at most every **5 minutes** (`ssoCheckpointTTL`). The policy
+itself lives in `go-forta/sso`'s `Checkpointer`; this repo supplies the stores and maps the result
+onto the middleware's bool.
+
+⚠️ **This had NEVER RUN before 2026-07-30, and the reason is worth remembering.** The logic below
+was correct in outline, but it opened with `if err != nil { return true }` on the session lookup,
+and `sso_sessions` was never created by any migration — so every request took that branch. The
+bounded fail-open was unreachable; the effective behaviour was **unbounded** fail-open, and the
+only symptom was a warning line. A second, independent reason it could not have worked:
+`introspect_url` was read by `LoadConfig` but no handler ever wrote it, so there was no endpoint
+to call. Both are fixed; `introspect_url` is now settable through `PUT /admin/sso-config`.
+
+If the IdP reports `active: false`, the checkpoint **stamps `users.tokens_revoked_at = NOW()`**
+(via `RevokeUserTokens`, wired as the library's `LocalTokenRevoker`) — this is what actually locks
+the user out: `validateLatticeToken` then rejects every existing access/refresh JWT issued before
+that moment. The `sso_sessions` row is also deleted and the request 401s. Revoking tokens is
+essential — deleting the session alone would drop the *next* request into the `sess == nil`
+allow-path, keeping a revoked user authenticated for the full JWT window.
+
+"No answer" (network error, 5xx, decrypt failure) **fails open** only within a bounded grace
+window (`ssoCheckpointGrace`, 30 min) measured from the last positive confirmation
+(`last_checked_at`, never from now — measuring from now would restart the window on every failed
+attempt and grant permanent access to a permanently unreachable IdP). Past that window the result
+is `CheckpointUnavailable`.
+
+⚠️ **`CheckpointUnavailable` should be HTTP 503, not 401, and this middleware cannot express
+it.** The hook returns a bool, so it denies — which is the right choice of the two available,
+since allowing would restore the unbounded fail-open. But a 401 tells clients to discard
+credentials and re-authenticate against the IdP that is already down. Widening the hook to carry
+a status is the fix.
 
 **RBAC roles:** `admin` > `editor` > `viewer`, plus `pending`.
 - `RejectPending` blocks `pending` users from all `/admin` routes (they can still hit

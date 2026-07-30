@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aidenappl/lattice-api/crypto"
+	ssolib "github.com/aidenappl/go-forta/sso"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/jwt"
@@ -72,7 +72,7 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	//      the state returned by the IDP. This is the CSRF defense: an attacker
 	//      who forges a callback cannot also set this browser's cookie.
 	//   2. The state must be present and unexpired in the DB, and is consumed
-	//      (single-use) by ValidateState.
+	//      ATOMICALLY and single-use by sso.StateStore.ConsumeState.
 	state := r.URL.Query().Get("state")
 	stateCookie, cookieErr := r.Cookie(sso.SSOStateCookie)
 	if cookieErr != nil || stateCookie.Value == "" || state == "" ||
@@ -86,17 +86,21 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, loginErrorURL("sso_state_expired"), http.StatusFound)
 		return
 	}
-	if !sso.ValidateState(state) {
+	// The server-side record carries the PKCE verifier and the nonce, and consuming
+	// it is ATOMIC — see sso.StateStore.ConsumeState. The old ValidateState did a
+	// read followed by an unconditional delete and returned a bool, so two
+	// concurrent callbacks presenting the same state both passed.
+	stateData, err := ssolib.ConsumeState(r.Context(), sso.NewStateStore(), state)
+	if err != nil {
 		if hasSession() {
 			http.Redirect(w, r, cfg.PostLoginRedirectURL(), http.StatusFound)
 			return
 		}
-		logger.Error("sso", "invalid or expired state parameter")
+		logger.Error("sso", "invalid, expired or already-consumed state")
 		http.Redirect(w, r, loginErrorURL("sso_state_expired"), http.StatusFound)
 		return
 	}
 
-	// Exchange code for tokens
 	code := r.URL.Query().Get("code")
 	if code == "" {
 		logger.Error("sso", "callback missing authorization code")
@@ -104,12 +108,27 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tokenResp, err := sso.ExchangeCode(code)
+	provider := cfg.Provider()
+	adapter, err := ssolib.NewAdapter(r.Context(), provider)
 	if err != nil {
-		// If token exchange fails (e.g., code already used from a double-callback),
-		// check if the user already has a valid session cookie from the first callback.
-		if cookie, cookieErr := r.Cookie("lattice-access-token"); cookieErr == nil && cookie.Value != "" {
-			logger.Info("sso", "token exchange failed but user already has session, redirecting")
+		logger.Error("sso", "adapter build failed", logger.F{"error": err})
+		http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
+		return
+	}
+
+	// ── One exchange, with the PKCE verifier attached ────────────────────────
+	//
+	// This replaces ExchangeCode's JSON → Basic → body fallback chain. That chain
+	// could never have worked as intended: the first attempt to reach a conforming
+	// server consumes the single-use code, so the fallbacks could only ever receive
+	// invalid_grant. It also dropped the verifier entirely, so PKCE was configured
+	// and defended nothing.
+	identity, tokens, err := adapter.Exchange(r.Context(), code, stateData.Verifier, stateData.Nonce)
+	if err != nil {
+		// A double-callback lands here now that the code is genuinely single-use.
+		// If the browser already holds a session from the first leg, send it on.
+		if hasSession() {
+			logger.Info("sso", "exchange failed but browser already has a session, continuing")
 			http.Redirect(w, r, cfg.PostLoginRedirectURL(), http.StatusFound)
 			return
 		}
@@ -118,26 +137,29 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch user info
-	userInfo, err := sso.FetchUserInfo(tokenResp.AccessToken)
-	if err != nil {
-		logger.Error("sso", "userinfo fetch failed", logger.F{"error": err})
-		http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
-		return
-	}
-
-	// Extract user details
-	email := sso.GetUserEmail(userInfo)
+	email := identity.Email
 	if email == "" {
-		logger.Error("sso", "no email in userinfo response", logger.F{"userinfo_keys": userInfoKeys(userInfo)})
+		logger.Error("sso", "no email in identity")
 		http.Redirect(w, r, loginErrorURL("sso_no_email"), http.StatusFound)
 		return
 	}
-	name := sso.GetUserName(userInfo)
-	picture := sso.GetUserPicture(userInfo)
+	name := ""
+	if identity.Name != nil {
+		name = *identity.Name
+	}
+	picture := ""
+	if identity.Picture != nil {
+		picture = *identity.Picture
+	}
 
-	// Extract the stable subject identifier (OIDC "sub" claim)
-	subject := sso.GetUserIdentifier(userInfo)
+	// ── The subject is now the REAL `sub` ────────────────────────────────────
+	//
+	// It comes from the library, which reads the standard claim. It is no longer
+	// sso.GetUserIdentifier(), which read `sso.user_identifier` — "email" in
+	// production — and fell back to "email" regardless, writing an address into a
+	// column documented as the OIDC `sub`. Identity keyed on a reassignable address
+	// is an account-takeover primitive.
+	subject := identity.Subject
 
 	// Find user: try sso_subject first (stable), then email+auth_type=sso
 	// This allows the same email to have separate local and SSO accounts.
@@ -171,10 +193,40 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		logger.Info("sso", "auto-provisioned user", logger.F{"email": email, "user_id": user.ID, "sso_subject": subject})
-	} else if user.SSOSubject == nil && subject != "" {
-		// Backfill sso_subject for existing users who logged in before this was added
-		_ = query.UpdateUserSSOSubject(db.DB, user.ID, subject)
-		logger.Info("sso", "backfilled sso_subject", logger.F{"user_id": user.ID, "sso_subject": subject})
+	} else if subject != "" && (user.SSOSubject == nil || sso.LooksLikeEmail(*user.SSOSubject)) {
+		// ── Heal the stored subject ──────────────────────────────────────────
+		//
+		// Two cases, both writing the real `sub` over what is there:
+		//
+		//  1. nil — a user who logged in before sso_subject existed at all.
+		//  2. AN EMAIL ADDRESS — a user whose subject was written by the old
+		//     GetUserIdentifier, which returned `sso.user_identifier` ("email" in
+		//     production). This is the one-time repair of that bug. A real `sub`
+		//     from forta-api is a UUID and can never contain "@", so the test
+		//     cannot misfire on a legitimate value.
+		//
+		// Healing on login rather than by a migration script is deliberate: the
+		// correct `sub` is only knowable from a live token, so a script would have
+		// had to match on email and trust that mapping. There was exactly one such
+		// row when this shipped, and its owner logging in fixes it correctly.
+		//
+		// ⚠️ The user was matched by EMAIL to get here (GetUserByEmailAndAuthType),
+		// which is the very thing this change is moving away from. That is safe only
+		// because the match is scoped to auth_type='sso' and happens once — after
+		// this write, the subject lookup succeeds and the email path is never taken
+		// for this user again. When every row has a real subject, the email fallback
+		// should be deleted.
+		previous := "nil"
+		if user.SSOSubject != nil {
+			previous = *user.SSOSubject
+		}
+		if err := query.UpdateUserSSOSubject(db.DB, user.ID, subject); err != nil {
+			// Non-fatal: the login proceeds. The heal is retried on the next login.
+			logger.Error("sso", "failed to heal sso_subject", logger.F{"user_id": user.ID, "error": err})
+		} else {
+			logger.Info("sso", "healed sso_subject to the real OIDC sub",
+				logger.F{"user_id": user.ID, "previous": previous, "sso_subject": subject})
+		}
 	}
 
 	// Update profile image on each login (it might change at the provider)
@@ -187,19 +239,20 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist the IDP tokens so the auth middleware can checkpoint the
-	// user's grant against the IDP on a TTL. Tokens are encrypted at rest
-	// via crypto.Encrypt (AES-256-GCM, key from ENCRYPTION_KEY).
-	if encAccess, encErr := crypto.Encrypt(tokenResp.AccessToken); encErr == nil {
-		if encRefresh, encErr2 := crypto.Encrypt(tokenResp.RefreshToken); encErr2 == nil {
-			if upErr := query.UpsertSSOSession(db.DB, int64(user.ID), encAccess, encRefresh); upErr != nil {
-				logger.Error("sso", "failed to persist sso session", logger.F{"error": upErr, "user_id": user.ID})
-			}
-		} else {
-			logger.Error("sso", "failed to encrypt refresh token", logger.F{"error": encErr2})
-		}
-	} else {
-		logger.Error("sso", "failed to encrypt access token", logger.F{"error": encErr})
+	// Persist the IdP tokens so the checkpoint can introspect the upstream grant.
+	// Encryption at rest is the SessionStore's job — see sso/sessionstore.go.
+	//
+	// ⚠️ Until this change the table these rows go into did not exist, so this write
+	// failed silently on every login and the checkpoint had nothing to read.
+	// db/db.go now creates it.
+	if err := sso.NewSessionStore().SaveSession(r.Context(), int64(user.ID), ssolib.Session{
+		Provider: sso.ProviderSlug,
+		Subject:  subject,
+		Tokens:   *tokens,
+	}); err != nil {
+		// Non-fatal: the login has succeeded and the user gets their session. The cost
+		// is that this session is not checkpointed until the next login.
+		logger.Error("sso", "failed to persist sso session", logger.F{"error": err, "user_id": user.ID})
 	}
 
 	// Issue Lattice JWT tokens

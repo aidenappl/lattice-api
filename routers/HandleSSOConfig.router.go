@@ -35,6 +35,7 @@ func HandleGetSSOConfig(w http.ResponseWriter, r *http.Request) {
 		"authorize_url":   cfg.AuthorizeURL,
 		"token_url":       cfg.TokenURL,
 		"userinfo_url":    cfg.UserInfoURL,
+		"introspect_url":  cfg.IntrospectURL,
 		"redirect_url":    cfg.RedirectURL,
 		"logout_url":      cfg.LogoutURL,
 		"scopes":          cfg.Scopes,
@@ -55,6 +56,7 @@ func HandleUpdateSSOConfig(w http.ResponseWriter, r *http.Request) {
 		AuthorizeURL   *string `json:"authorize_url"`
 		TokenURL       *string `json:"token_url"`
 		UserInfoURL    *string `json:"userinfo_url"`
+		IntrospectURL  *string `json:"introspect_url"`
 		RedirectURL    *string `json:"redirect_url"`
 		LogoutURL      *string `json:"logout_url"`
 		Scopes         *string `json:"scopes"`
@@ -109,9 +111,29 @@ func HandleUpdateSSOConfig(w http.ResponseWriter, r *http.Request) {
 	setIf("sso.authorize_url", body.AuthorizeURL)
 	setIf("sso.token_url", body.TokenURL)
 	setIf("sso.userinfo_url", body.UserInfoURL)
+	// ⚠️ WITHOUT THIS, THE REVOCATION CHECKPOINT CANNOT RUN AT ALL.
+	//
+	// LoadConfig has always read sso.introspect_url, but no handler ever wrote it,
+	// so it was env-only and unset in production. sso.Introspect therefore had no
+	// endpoint to call, and that was the second of two independent reasons the
+	// checkpoint was dead — the first being that sso_sessions did not exist.
+	//
+	// For forta-api the value is https://auth.appleby.cloud/oauth/introspect.
+	setIf("sso.introspect_url", body.IntrospectURL)
 	setIf("sso.redirect_url", body.RedirectURL)
 	setIf("sso.logout_url", body.LogoutURL)
 	setIf("sso.scopes", body.Scopes)
+	// ⚠️ VESTIGIAL. Nothing reads this any more, and nothing should.
+	//
+	// It used to name the claim treated as the user's identity, and its production
+	// value was "email" — which the old GetUserIdentifier wrote into
+	// users.sso_subject under a comment claiming it was the OIDC `sub`. Identity
+	// keyed on a reassignable address is an account-takeover primitive, so the
+	// library now always reads the standard `sub`.
+	//
+	// The field is still accepted and returned so the admin UI and lattice-mcp do
+	// not break on an unknown key. Do NOT reconnect it to Provider.SubjectClaim;
+	// see sso/provider.go.
 	setIf("sso.user_identifier", body.UserIdentifier)
 	setIf("sso.button_label", body.ButtonLabel)
 	setBoolIf("sso.auto_provision", body.AutoProvision)

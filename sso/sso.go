@@ -1,20 +1,19 @@
 package sso
 
 import (
-	"bytes"
-	"crypto/rand"
-	"encoding/base64"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	ssolib "github.com/aidenappl/go-forta/sso"
 	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/env"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 )
 
@@ -143,57 +142,87 @@ func Config() map[string]any {
 // Using the DB (instead of in-memory) ensures states survive API restarts.
 // Returns an error if the OS CSPRNG fails — the caller MUST NOT proceed with a
 // zero/weak state.
-func generateState() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("failed to generate state: %w", err)
-	}
-	state := base64.URLEncoding.EncodeToString(b)
+// StateStore implements ssolib.StateStore over the settings table.
+//
+// It replaces the old generateState/ValidateState pair, which stored only an
+// expiry timestamp — there was no nonce and no PKCE verifier to store, because
+// neither existed. The library's record carries both.
+type StateStore struct{}
 
-	// Store with expiry timestamp as value
-	expiry := time.Now().Add(10 * time.Minute).Format(time.RFC3339)
-	if err := query.SetSetting(db.DB, "sso_state:"+state, expiry); err != nil {
-		return "", fmt.Errorf("failed to persist state: %w", err)
+// NewStateStore returns a StateStore over the package-level DB handle.
+func NewStateStore() *StateStore { return &StateStore{} }
+
+const statePrefix = "sso_state:"
+
+// SaveState persists an in-flight login record and best-effort sweeps dead ones.
+func (s *StateStore) SaveState(_ context.Context, state string, data []byte, _ time.Time) error {
+	if err := query.SetSetting(db.DB, statePrefix+state, string(data)); err != nil {
+		return fmt.Errorf("sso: persist state: %w", err)
+	}
+	go sweepExpiredStates()
+	return nil
+}
+
+// ConsumeState atomically returns and deletes a state record.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// ⚠️ THIS FIXES A RACE THE OLD ValidateState HAD.
+//
+// The previous implementation did GetSetting, then DeleteSetting, and returned a
+// bool. DeleteSetting reports success whether or not a row was there, so two
+// concurrent callbacks presenting the same state BOTH read it and BOTH proceeded
+// — which is the window an attacker replaying a captured callback URL alongside
+// the real one is aiming at.
+//
+// query.DeleteSettingExisted returns RowsAffected, and MariaDB's row lock
+// guarantees exactly one of N concurrent callers sees true. Winning the DELETE —
+// not having read the row — is what authorises using the record.
+// ─────────────────────────────────────────────────────────────────────────────
+func (s *StateStore) ConsumeState(_ context.Context, state string) ([]byte, error) {
+	key := statePrefix + state
+
+	raw, err := query.GetSetting(db.DB, key)
+	if err != nil || raw == "" {
+		return nil, ssolib.ErrNoState
 	}
 
-	// Cleanup expired states (best-effort)
-	go func() {
-		states, _ := query.GetSettingsByPrefix(db.DB, "sso_state:")
-		for k, v := range states {
-			if t, err := time.Parse(time.RFC3339, v); err == nil && time.Now().After(t) {
-				_ = query.DeleteSetting(db.DB, k)
-			}
+	deleted, err := query.DeleteSettingExisted(db.DB, key)
+	if err != nil {
+		return nil, fmt.Errorf("sso: consume state: %w", err)
+	}
+	if !deleted {
+		return nil, ssolib.ErrNoState
+	}
+	return []byte(raw), nil
+}
+
+// sweepExpiredStates prunes expired or unparseable records.
+func sweepExpiredStates() {
+	states, err := query.GetSettingsByPrefix(db.DB, statePrefix)
+	if err != nil {
+		return
+	}
+	for k, v := range states {
+		var sd ssolib.StateData
+		if err := json.Unmarshal([]byte(v), &sd); err != nil {
+			// Includes every record written by the OLD format, which stored a bare
+			// RFC3339 timestamp rather than JSON. Those can never be consumed by the
+			// library, so deleting them is strictly better than leaving them.
+			_ = query.DeleteSetting(db.DB, k)
+			continue
 		}
-	}()
-
-	return state, nil
+		if time.Now().After(sd.ExpiresAt) {
+			_ = query.DeleteSetting(db.DB, k)
+		}
+	}
 }
 
-// ValidateState checks that a state parameter is valid and not expired, and
-// CONSUMES it — state is single-use. A replayed state (or a second leg of a
-// provider redirect chain) will not validate a second time; the callback handles
-// the benign double-callback case separately via the existing session cookie.
-func ValidateState(state string) bool {
-	if state == "" {
-		return false
-	}
-	key := "sso_state:" + state
-	val, err := query.GetSetting(db.DB, key)
-	if err != nil || val == "" {
-		return false
-	}
-
-	// Consume immediately (single-use) regardless of the expiry check outcome.
-	_ = query.DeleteSetting(db.DB, key)
-
-	expiry, err := time.Parse(time.RFC3339, val)
-	if err != nil || time.Now().After(expiry) {
-		return false
-	}
-	return true
-}
-
-// LoginHandler redirects the user to the SSO provider's authorization URL
+// LoginHandler redirects the user to the provider's authorization URL.
+//
+// It now goes through the library, which means the URL carries a PKCE S256
+// challenge and (for kind=oidc) a nonce — neither of which this service sent
+// before. The verifier and nonce are held SERVER-SIDE in the state record, so the
+// callback validates against values the browser never possessed.
 func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := LoadConfig()
 	if !cfg.Enabled || cfg.ClientID == "" || cfg.AuthorizeURL == "" {
@@ -201,16 +230,34 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	state, err := generateState()
+	provider := cfg.Provider()
+	adapter, err := ssolib.NewAdapter(r.Context(), provider)
 	if err != nil {
+		logger.Error("sso", "adapter build failed", logger.F{"error": err})
+		http.Error(w, "SSO misconfigured", http.StatusInternalServerError)
+		return
+	}
+
+	state, nonce, verifier, err := ssolib.GenerateState(r.Context(), NewStateStore(), provider.Slug, "")
+	if err != nil {
+		logger.Error("sso", "state generation failed", logger.F{"error": err})
 		http.Error(w, "failed to initialize login", http.StatusInternalServerError)
 		return
 	}
 
-	// Bind the state to this browser via an HttpOnly cookie. SameSite=Lax so the
-	// cookie is still sent on the top-level GET redirect back from the IDP, but
-	// not on cross-site subresource requests. Path is scoped to /auth/sso so it
-	// is only presented on the login/callback routes.
+	authURL, err := adapter.AuthCodeURL(state, nonce, verifier)
+	if err != nil {
+		logger.Error("sso", "authorize url build failed", logger.F{"error": err})
+		http.Error(w, "failed to initialize login", http.StatusInternalServerError)
+		return
+	}
+
+	// The browser-bound state cookie is KEPT as defence in depth, even though the
+	// state record is now server-side and single-use. It costs nothing and it means
+	// a callback arriving in a different browser than the one that started the login
+	// is rejected before any database work happens. SameSite=Lax so it survives the
+	// top-level GET redirect back from the IdP; Path scoped to /auth/sso so it is
+	// presented on nothing else.
 	http.SetCookie(w, &http.Cookie{
 		Name:     SSOStateCookie,
 		Value:    state,
@@ -221,15 +268,7 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	params := url.Values{
-		"client_id":     {cfg.ClientID},
-		"redirect_uri":  {cfg.RedirectURL},
-		"response_type": {"code"},
-		"scope":         {cfg.Scopes},
-		"state":         {state},
-	}
-
-	http.Redirect(w, r, cfg.AuthorizeURL+"?"+params.Encode(), http.StatusFound)
+	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
 // ClearStateCookie writes an expired state cookie to the response, consuming the
@@ -246,260 +285,36 @@ func ClearStateCookie(w http.ResponseWriter) {
 	})
 }
 
-// TokenResponse from the OAuth2 token endpoint
-type TokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
-	ExpiresIn    int    `json:"expires_in"`
-	RefreshToken string `json:"refresh_token"`
-	IDToken      string `json:"id_token"`
-}
-
-// ExchangeCode exchanges an authorization code for tokens
-func ExchangeCode(code string) (*TokenResponse, error) {
-	cfg := LoadConfig()
-
-	data := url.Values{
-		"grant_type":   {"authorization_code"},
-		"code":         {code},
-		"redirect_uri": {cfg.RedirectURL},
-	}
-
-	// Try three methods in order:
-	// 1. JSON body (Forta-style: POST {url} with {"client_id","client_secret","code"})
-	// 2. Basic auth header (OAuth2 RFC 6749 §2.3.1 preferred)
-	// 3. Credentials in POST body (OAuth2 §2.3.1 alternative)
-	if resp, err := exchangeWithJSON(cfg, code); err == nil {
-		return resp, nil
-	}
-	if resp, err := exchangeWithBasicAuth(cfg, data); err == nil {
-		return resp, nil
-	}
-	return exchangeWithBodyAuth(cfg, data)
-}
-
-func exchangeWithJSON(cfg *SSOConfig, code string) (*TokenResponse, error) {
-	payload := map[string]string{
-		"client_id":     cfg.ClientID,
-		"client_secret": cfg.ClientSecret,
-		"code":          code,
-	}
-	body, _ := json.Marshal(payload)
-
-	req, err := http.NewRequest("POST", cfg.TokenURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	return doTokenRequest(req)
-}
-
-func exchangeWithBasicAuth(cfg *SSOConfig, data url.Values) (*TokenResponse, error) {
-	req, err := http.NewRequest("POST", cfg.TokenURL, strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-	req.SetBasicAuth(cfg.ClientID, cfg.ClientSecret)
-
-	return doTokenRequest(req)
-}
-
-func exchangeWithBodyAuth(cfg *SSOConfig, data url.Values) (*TokenResponse, error) {
-	data.Set("client_id", cfg.ClientID)
-	data.Set("client_secret", cfg.ClientSecret)
-
-	req, err := http.NewRequest("POST", cfg.TokenURL, strings.NewReader(data.Encode()))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-
-	return doTokenRequest(req)
-}
-
-func doTokenRequest(req *http.Request) (*TokenResponse, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("token exchange failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("token endpoint returned %d: %s", resp.StatusCode, string(body))
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-
-	// Try standard OAuth2 format first: {"access_token": "...", ...}
-	var tokenResp TokenResponse
-	if err := json.Unmarshal(body, &tokenResp); err == nil && tokenResp.AccessToken != "" {
-		return &tokenResp, nil
-	}
-
-	// Try Forta envelope format: {"success": true, "data": {"authorization": {"access_token": "..."}}}
-	var envelope struct {
-		Success bool `json:"success"`
-		Data    struct {
-			Authorization TokenResponse `json:"authorization"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Success && envelope.Data.Authorization.AccessToken != "" {
-		return &envelope.Data.Authorization, nil
-	}
-
-	// Try Forta envelope with token at data level: {"success": true, "data": {"access_token": "..."}}
-	var envelope2 struct {
-		Success bool          `json:"success"`
-		Data    TokenResponse `json:"data"`
-	}
-	if err := json.Unmarshal(body, &envelope2); err == nil && envelope2.Success && envelope2.Data.AccessToken != "" {
-		return &envelope2.Data, nil
-	}
-
-	return nil, fmt.Errorf("unrecognized token response format: %s", string(body[:min(len(body), 200)]))
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// FetchUserInfo calls the userinfo endpoint with the access token.
+// ─────────────────────────────────────────────────────────────────────────────
+// WHAT USED TO BE HERE, AND WHY IT IS GONE
 //
-// The function handles two response formats transparently:
-//  1. Flat OIDC-style JSON (e.g. from /oauth/userinfo):
-//     {"sub":"123","email":"a@b.com", ...}
-//  2. Forta envelope JSON (e.g. from /auth/self):
-//     {"success":true,"data":{"id":123,"email":"a@b.com", ...}}
+// This file previously carried the whole OAuth2 client: ExchangeCode,
+// exchangeWithJSON / exchangeWithBasicAuth / exchangeWithBodyAuth, doTokenRequest,
+// FetchUserInfo, GetUserIdentifier, GetUserName, GetUserPicture, GetUserEmail, and
+// a local Introspect. All of it is now in github.com/aidenappl/go-forta/sso.
 //
-// When the response is a Forta envelope (has "success" and "data" keys where
-// "data" is a JSON object), the inner object is returned so that callers like
-// GetUserEmail can find fields at the top level.
-func FetchUserInfo(accessToken string) (map[string]any, error) {
-	cfg := LoadConfig()
-	if cfg.UserInfoURL == "" {
-		return nil, fmt.Errorf("SSO userinfo URL not configured")
-	}
-
-	req, err := http.NewRequest("GET", cfg.UserInfoURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Accept", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("userinfo request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("userinfo endpoint returned %d: %s", resp.StatusCode, string(body))
-	}
-
-	var userInfo map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
-		return nil, fmt.Errorf("failed to decode userinfo: %w", err)
-	}
-
-	// Unwrap Forta envelope: if the response has a "success" key and "data" is
-	// a nested object, return the inner data map so callers find user fields
-	// (email, name, etc.) at the top level.
-	if _, hasSuccess := userInfo["success"]; hasSuccess {
-		if data, ok := userInfo["data"].(map[string]any); ok {
-			return data, nil
-		}
-	}
-
-	return userInfo, nil
-}
-
-// GetUserIdentifier extracts the configured identifier field from userinfo
-func GetUserIdentifier(userInfo map[string]any) string {
-	cfg := LoadConfig()
-	field := cfg.UserIdentifier
-	if field == "" {
-		field = "email"
-	}
-
-	// Try the direct field
-	if val, ok := userInfo[field]; ok {
-		return fmt.Sprint(val)
-	}
-
-	// Common fallbacks
-	if email, ok := userInfo["email"]; ok {
-		return fmt.Sprint(email)
-	}
-
-	return ""
-}
-
-// GetUserName extracts a display name from userinfo
-func GetUserName(userInfo map[string]any) string {
-	if name, ok := userInfo["name"]; ok {
-		s := fmt.Sprint(name)
-		if s != "" && s != "<nil>" {
-			return s
-		}
-	}
-	if given, ok := userInfo["given_name"]; ok {
-		s := fmt.Sprint(given)
-		if s != "" && s != "<nil>" {
-			name := s
-			if family, ok := userInfo["family_name"]; ok {
-				fs := fmt.Sprint(family)
-				if fs != "" && fs != "<nil>" {
-					name += " " + fs
-				}
-			}
-			return strings.TrimSpace(name)
-		}
-	}
-	// Fallback: use the part before @ in the email
-	if email := GetUserEmail(userInfo); email != "" {
-		if at := strings.Index(email, "@"); at > 0 {
-			return email[:at]
-		}
-	}
-	return ""
-}
-
-// GetUserPicture extracts a profile image URL from userinfo, trying common field names.
-func GetUserPicture(userInfo map[string]any) string {
-	for _, field := range []string{"picture", "avatar_url", "photo", "profile_image_url", "image"} {
-		if val, ok := userInfo[field]; ok {
-			s := fmt.Sprint(val)
-			if s != "" && s != "<nil>" && (strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")) {
-				return s
-			}
-		}
-	}
-	return ""
-}
-
-// GetUserEmail extracts email from userinfo, trying common field names.
-// Some providers use "preferred_username" or "upn" instead of "email".
-func GetUserEmail(userInfo map[string]any) string {
-	for _, field := range []string{"email", "preferred_username", "upn", "mail"} {
-		if val, ok := userInfo[field]; ok {
-			s := fmt.Sprint(val)
-			if s != "" && s != "<nil>" && strings.Contains(s, "@") {
-				return s
-			}
-		}
-	}
-	return ""
-}
+// Three of those were actively harmful and are worth naming so nobody restores
+// them:
+//
+//  1. THE THREE-SHAPE TOKEN EXCHANGE. ExchangeCode tried a JSON body, then HTTP
+//     Basic, then body credentials, in sequence, until one worked. Against an
+//     authorization server that treats codes as single-use — which any conforming
+//     one does, and forta-api now provably does — the FIRST attempt that reaches
+//     the server consumes the code, so the fallbacks can only ever receive
+//     invalid_grant. It was not a compatibility layer; it was a guaranteed wasted
+//     round trip on every login, visible in forta-api's logs as a 400 immediately
+//     followed by a 200.
+//
+//  2. NO PKCE AT ALL. There was no code_challenge and no verifier, so a leaked
+//     authorization code was redeemable by whoever held it.
+//
+//  3. GetUserIdentifier RETURNED AN EMAIL AND IT WAS STORED AS THE SUBJECT. It
+//     read whatever `sso.user_identifier` named — "email" in production — and fell
+//     back to "email" regardless, and the caller wrote that into
+//     users.sso_subject under a comment claiming it was the OIDC `sub`. Identity
+//     keyed on a reassignable address is an account-takeover primitive. The
+//     library returns the real `sub`; see HandleSSOCallback for the one-time heal
+//     of the row this left behind.
+//
+// Do not re-add a local copy of any of it.
+// ─────────────────────────────────────────────────────────────────────────────

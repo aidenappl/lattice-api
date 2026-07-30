@@ -2,11 +2,12 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/aidenappl/lattice-api/crypto"
+	ssolib "github.com/aidenappl/go-forta/sso"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/jwt"
 	"github.com/aidenappl/lattice-api/logger"
@@ -283,80 +284,64 @@ func validateLatticeToken(tokenStr string) *structs.User {
 	return user
 }
 
-// checkpointSSOGrant re-validates the user's grant against the IDP on a TTL.
-// Returns true if the grant is still active (or the check is skipped because
-// it ran recently). Returns false if the IDP reports active=false — the
-// sso_sessions row is deleted and the caller MUST 401.
+// ssoCheckpointer is the shared checkpoint implementation, built once.
 //
-// Network/decrypt errors fail-open (return true) ONLY within a bounded grace
-// window (ssoCheckpointGrace) measured from the last positive confirmation
-// (last_checked_at) — a transient IDP outage shouldn't log users out. Once the
-// grant has gone unconfirmed past that window, the checkpoint fails CLOSED
-// (returns false) rather than trusting an unverified grant indefinitely. It does
-// not revoke tokens in that case, so a recovered IDP re-admits the user without
-// forcing a re-login.
+// ⚠️ THIS REPLACES A HAND-ROLLED CHECKPOINT THAT HAD NEVER RUN. The previous
+// version was correct in outline — bounded fail-open, measured from the last
+// positive confirmation — but it opened with `if err != nil { return true }` on
+// the session lookup, and the sso_sessions table did not exist, so every request
+// took that branch. The bound was unreachable; the effective behaviour was
+// unbounded fail-open. db/db.go now creates the table, and the policy lives in the
+// library where all three services share one copy of it.
+var ssoCheckpointer = &ssolib.Checkpointer{
+	Sessions: sso.NewSessionStore(),
+	Providers: func(_ context.Context, slug string) (*ssolib.Provider, error) {
+		if slug != sso.ProviderSlug {
+			return nil, fmt.Errorf("auth: unknown sso provider %q", slug)
+		}
+		// Re-resolved on every check rather than cached, so a rotated client secret
+		// or a newly-set introspect_url takes effect at the next checkpoint instead
+		// of the next restart.
+		return sso.LoadConfig().Provider(), nil
+	},
+	Interval: ssoCheckpointTTL,
+	Grace:    ssoCheckpointGrace,
+	Logf: func(format string, args ...any) {
+		logger.Warn("auth", fmt.Sprintf(format, args...))
+	},
+}
+
+// checkpointSSOGrant re-validates the user's grant against the IdP on a TTL.
+// Returns true if the session may proceed.
+//
+// The three outcomes and what they mean:
+//
+//   - CheckpointOK — not an SSO session, or confirmed live, or inside the grace
+//     window after a failure. Proceed.
+//   - CheckpointRevoked — the IdP definitively reported the grant gone. The session
+//     row is deleted AND tokens_revoked_at is stamped, which is what actually locks
+//     the user out; see sso.SessionStore.RevokeLocalTokens for why deleting the row
+//     alone would not.
+//   - CheckpointUnavailable — no answer, and the grace window has elapsed.
+//
+// ⚠️ CheckpointUnavailable SHOULD BE HTTP 503, NOT 401, and this bool signature
+// cannot express that. A 401 tells the client to discard its credentials and
+// re-authenticate — against the identity provider that is already unreachable.
+// Denying is still the right choice of the two available here, because allowing
+// would restore the unbounded fail-open this change exists to remove. Widening
+// this hook to carry a status is the fix; until then this comment is the record of
+// what is lost.
 func checkpointSSOGrant(userID int64) bool {
-	sess, err := query.GetSSOSession(db.DB, userID)
-	if err != nil {
-		logger.Warn("auth", "checkpoint: db lookup failed", logger.F{"user_id": userID, "error": err})
-		return true
-	}
-	if sess == nil {
-		// SSO user with no stored IDP tokens — pre-checkpoint legacy state.
-		// Allow; the next SSO login will populate the row.
-		return true
-	}
-	if time.Since(sess.LastCheckedAt) < ssoCheckpointTTL {
-		return true
-	}
-
-	// unconfirmedTooLong reports whether the grant has gone un-reconfirmed past
-	// the fail-open grace window — at which point we stop allowing on faith.
-	unconfirmedTooLong := time.Since(sess.LastCheckedAt) > ssoCheckpointGrace
-
-	refreshToken, err := crypto.Decrypt(sess.RefreshToken)
-	if err != nil {
-		if unconfirmedTooLong {
-			logger.Warn("auth", "checkpoint: decrypt failed and grant unconfirmed past grace window, denying", logger.F{"user_id": userID, "error": err})
-			return false
-		}
-		logger.Warn("auth", "checkpoint: decrypt refresh token failed (within grace window, allowing)", logger.F{"user_id": userID, "error": err})
-		return true
-	}
-
-	resp, err := sso.Introspect(refreshToken, "refresh_token")
-	if err != nil {
-		if unconfirmedTooLong {
-			logger.Warn("auth", "checkpoint: introspect failed and grant unconfirmed past grace window, denying", logger.F{"user_id": userID, "error": err})
-			return false
-		}
-		logger.Warn("auth", "checkpoint: introspect call failed (within grace window, allowing request)", logger.F{"user_id": userID, "error": err})
-		return true
-	}
-
-	if !resp.Active {
-		logger.Info("auth", "checkpoint: IDP reports inactive, revoking local session", logger.F{"user_id": userID})
-		// Revoke ALL of this user's Lattice JWTs (access + refresh) by stamping
-		// tokens_revoked_at. This is what actually locks the user out: without it,
-		// deleting the sso_sessions row would drop us into the sess==nil branch on
-		// the next request, which allows — so a revoked SSO user would stay
-		// authenticated for the full JWT window. validateLatticeToken rejects any
-		// token issued before tokens_revoked_at, so revocation is immediate.
-		if revErr := query.RevokeUserTokens(db.DB, int(userID)); revErr != nil {
-			logger.Error("auth", "checkpoint: failed to revoke user tokens", logger.F{"user_id": userID, "error": revErr})
-			// If we couldn't revoke, still deny this request; the next request
-			// will re-introspect and try again.
-		}
-		if delErr := query.DeleteSSOSession(db.DB, userID); delErr != nil {
-			logger.Warn("auth", "checkpoint: failed to delete sso_session", logger.F{"user_id": userID, "error": delErr})
-		}
+	switch ssoCheckpointer.Check(context.Background(), userID) {
+	case ssolib.CheckpointRevoked:
+		logger.Info("auth", "checkpoint: upstream grant revoked, session terminated", logger.F{"user_id": userID})
 		return false
+	case ssolib.CheckpointUnavailable:
+		logger.Warn("auth", "checkpoint: unverifiable past grace window, denying (should be 503)", logger.F{"user_id": userID})
+		return false
+	default:
+		return true
 	}
-
-	if err := query.TouchSSOSession(db.DB, userID); err != nil {
-		logger.Warn("auth", "checkpoint: touch failed", logger.F{"user_id": userID, "error": err})
-	}
-	return true
 }
 
 func extractBearerToken(r *http.Request) string {

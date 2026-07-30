@@ -29,7 +29,7 @@ Lattice is self-hosting: Forta (SSO), Keyring, Monitor and the rest all run as s
 - **`gorilla/websocket`** — worker hub and admin hub
 - **`squirrel`** (`sq`) — SQL query builder, no ORM
 - **`golang-jwt/jwt/v5`** — local JWT auth (HS512)
-- **Generic OAuth2 / OIDC SSO** — optional, self-contained client under `sso/` (no `go-forta` dependency)
+- **Generic OAuth2 / OIDC SSO** — via [`go-forta/sso`](https://github.com/aidenappl/go-forta/tree/main/sso), the shared relying-party implementation (PKCE S256, single-use server-side state, bounded revocation checkpoint). Works with any OIDC provider; Lattice keeps its own users and its own JWTs.
 - **`rs/cors`** for CORS, `golang.org/x/crypto` (bcrypt) for passwords, AES-256-GCM for secrets at rest
 
 ## Getting started
