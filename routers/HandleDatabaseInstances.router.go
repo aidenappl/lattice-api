@@ -537,19 +537,20 @@ func (h *DatabaseHandler) HandleUpdateDatabaseInstance(w http.ResponseWriter, r 
 	}
 
 	var body struct {
-		Name                *string  `json:"name"`
-		Status              *string  `json:"status"`
-		Port                *int     `json:"port"`
-		RootPassword        *string  `json:"root_password"`
-		Password            *string  `json:"password"`
-		CPULimit            *float64 `json:"cpu_limit"`
-		MemoryLimit         *int     `json:"memory_limit"`
-		HealthStatus        *string  `json:"health_status"`
-		SnapshotSchedule    *string  `json:"snapshot_schedule"`
-		RetentionCount      *int     `json:"retention_count"`
-		BackupDestinationID *int     `json:"backup_destination_id"`
-		Active              *bool    `json:"active"`
-		DeletionProtection  *bool    `json:"deletion_protection"`
+		Name                      *string  `json:"name"`
+		Status                    *string  `json:"status"`
+		Port                      *int     `json:"port"`
+		RootPassword              *string  `json:"root_password"`
+		Password                  *string  `json:"password"`
+		CPULimit                  *float64 `json:"cpu_limit"`
+		MemoryLimit               *int     `json:"memory_limit"`
+		HealthStatus              *string  `json:"health_status"`
+		SnapshotSchedule          *string  `json:"snapshot_schedule"`
+		RetentionCount            *int     `json:"retention_count"`
+		BackupDestinationID       *int     `json:"backup_destination_id"`
+		MirrorBackupDestinationID *int     `json:"mirror_backup_destination_id"`
+		Active                    *bool    `json:"active"`
+		DeletionProtection        *bool    `json:"deletion_protection"`
 	}
 	// Read the body once, then decode it twice: into the struct for values, and
 	// into raw fields to tell an explicit JSON null from an omitted key. Pointer
@@ -576,6 +577,7 @@ func (h *DatabaseHandler) HandleUpdateDatabaseInstance(w http.ResponseWriter, r 
 	clearSchedule := isExplicitNull("snapshot_schedule")
 	clearRetention := isExplicitNull("retention_count")
 	clearDestination := isExplicitNull("backup_destination_id")
+	clearMirror := isExplicitNull("mirror_backup_destination_id")
 
 	// Status and health are a closed vocabulary. They used to accept any
 	// string, which meant a typo could put an instance into a state no part of
@@ -651,7 +653,9 @@ func (h *DatabaseHandler) HandleUpdateDatabaseInstance(w http.ResponseWriter, r 
 		BackupDestinationID: body.BackupDestinationID,
 		Active:              body.Active,
 
-		DeletionProtection: body.DeletionProtection,
+		DeletionProtection:        body.DeletionProtection,
+		MirrorBackupDestinationID: body.MirrorBackupDestinationID,
+		ClearMirrorDestination:    clearMirror,
 
 		ClearSnapshotSchedule:  clearSchedule,
 		ClearRetentionCount:    clearRetention,

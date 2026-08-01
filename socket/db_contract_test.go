@@ -26,6 +26,7 @@ func TestDbReplyTypesRegistered(t *testing.T) {
 		"db_restore_status",
 		"db_delete_snapshot_result",
 		"db_schedule_status",
+		"db_mirror_status",
 		"db_sync",
 		"backup_dest_test_result",
 	}

@@ -364,6 +364,14 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				dbLifecycle.SetHealth(instanceID, structs.DatabaseHealth(hs), message)
 			})
 
+		case socket.MsgDbMirrorStatus:
+			adminHub.BroadcastJSON(map[string]any{
+				"type":      "db_mirror_status",
+				"worker_id": session.WorkerID,
+				"payload":   msg.Payload,
+			})
+			safeGo("db-mirror", func() { handleMirrorStatus(msg.Payload) })
+
 		case socket.MsgDbSync:
 			// Full per-worker report of observed database containers. This is
 			// the level-triggered input the reconciler diffs against desired

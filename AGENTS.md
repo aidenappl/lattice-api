@@ -541,11 +541,27 @@ Four deliberate behaviours, each with a test:
 - **`import _ "time/tzdata"`** — in a minimal image `LoadLocation` errors, and a naive fallback to UTC
   looks like it worked while being an hour wrong for half the year.
 
+**Snapshots can have two copies.** An instance may name a `mirror_backup_destination_id`; each
+completed snapshot is then copied there by `db_mirror_snapshot`, and every copy is a
+`database_snapshot_replicas` row with its own status. One primary plus one mirror is exactly what
+3-2-1 needs — general fan-out to N destinations is a different, larger feature.
+
+Two deliberate properties:
+
+- **The mirror runs after the primary succeeds, not alongside it.** Streaming to both at once would
+  let the slower destination apply backpressure to the dump (the same hazard an unbuffered pipe
+  creates), and a partial failure would leave an artifact in an ambiguous state.
+- **A mirror failure never fails the snapshot.** The primary copy exists; marking the backup failed
+  would push an operator toward re-running a dump that already succeeded. It degrades posture
+  instead, which is the signal that should actually move.
+
 **Backup posture (3-2-1) reports what is true, not what was configured.**
 `routers/HandleBackupPosture.router.go` scores three axes — three copies, two media, one off-site —
 and every axis is deliberately conservative:
 
-- a destination with no snapshot inside `postureFreshnessWindow` is **not** a copy (three copies
+- posture counts **replicas, not snapshots** — the question is "does a copy exist on that
+  destination", which a snapshot row alone cannot answer once a snapshot can live in two places;
+- a destination with no fresh replica inside `postureFreshnessWindow` is **not** a copy (three copies
   where two are six weeks old is not three copies);
 - **locality is asserted, never inferred.** `backup_destinations.locality` defaults to `unknown` and
   `unknown` is never off-site. Lattice genuinely cannot tell an OpenBucket bucket on the very worker
