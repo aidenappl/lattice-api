@@ -54,15 +54,28 @@ func initApp() *appContext {
 
 	db.Init()
 
-	// Schema migrations run before anything is served. A migration file only
-	// exists inside the image that carries it, and the code depending on a new
-	// column ships in that same image — so applying them here is what makes a
-	// deploy self-contained. Failure is fatal on purpose: serving requests
-	// against a schema the migrations could not reach is how the sso_sessions
-	// fail-open happened, and a container that refuses to start is a far better
-	// outcome than one that answers wrongly.
+	// Schema migrations run before anything is served, so a deploy is
+	// self-contained: a migration file only exists inside the image that carries
+	// it, and the code depending on a new column ships in that same image.
+	//
+	// A failure here is loud but NOT fatal, and that is a deliberate departure
+	// from forta-api's runner, which this was ported from. The argument for fatal
+	// is that a rolling recreate aborts the deploy and the previous container
+	// keeps serving. lattice-api does not get that: it updates *itself* through
+	// the control plane it is, so a failed migration is not an aborted deploy —
+	// it is a crashloop that takes the control plane, its dashboard and its own
+	// rollback path offline together. That is exactly what happened on v1.3.25,
+	// from nothing worse than a bookkeeping table with the wrong shape.
+	//
+	// So: degrade rather than disappear. The API starts on the old schema, the
+	// failure is unmissable in the logs, and `migrate` — where a failure aborts a
+	// deliberate action and nothing is serving — stays fatal.
 	if err := db.RunMigrations(); err != nil {
-		log.Fatal("failed to apply schema migrations: ", err)
+		logger.Error("database", "SCHEMA MIGRATIONS FAILED — starting on the existing schema; "+
+			"features depending on new columns will not work until this is resolved", logger.F{
+			"error": err.Error(),
+			"fix":   "run `lattice-api migrate` against this database and read the error",
+		})
 	}
 
 	crypto.Init()

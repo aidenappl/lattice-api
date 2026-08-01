@@ -1,4 +1,4 @@
--- 001_backup_guardrails.sql
+-- 012_backup_guardrails.sql — continues the sequence the original migrations left at 011
 --
 -- Guardrails around destroying a database, and somewhere to record what a data
 -- volume actually costs.

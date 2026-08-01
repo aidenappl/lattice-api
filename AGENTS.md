@@ -524,8 +524,38 @@ next reconcile that observes a healthy container. `ClearWarning` removes it on t
 snapshot. The web renders `backup_stale` regardless of status for the same reason.
 
 **Schema migrations** — `db/migrate.go` + `db/migrations/NNN_*.sql`, embedded, applied in filename
-order, recorded in `schema_migrations`, run both on boot (fatal on failure) and via the `migrate` /
-`migrate status` subcommands. Ported from forta-api so the two do not diverge.
+order, recorded in **`schema_migrations` (column `migration`, not `version`)**, run on boot and via
+the `migrate` / `migrate status` subcommands.
+
+⚠️ **There have been three mechanisms; know which is which.**
+
+1. **The original numbered migrations** applied `001_initial.sql` … `011_container_logs_dedup.sql`
+   on 2026-04-19 and were then **deleted from the repo** ("Remove stale migration files", `2876f49`,
+   2026-04-18) while their rows stayed in every database. The current runner **adopts** that table
+   and continues from `012` — one lineage, not two.
+2. **The ~52 inline `migrate()` calls in `db/db.go`** became the de-facto mechanism afterwards. They
+   are **frozen**: no record of what ran, idempotence by swallowing MySQL error numbers, and every
+   other failure downgraded to a warning while the server starts anyway — which is how
+   `sso_sessions` came to be referenced by code no statement created, surfacing as an unbounded
+   fail-open. `TestNewDDLDoesNotGoInTheLegacyBlock` trips if that block grows.
+3. **`db/migrate.go`** — where all new DDL goes.
+
+⚠️ **A fresh database cannot currently be built from this repo.** `001_initial.sql` (261 lines,
+creating `workers`/`stacks`/`containers` and the rest) was deleted, and `db/db.go` contains **no**
+`CREATE TABLE` for those core tables — only `ALTER`s that assume they exist. Production works because
+those tables were created in April by migrations that no longer exist in source. Restoring a baseline
+migration reconstructed from the live schema is outstanding work; until then, treat "spin up a new
+Lattice against an empty database" as unsupported.
+
+**Boot failures are loud, not fatal**, and that is a deliberate departure from forta-api's runner.
+Fatal-on-boot is safe there because a rolling recreate aborts the deploy and the old container keeps
+serving. lattice-api updates *itself* through the control plane it is, so a failed migration is not
+an aborted deploy — it is a crashloop that takes the API, its dashboard and its own rollback path
+offline together. v1.3.25 proved it: a pre-existing `schema_migrations` table with a different shape
+made `CREATE TABLE IF NOT EXISTS` a silent no-op, the first query hit a missing column, and the
+control plane had to be recovered by hand on the host. `EnsureMigrationsTable` now verifies the
+table's *shape* after creating it, because `IF NOT EXISTS` is a name check, not a schema check. The
+`migrate` subcommand stays fatal — nothing is serving there.
 
 ⚠️ **The ~52 inline `migrate()` calls in `db/db.go` are frozen.** They still run on every boot and
 still build a fresh database, but no new DDL goes in them: that mechanism keeps no record of what

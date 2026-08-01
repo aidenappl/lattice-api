@@ -133,7 +133,7 @@ func TestMigrationsAreNotEmpty(t *testing.T) {
 // recorded, and fatal on failure — the legacy block is none of those things.
 func TestNewDDLDoesNotGoInTheLegacyBlock(t *testing.T) {
 	const legacyStatementCount = 52
-	content, err := migrationsFS.ReadFile(MIGRATIONS_DIR + "/001_backup_guardrails.sql")
+	content, err := migrationsFS.ReadFile(MIGRATIONS_DIR + "/012_backup_guardrails.sql")
 	if err != nil || len(content) == 0 {
 		t.Fatalf("expected the first migration to exist: %v", err)
 	}

@@ -13,7 +13,21 @@ import (
 
 const (
 	// MIGRATIONS_TABLE tracks which migration files have already been applied.
+	//
+	// This is the *original* lattice migrations table, adopted rather than
+	// replaced. lattice-api had a numbered-SQL migration system that applied
+	// 001_initial.sql … 011_container_logs_dedup.sql on 2026-04-19; the files
+	// were deleted from the repo days later ("Remove stale migration files",
+	// 2876f49) while the table and its rows stayed behind in every database.
+	//
+	// Adopting it keeps one lineage instead of two, which is why new files here
+	// continue from 012 rather than restarting at 001. Note the column is
+	// `migration`, not `version` — assuming otherwise is what crashlooped
+	// v1.3.25, because CREATE TABLE IF NOT EXISTS matched the name, did nothing,
+	// and the first query hit a column that was never there.
 	MIGRATIONS_TABLE = "schema_migrations"
+	// MIGRATIONS_COLUMN is the column holding the applied filename.
+	MIGRATIONS_COLUMN = "migration"
 	// MIGRATIONS_DIR is the embedded directory holding the numbered .sql files.
 	MIGRATIONS_DIR = "migrations"
 )
@@ -46,16 +60,33 @@ var migrationsFS embed.FS
 // The legacy block is therefore **frozen**: it stays because it is what builds a
 // fresh database today and every statement in it has already been applied
 // everywhere, but no new DDL goes in it. New schema changes are numbered files
-// here, applied in order, recorded, and **fatal on failure**.
+// here, applied in order and recorded.
 //
-// # Running on boot
+// # Running on boot, and why a failure is not fatal here
 //
 // Migrations run both from the `migrate` subcommand and at startup before the
-// router is mounted. Running on boot is what makes a deploy self-contained: a
-// migration file only exists inside the image that carries it, and the code
-// depending on a new column ships in that same image. A failed migration must
-// stop the boot rather than let the server answer requests against a schema the
-// migration could not reach.
+// router is mounted, which is what makes a deploy self-contained: a migration
+// file only exists inside the image that carries it, and the code depending on a
+// new column ships in that same image.
+//
+// forta-api treats a boot-time failure as fatal, on the reasoning that a rolling
+// recreate aborts the deploy and the previous container keeps serving. **That
+// reasoning does not transfer to lattice-api**, which updates itself through the
+// control plane it *is*: a failed migration is not an aborted deploy, it is a
+// crashloop that takes the control plane, its dashboard and its own rollback
+// path offline at the same time.
+//
+// v1.3.25 demonstrated it. A pre-existing `schema_migrations` table with a
+// different shape made CREATE TABLE IF NOT EXISTS a silent no-op; the first
+// status query hit a missing `version` column; the boot died; the API
+// crashlooped and could only be recovered by hand on the host. The schema
+// problem was trivial. The fatal-on-boot decision was what turned it into an
+// outage.
+//
+// So initApp logs the failure loudly and starts anyway — degraded on the old
+// schema, with features that need new columns not working — while the `migrate`
+// subcommand, where nothing is serving and a failure aborts a deliberate action,
+// stays fatal.
 //
 // # Non-atomicity
 //
@@ -160,14 +191,34 @@ func MigrationsStatus() ([]MigrationStatus, error) {
 	return out, nil
 }
 
-// EnsureMigrationsTable creates the bookkeeping table if it does not exist.
+// EnsureMigrationsTable creates the bookkeeping table if it does not exist, then
+// verifies it actually has the shape this runner expects.
+//
+// The verification is the important half. CREATE TABLE IF NOT EXISTS succeeds
+// silently against a table of the same name and a different shape, so "the
+// create worked" says nothing about whether the table is usable. That is exactly
+// how this failed in production: a pre-existing schema_migrations table meant the
+// create was a no-op and the first query died on a missing column.
 func EnsureMigrationsTable(q Queryable) error {
 	_, err := q.Exec(`CREATE TABLE IF NOT EXISTS ` + MIGRATIONS_TABLE + ` (
-		version VARCHAR(255) NOT NULL PRIMARY KEY,
+		` + MIGRATIONS_COLUMN + ` VARCHAR(255) NOT NULL PRIMARY KEY,
 		applied_at TIMESTAMP NOT NULL DEFAULT current_timestamp()
 	)`)
 	if err != nil {
 		return fmt.Errorf("failed to create %s table: %w", MIGRATIONS_TABLE, err)
+	}
+
+	var count int
+	if err := q.QueryRow(`SELECT COUNT(*) FROM information_schema.columns
+		WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+		MIGRATIONS_TABLE, MIGRATIONS_COLUMN).Scan(&count); err != nil {
+		return fmt.Errorf("failed to verify %s table: %w", MIGRATIONS_TABLE, err)
+	}
+	if count == 0 {
+		return fmt.Errorf(
+			"table %s exists but has no `%s` column — it was created by something other than this runner; "+
+				"inspect it before proceeding rather than assuming its shape",
+			MIGRATIONS_TABLE, MIGRATIONS_COLUMN)
 	}
 	return nil
 }
@@ -175,7 +226,7 @@ func EnsureMigrationsTable(q Queryable) error {
 // MigrationApplied reports whether the named migration file has already run.
 func MigrationApplied(q Queryable, version string) (bool, error) {
 	var count int
-	err := q.QueryRow("SELECT COUNT(*) FROM "+MIGRATIONS_TABLE+" WHERE version = ?", version).Scan(&count)
+	err := q.QueryRow("SELECT COUNT(*) FROM "+MIGRATIONS_TABLE+" WHERE "+MIGRATIONS_COLUMN+" = ?", version).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("failed to check migration status for %s: %w", version, err)
 	}
@@ -184,7 +235,7 @@ func MigrationApplied(q Queryable, version string) (bool, error) {
 
 // RecordMigration marks the named migration file as applied.
 func RecordMigration(q Queryable, version string) error {
-	if _, err := q.Exec("INSERT INTO "+MIGRATIONS_TABLE+" (version) VALUES (?)", version); err != nil {
+	if _, err := q.Exec("INSERT INTO "+MIGRATIONS_TABLE+" ("+MIGRATIONS_COLUMN+") VALUES (?)", version); err != nil {
 		return fmt.Errorf("failed to record migration %s: %w", version, err)
 	}
 	return nil
