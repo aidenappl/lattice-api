@@ -435,6 +435,12 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				// A completed snapshot is the moment retention becomes
 				// meaningful: there is a new copy, so the oldest may go. It is
 				// also proof the schedule is alive again.
+				// Close the scheduled run this snapshot belongs to, if any. A run
+				// left open blocks every later slot via skip-on-overrun.
+				if status == "completed" || status == "failed" {
+					closeRunForSnapshot(snapshotID, status == "completed")
+				}
+
 				if instanceID != 0 && status == "completed" {
 					dbLifecycle.ClearWarning(instanceID, structs.DBErrCodeBackupStale)
 					// A delete that was waiting on this snapshot can now proceed.

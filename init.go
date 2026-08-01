@@ -127,6 +127,17 @@ func initApp() *appContext {
 	dbReconciler = newDatabaseReconciler(workerHub)
 	dbReconciler.Start()
 
+	// The control plane owns *when* a scheduled snapshot happens. The runner's
+	// in-memory cron is no longer given any jobs — see PushDbSchedule — because
+	// two schedulers for one instance means two backups per slot.
+	databaseHandler := &routers.DatabaseHandler{
+		WorkerHub: workerHub,
+		AdminHub:  adminHub,
+		Lifecycle: dbLifecycle,
+	}
+	dbScheduler = newDatabaseScheduler(workerHub, databaseHandler)
+	dbScheduler.Start()
+
 	return &appContext{
 		workerHub:     workerHub,
 		adminHub:      adminHub,
@@ -150,11 +161,7 @@ func initApp() *appContext {
 		networkHandler: &routers.NetworkHandler{
 			WorkerHub: workerHub,
 		},
-		databaseHandler: &routers.DatabaseHandler{
-			WorkerHub: workerHub,
-			AdminHub:  adminHub,
-			Lifecycle: dbLifecycle,
-		},
+		databaseHandler: databaseHandler,
 	}
 }
 

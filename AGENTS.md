@@ -508,6 +508,39 @@ exists when the first status arrives. `ensureScheduledSnapshotRow` finds-or-crea
 `(database_instance_id, filename)` — which is why the runner computes the filename *before* anything
 can fail, and why a failed pre-flight still produces a visible failed snapshot row.
 
+**Scheduling lives in the control plane** (`database_scheduler.go`), not in the runner. The runner
+still *has* a cron package, but is deliberately given no jobs: `PushDbSchedule` sends an **empty
+cron** and `DistributeDbSchedules` clears on worker connect, because two schedulers for one instance
+means two backups per slot. That inversion is the migration — a runner reconnecting with a job
+registered under the old model would otherwise keep firing forever.
+
+**The unique index is the concurrency control.** Every slot becomes a `database_snapshot_runs` row
+before anything is dispatched, keyed `UNIQUE(database_instance_id, scheduled_at)` on the **nominal,
+un-jittered** fire time. Claiming a run *is* the insert; a duplicate loses harmlessly. That is why no
+lock, no leader election and no `SKIP LOCKED` (which would need MariaDB 10.6+) is required. **Jitter
+must never enter the key** — a restart that recomputed it would mint a second slot for the same
+logical run and take two backups.
+
+**A skipped slot is a row, not a log line.** `skipped` is a first-class status with a `skip_reason`
+("the previous scheduled snapshot is still running", "database is stopped", "worker N is not
+connected", "slot was 4h old"). Recording skips only in logs is exactly why "my scheduled backups
+quietly stopped" is a genre of incident. `GET /database-instances/{id}/runs` exposes them.
+
+Four deliberate behaviours, each with a test:
+
+- **Skip on overrun — never queue, never kill.** Killing a 90%-complete backup to start one that will
+  also overrun guarantees you never complete a backup; queueing turns an overrun into an unbounded
+  backlog. Paired with `snapshotRunTimeout`, because skip-without-timeout turns one stuck run into an
+  indefinite outage that looks like working config.
+- **Deterministic jitter** — FNV-1a over instance identity XOR a per-deployment seed (Prometheus's
+  scrape-offset design). Random jitter fixes the thundering herd but destroys predictability; this
+  fixes it and keeps it. The per-deployment component stops staging and production colliding on a
+  shared destination. Bounded by both `schedulerMaxJitter` and half the schedule's period.
+- **Catch-up is bounded** (`schedulerCatchUpWindow`): a control plane down overnight takes one backup
+  on recovery, not a replay of every owed slot.
+- **`import _ "time/tzdata"`** — in a minimal image `LoadLocation` errors, and a naive fallback to UTC
+  looks like it worked while being an hour wrong for half the year.
+
 **Backup freshness is the alarm nothing else can raise.** `flagStaleBackups` (`database_reconciler.go`,
 every 10m) flags an instance whose scheduled backups have stopped producing. Reconciliation compares
 observed containers to desired state and the watchdog catches hung operations — but a schedule that
@@ -796,6 +829,7 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 | GET | `/database-instances/{id}/events` | `HandleListDatabaseInstanceEvents` (lifecycle history) |
 | GET | `/database-instances/{id}/logs` | `HandleGetDatabaseInstanceLogs` (container stdout/stderr, resolved by container name) |
 | GET | `/database-instances/{id}/lifecycle` | `HandleGetDatabaseInstanceLifecycle` (worker lifecycle messages) |
+| GET | `/database-instances/{id}/runs` | `HandleGetDatabaseInstanceRuns` (scheduled attempts, including skipped slots and their reason) |
 | GET | `/database-instances/{id}/metrics` | `HandleGetDatabaseInstanceMetrics` (CPU/memory samples, addressed by worker+container name — the rows exist with `container_id NULL` and had no reader) |
 | POST | `/database-instances/{id}/console` | `DatabaseHandler.HandleOpenDatabaseConsole` `[E]` (authorises an exec session; returns the SQL client argv) |
 | GET | `/workers/{id}/port-availability` | `HandleGetWorkerPortAvailability` (claimed host ports + a free suggestion; pass `?port=` to check one) |

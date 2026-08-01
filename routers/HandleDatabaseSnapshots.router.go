@@ -58,7 +58,7 @@ func (h *DatabaseHandler) HandleCreateSnapshot(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	snapshot, err := h.startSnapshot(instance, "manual")
+	snapshot, err := h.StartSnapshot(instance, "manual")
 	if err != nil {
 		responder.QueryError(w, err, "failed to create snapshot")
 		return
@@ -69,13 +69,20 @@ func (h *DatabaseHandler) HandleCreateSnapshot(w http.ResponseWriter, r *http.Re
 	responder.NewCreated(w, snapshot, "snapshot created")
 }
 
-// startSnapshot creates the snapshot row and dispatches the dump to the worker.
+// SnapshotStarter is the slice of the snapshot handler the scheduler needs.
+// Declared here so package main can depend on an interface rather than the
+// concrete handler.
+type SnapshotStarter interface {
+	StartSnapshot(instance *structs.DatabaseInstance, trigger string) (*structs.DatabaseSnapshot, error)
+}
+
+// StartSnapshot creates the snapshot row and dispatches the dump to the worker.
 //
 // Shared by the manual snapshot endpoint and the final-snapshot-on-delete path,
 // so both produce an identical artifact and an identical row — the only
 // difference is trigger_type, which is what later tells an operator why a
 // snapshot exists.
-func (h *DatabaseHandler) startSnapshot(instance *structs.DatabaseInstance, trigger string) (*structs.DatabaseSnapshot, error) {
+func (h *DatabaseHandler) StartSnapshot(instance *structs.DatabaseInstance, trigger string) (*structs.DatabaseSnapshot, error) {
 	destination, err := query.GetBackupDestinationByID(db.DB, *instance.BackupDestinationID)
 	if err != nil {
 		return nil, err

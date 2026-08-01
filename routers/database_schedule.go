@@ -71,15 +71,23 @@ func BuildDbSchedulePayload(instance *structs.DatabaseInstance) map[string]any {
 	}
 }
 
-// PushDbSchedule sends an instance's snapshot schedule to its worker.
+// PushDbSchedule clears any snapshot schedule the runner still holds.
 //
-// Called on create and update, not only on worker reconnect. Previously the
-// only sender was the reconnect sync, so setting a schedule on a running
-// instance changed a database row and told the runner nothing — the schedule
-// did not take effect until the worker happened to reconnect.
+// ⚠️ Scheduling now lives in the control plane (database_scheduler.go), so this
+// deliberately sends an **empty cron** rather than the instance's expression.
+// Two schedulers for one instance means two backups per slot: the runner's cron
+// would fire on its own clock while the control plane claims and dispatches the
+// same nominal slot, and neither would know about the other.
 //
-// Clearing a schedule sends an empty cron so the runner drops the job rather
-// than continuing to snapshot on a cadence nobody can see anymore.
+// It is still called on create, on update and on worker reconnect, because that
+// is exactly when a runner might be holding a stale job from before the move —
+// a runner that registered a cron under the old model keeps firing it forever
+// otherwise, and the resulting snapshots would arrive with no run row to explain
+// them.
+//
+// BuildDbSchedulePayload is retained: it is the one place that knows how to
+// express a schedule, and it will be needed again if the runner ever regains a
+// scheduling role.
 func PushDbSchedule(hub *socket.WorkerHub, instance *structs.DatabaseInstance) {
 	if hub == nil || instance == nil {
 		return
@@ -88,29 +96,27 @@ func PushDbSchedule(hub *socket.WorkerHub, instance *structs.DatabaseInstance) {
 		return
 	}
 
-	payload := BuildDbSchedulePayload(instance)
-	if payload == nil {
-		// Not schedulable: tell the runner to forget any job it holds.
-		payload = map[string]any{
+	if err := hub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
+		Type: socket.MsgDbUpdateSchedule,
+		Payload: map[string]any{
 			socket.PayloadDbInstanceID:   instance.ID,
 			socket.PayloadContainerName:  instance.ContainerName,
 			socket.PayloadCron:           "",
 			socket.PayloadRetentionCount: 0,
-		}
-	}
-
-	if err := hub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
-		Type:    socket.MsgDbUpdateSchedule,
-		Payload: payload,
+		},
 	}); err != nil {
-		log.Printf("database instance %d: failed to push snapshot schedule to worker %d: %v",
+		log.Printf("database instance %d: failed to clear worker-side schedule on worker %d: %v",
 			instance.ID, instance.WorkerID, err)
 	}
 }
 
-// DistributeDbSchedules pushes every schedulable instance's schedule to a
-// worker. Called when a worker connects, so anything that changed while it was
-// offline takes effect immediately rather than at the next edit.
+// DistributeDbSchedules clears worker-side schedules for every instance on a
+// worker when it connects.
+//
+// Under the old model this rehydrated the runner's cron. It now does the
+// opposite: a runner that reconnects carrying jobs registered before scheduling
+// moved to the control plane would double-fire every slot, so connection is
+// exactly the moment to take them away.
 func DistributeDbSchedules(workerID int, hub *socket.WorkerHub) {
 	instances, _, err := query.ListDatabaseInstances(db.DB, query.ListDatabaseInstancesRequest{
 		WorkerID: &workerID,
@@ -122,9 +128,6 @@ func DistributeDbSchedules(workerID int, hub *socket.WorkerHub) {
 
 	for i := range *instances {
 		inst := (*instances)[i]
-		if inst.SnapshotSchedule == nil || *inst.SnapshotSchedule == "" {
-			continue
-		}
 		PushDbSchedule(hub, &inst)
 	}
 }

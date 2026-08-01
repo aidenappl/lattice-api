@@ -474,7 +474,7 @@ func (h *DatabaseHandler) beginDeleteWithFinalSnapshot(w http.ResponseWriter, r 
 		return
 	}
 
-	snapshot, err := h.startSnapshot(instance, "final")
+	snapshot, err := h.StartSnapshot(instance, "final")
 	if err != nil {
 		responder.QueryError(w, err, "failed to start the final snapshot")
 		return

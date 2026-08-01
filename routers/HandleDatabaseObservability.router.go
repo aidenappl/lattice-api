@@ -60,6 +60,34 @@ func HandleGetDatabaseInstanceMetrics(w http.ResponseWriter, r *http.Request) {
 	responder.New(w, metrics, "database metrics retrieved")
 }
 
+// HandleGetDatabaseInstanceRuns returns recent scheduled-snapshot attempts,
+// including the ones that were skipped.
+//
+// A skipped run is the most useful row here and the one a log line would have
+// hidden: "the 03:00 slot did not run because the previous snapshot was still
+// going" is an answer, whereas an absent snapshot is a mystery.
+func HandleGetDatabaseInstanceRuns(w http.ResponseWriter, r *http.Request) {
+	instance, ok := loadInstanceForObservability(w, r)
+	if !ok {
+		return
+	}
+
+	limit := 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+
+	runs, err := query.ListSnapshotRunsByInstance(db.DB, instance.ID, limit)
+	if err != nil {
+		responder.QueryError(w, err, "failed to fetch snapshot runs")
+		return
+	}
+
+	responder.New(w, runs, "snapshot runs retrieved")
+}
+
 // HandleGetDatabaseInstanceLogs returns stdout/stderr for a database instance.
 func HandleGetDatabaseInstanceLogs(w http.ResponseWriter, r *http.Request) {
 	instance, ok := loadInstanceForObservability(w, r)

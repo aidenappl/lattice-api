@@ -3,6 +3,8 @@ package query
 import (
 	"database/sql"
 	"errors"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 // notFoundError is the concrete type behind ErrNotFound. It exposes a
@@ -31,4 +33,19 @@ func isNoRows(err error) bool {
 
 type scanner interface {
 	Scan(dest ...any) error
+}
+
+// isDuplicateEntry reports whether err is MySQL's 1062 duplicate-key error.
+//
+// Losing a unique-key race is not a failure everywhere it appears: the snapshot
+// scheduler *uses* the unique index on (database_instance_id, scheduled_at) as
+// its concurrency control, so a duplicate means "someone else already claimed
+// this slot" — the correct outcome, and the reason no lock or leader election is
+// needed for a scheduled run to fire exactly once.
+func isDuplicateEntry(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) {
+		return mysqlErr.Number == 1062
+	}
+	return false
 }
