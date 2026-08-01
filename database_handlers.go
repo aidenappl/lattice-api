@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -9,6 +11,7 @@ import (
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
+	"github.com/aidenappl/lattice-api/routers"
 	"github.com/aidenappl/lattice-api/socket"
 	"github.com/aidenappl/lattice-api/structs"
 )
@@ -83,6 +86,106 @@ func dbActionFailureCode(action string) string {
 		return structs.DBErrCodeRestoreFailed
 	}
 	return structs.DBErrCodeCreateFailed
+}
+
+// ensureScheduledSnapshotRow returns the row for a scheduled snapshot,
+// creating it on first sight.
+//
+// Scheduled runs are triggered by the runner's cron, so unlike a manual snapshot
+// there is no row waiting for them. Adopting on the first status message is what
+// makes a scheduled snapshot visible at all: before this, the runner sent a
+// synthetic string id, the orchestrator parsed it to 0, dropped the message, and
+// no scheduled snapshot was ever recorded — successful or otherwise.
+func ensureScheduledSnapshotRow(instanceID int, filename string) (*structs.DatabaseSnapshot, error) {
+	existing, err := query.GetSnapshotByInstanceAndFilename(db.DB, instanceID, filename)
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, query.ErrNotFound) {
+		return nil, err
+	}
+
+	instance, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
+	if err != nil {
+		return nil, err
+	}
+
+	return query.CreateSnapshot(db.DB, query.CreateSnapshotRequest{
+		DatabaseInstanceID:  instance.ID,
+		BackupDestinationID: instance.BackupDestinationID,
+		Filename:            filename,
+		Engine:              instance.Engine,
+		DatabaseName:        instance.DatabaseName,
+		TriggerType:         "scheduled",
+	})
+}
+
+// applySnapshotRetention prunes an instance's oldest successful snapshots once a
+// new one completes, removing the remote file as well as the row.
+//
+// Retention was previously plumbed end to end and enforced nowhere:
+// retention_count was accepted on create and update, forwarded to the runner,
+// stored in the scheduler job — and never read, so snapshots accrued forever on
+// whatever destination they were written to.
+//
+// Two deliberate properties:
+//   - A retention failure never fails the snapshot that triggered it. Losing an
+//     old copy is a storage problem; failing the new backup is a data problem.
+//   - A redundancy floor: retention never reduces an instance below
+//     minSnapshotRedundancy successful copies, whatever retention_count says.
+//     "Keep 1" plus a silently-failing backup is how a single corrupt artifact
+//     becomes the only artifact.
+func applySnapshotRetention(instanceID int, hub *socket.WorkerHub) {
+	const minSnapshotRedundancy = 2
+
+	instance, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
+	if err != nil || instance.RetentionCount == nil || *instance.RetentionCount <= 0 {
+		return
+	}
+
+	keep := *instance.RetentionCount
+	if keep < minSnapshotRedundancy {
+		logger.Info("database", "retention floor raised the configured count", logger.F{
+			"database_instance_id": instanceID,
+			"configured":           keep,
+			"effective":            minSnapshotRedundancy,
+			"reason":               "never reduce an instance below two successful snapshots",
+		})
+		keep = minSnapshotRedundancy
+	}
+
+	snapshots, err := query.ListSnapshotsByInstance(db.DB, instanceID)
+	if err != nil || snapshots == nil {
+		return
+	}
+
+	// Newest first, successful only — a failed or in-flight row is not a copy.
+	var successful []structs.DatabaseSnapshot
+	for _, s := range *snapshots {
+		if s.Status == "completed" {
+			successful = append(successful, s)
+		}
+	}
+	sort.Slice(successful, func(i, j int) bool { return successful[i].ID > successful[j].ID })
+
+	if len(successful) <= keep {
+		return
+	}
+
+	for _, stale := range successful[keep:] {
+		if err := routers.DeleteSnapshotArtifact(hub, &stale, instance); err != nil {
+			logger.Warn("database", "retention could not remove an old snapshot", logger.F{
+				"database_instance_id": instanceID, "snapshot_id": stale.ID, "error": err,
+			})
+			continue
+		}
+		logger.Info("database", "retention removed an old snapshot", logger.F{
+			"database_instance_id": instanceID,
+			"snapshot_id":          stale.ID,
+			"filename":             stale.Filename,
+			"kept":                 keep,
+		})
+	}
 }
 
 // isAbsentContainerMessage recognises the "there was nothing there" failure a

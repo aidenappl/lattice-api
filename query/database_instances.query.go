@@ -302,6 +302,13 @@ type UpdateDatabaseInstanceRequest struct {
 	// are set — recovery should never leave a stale error behind.
 	LastError      *structs.DatabaseError
 	ClearLastError bool
+
+	// Clear* set a backup field back to NULL. Needed because a nil pointer means
+	// "not supplied", so without these a caller can set a snapshot schedule but
+	// never remove one.
+	ClearSnapshotSchedule  bool
+	ClearRetentionCount    bool
+	ClearBackupDestination bool
 }
 
 func UpdateDatabaseInstance(engine db.Queryable, id int, req UpdateDatabaseInstanceRequest) (*structs.DatabaseInstance, error) {
@@ -356,15 +363,29 @@ func UpdateDatabaseInstance(engine db.Queryable, id int, req UpdateDatabaseInsta
 		q = q.Set("health_status", *req.HealthStatus)
 		hasUpdate = true
 	}
-	if req.SnapshotSchedule != nil {
+	// Backup settings are the one group a caller must be able to *unset*. A nil
+	// pointer means "not supplied", which is indistinguishable from an explicit
+	// JSON null — so turning a snapshot schedule off was impossible: the UI sent
+	// null, this treated it as absent, and the schedule kept running. The Clear*
+	// flags carry that intent explicitly, following ClearLastError below.
+	if req.ClearSnapshotSchedule {
+		q = q.Set("snapshot_schedule", nil)
+		hasUpdate = true
+	} else if req.SnapshotSchedule != nil {
 		q = q.Set("snapshot_schedule", *req.SnapshotSchedule)
 		hasUpdate = true
 	}
-	if req.RetentionCount != nil {
+	if req.ClearRetentionCount {
+		q = q.Set("retention_count", nil)
+		hasUpdate = true
+	} else if req.RetentionCount != nil {
 		q = q.Set("retention_count", *req.RetentionCount)
 		hasUpdate = true
 	}
-	if req.BackupDestinationID != nil {
+	if req.ClearBackupDestination {
+		q = q.Set("backup_destination_id", nil)
+		hasUpdate = true
+	} else if req.BackupDestinationID != nil {
 		q = q.Set("backup_destination_id", *req.BackupDestinationID)
 		hasUpdate = true
 	}

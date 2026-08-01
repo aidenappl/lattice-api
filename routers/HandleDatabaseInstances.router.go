@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -287,6 +288,11 @@ func (h *DatabaseHandler) HandleCreateDatabaseInstance(w http.ResponseWriter, r 
 		return
 	}
 
+	if msg := validateSnapshotSchedulable(body.SnapshotSchedule, body.BackupDestinationID); msg != "" {
+		responder.SendError(w, http.StatusBadRequest, msg)
+		return
+	}
+
 	// Default engine version
 	if body.EngineVersion == "" {
 		switch body.Engine {
@@ -427,8 +433,34 @@ func (h *DatabaseHandler) HandleCreateDatabaseInstance(w http.ResponseWriter, r 
 		return
 	}
 
+	// Register the snapshot schedule with the worker immediately. Without this,
+	// a schedule set at create time waited for the next worker reconnect.
+	PushDbSchedule(h.WorkerHub, instance)
+
 	logAudit(r, "create", "database_instance", intPtr(instance.ID), strPtr(instance.Name))
 	responder.NewCreated(w, instance, "database instance created")
+}
+
+// errScheduleNeedsDestination is the message for a snapshot schedule that has
+// nowhere to write.
+//
+// A cron with no backup destination is silently unschedulable: the runner is
+// only told about instances that have one, so the schedule saves cleanly, shows
+// in the UI, and can never fire. That is the same class of defect as every
+// other bug this subsystem has had — configuration that compiles, persists, and
+// does nothing — so it is refused at the boundary instead.
+const errScheduleNeedsDestination = "a snapshot schedule requires a backup destination; set backup_destination_id, or clear snapshot_schedule"
+
+// validateSnapshotSchedulable reports whether the resulting instance state has a
+// schedule without a destination. Returns "" when the combination is valid.
+func validateSnapshotSchedulable(schedule *string, destinationID *int) string {
+	if schedule == nil || *schedule == "" {
+		return ""
+	}
+	if destinationID == nil {
+		return errScheduleNeedsDestination
+	}
+	return ""
 }
 
 // HandleUpdateDatabaseInstance updates a database instance by ID.
@@ -453,10 +485,31 @@ func (h *DatabaseHandler) HandleUpdateDatabaseInstance(w http.ResponseWriter, r 
 		BackupDestinationID *int     `json:"backup_destination_id"`
 		Active              *bool    `json:"active"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	// Read the body once, then decode it twice: into the struct for values, and
+	// into raw fields to tell an explicit JSON null from an omitted key. Pointer
+	// fields cannot distinguish those, which is why a schedule could be set but
+	// never cleared.
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
 		responder.BadBody(w, err)
 		return
 	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		responder.BadBody(w, err)
+		return
+	}
+	var present map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &present); err != nil {
+		responder.BadBody(w, err)
+		return
+	}
+	isExplicitNull := func(key string) bool {
+		v, ok := present[key]
+		return ok && string(v) == "null"
+	}
+	clearSchedule := isExplicitNull("snapshot_schedule")
+	clearRetention := isExplicitNull("retention_count")
+	clearDestination := isExplicitNull("backup_destination_id")
 
 	// Status and health are a closed vocabulary. They used to accept any
 	// string, which meant a typo could put an instance into a state no part of
@@ -493,6 +546,31 @@ func (h *DatabaseHandler) HandleUpdateDatabaseInstance(w http.ResponseWriter, r 
 		}
 	}
 
+	// Validate the state the instance will actually be in, not just the fields
+	// supplied: setting a schedule on an instance that has no destination is as
+	// unschedulable as sending both together.
+	existing, err := query.GetDatabaseInstanceByID(db.DB, id)
+	if err != nil {
+		responder.NotFound(w)
+		return
+	}
+	effectiveSchedule := existing.SnapshotSchedule
+	if clearSchedule {
+		effectiveSchedule = nil
+	} else if body.SnapshotSchedule != nil {
+		effectiveSchedule = body.SnapshotSchedule
+	}
+	effectiveDestination := existing.BackupDestinationID
+	if clearDestination {
+		effectiveDestination = nil
+	} else if body.BackupDestinationID != nil {
+		effectiveDestination = body.BackupDestinationID
+	}
+	if msg := validateSnapshotSchedulable(effectiveSchedule, effectiveDestination); msg != "" {
+		responder.SendError(w, http.StatusBadRequest, msg)
+		return
+	}
+
 	instance, err := query.UpdateDatabaseInstance(db.DB, id, query.UpdateDatabaseInstanceRequest{
 		Name:                body.Name,
 		Status:              body.Status,
@@ -506,11 +584,20 @@ func (h *DatabaseHandler) HandleUpdateDatabaseInstance(w http.ResponseWriter, r 
 		RetentionCount:      body.RetentionCount,
 		BackupDestinationID: body.BackupDestinationID,
 		Active:              body.Active,
+
+		ClearSnapshotSchedule:  clearSchedule,
+		ClearRetentionCount:    clearRetention,
+		ClearBackupDestination: clearDestination,
 	})
 	if err != nil {
 		responder.QueryError(w, err, "failed to update database instance")
 		return
 	}
+
+	// A schedule change has to reach the runner now. The only sender used to be
+	// the worker-reconnect sync, so editing a schedule updated a row and changed
+	// nothing until the worker happened to reconnect.
+	PushDbSchedule(h.WorkerHub, instance)
 
 	logAudit(r, "update", "database_instance", intPtr(id), nil)
 	responder.New(w, instance, "database instance updated")

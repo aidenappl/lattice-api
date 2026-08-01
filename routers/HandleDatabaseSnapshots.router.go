@@ -202,6 +202,55 @@ func (h *DatabaseHandler) HandleRestoreSnapshot(w http.ResponseWriter, r *http.R
 	responder.New(w, nil, "restore command sent")
 }
 
+// DeleteSnapshotArtifact retires a snapshot row and asks its worker to remove
+// the backing file from the remote destination.
+//
+// Shared by the HTTP delete handler and by retention enforcement, so an operator
+// deleting a snapshot and retention expiring one take exactly the same path —
+// including the remote delete. Remote cleanup is best-effort: a failure is logged
+// and does not block retiring the row, because a row that outlives its file is
+// worse than a file that outlives its row (the first is invisible, the second is
+// findable). `instance` may be nil when it can no longer be resolved.
+func DeleteSnapshotArtifact(hub *socket.WorkerHub, snapshot *structs.DatabaseSnapshot, instance *structs.DatabaseInstance) error {
+	if snapshot == nil {
+		return nil
+	}
+
+	if snapshot.BackupDestinationID != nil && instance != nil && hub != nil {
+		destination, destErr := query.GetBackupDestinationByID(db.DB, *snapshot.BackupDestinationID)
+		switch {
+		case destErr != nil:
+			log.Printf("delete snapshot %d: cannot resolve destination, remote file %q left in place",
+				snapshot.ID, snapshot.Filename)
+		case !hub.IsConnected(instance.WorkerID):
+			log.Printf("delete snapshot %d: worker %d offline, remote file %q left in place",
+				snapshot.ID, instance.WorkerID, snapshot.Filename)
+		default:
+			payload := dbCommandPayload(instance.ID, socket.MsgDbDeleteSnapshot)
+			payload[socket.PayloadSnapshotID] = snapshot.ID
+			payload[socket.PayloadFilename] = snapshot.Filename
+			destPayload := map[string]any{socket.PayloadDestType: destination.Type}
+			if destination.Config != nil {
+				var configMap map[string]any
+				if jsonErr := json.Unmarshal([]byte(*destination.Config), &configMap); jsonErr == nil {
+					destPayload[socket.PayloadDestConfig] = configMap
+				}
+			}
+			payload[socket.PayloadBackupDestination] = destPayload
+
+			if sendErr := hub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
+				Type:    socket.MsgDbDeleteSnapshot,
+				Payload: payload,
+			}); sendErr != nil {
+				log.Printf("delete snapshot %d: failed to send remote delete to worker %d: %v",
+					snapshot.ID, instance.WorkerID, sendErr)
+			}
+		}
+	}
+
+	return query.DeleteSnapshot(db.DB, snapshot.ID)
+}
+
 // HandleDeleteSnapshot soft-deletes a database snapshot and instructs the
 // worker to remove the backing file from its remote destination.
 //
@@ -221,43 +270,13 @@ func (h *DatabaseHandler) HandleDeleteSnapshot(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Best-effort remote cleanup. A failure here must not block removing the
-	// row — but it is logged and reported back over the admin socket.
-	if snapshot.BackupDestinationID != nil {
-		instance, instErr := query.GetDatabaseInstanceByID(db.DB, snapshot.DatabaseInstanceID)
-		destination, destErr := query.GetBackupDestinationByID(db.DB, *snapshot.BackupDestinationID)
-
-		switch {
-		case instErr != nil || destErr != nil:
-			log.Printf("delete snapshot %d: cannot resolve instance/destination, remote file %q left in place",
-				id, snapshot.Filename)
-		case !h.WorkerHub.IsConnected(instance.WorkerID):
-			log.Printf("delete snapshot %d: worker %d offline, remote file %q left in place",
-				id, instance.WorkerID, snapshot.Filename)
-		default:
-			payload := dbCommandPayload(instance.ID, socket.MsgDbDeleteSnapshot)
-			payload["snapshot_id"] = snapshot.ID
-			payload["filename"] = snapshot.Filename
-			destPayload := map[string]any{"type": destination.Type}
-			if destination.Config != nil {
-				var configMap map[string]any
-				if jsonErr := json.Unmarshal([]byte(*destination.Config), &configMap); jsonErr == nil {
-					destPayload["config"] = configMap
-				}
-			}
-			payload["backup_destination"] = destPayload
-
-			if sendErr := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
-				Type:    socket.MsgDbDeleteSnapshot,
-				Payload: payload,
-			}); sendErr != nil {
-				log.Printf("delete snapshot %d: failed to send remote delete to worker %d: %v",
-					id, instance.WorkerID, sendErr)
-			}
-		}
+	instance, instErr := query.GetDatabaseInstanceByID(db.DB, snapshot.DatabaseInstanceID)
+	if instErr != nil {
+		log.Printf("delete snapshot %d: cannot resolve instance, remote file %q left in place", id, snapshot.Filename)
+		instance = nil
 	}
 
-	if err := query.DeleteSnapshot(db.DB, id); err != nil {
+	if err := DeleteSnapshotArtifact(h.WorkerHub, snapshot, instance); err != nil {
 		responder.QueryError(w, err, "failed to delete snapshot")
 		return
 	}

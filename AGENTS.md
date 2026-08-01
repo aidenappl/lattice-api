@@ -125,7 +125,7 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `registry/client.go` | Docker Registry v2 HTTP client — `Ping`, `ListRepositories`, `ListTags`, `GetManifestDigest`. |
 | `healthscan/scanner.go` | Periodic worker-vs-DB reconciliation; emits `health_anomalies` to the admin hub. |
 | `watcher/watcher.go` | Polls registries for mutable-tag re-pushes (digest change) → fires `image.updated` / auto-deploy webhooks. |
-| `retention/retention.go` | Hourly batch purge of old log/metric rows per retention window. |
+| `retention/retention.go` | Hourly batch purge of old log/metric rows per retention window. Also `database_instance_events` (180d) and soft-deleted `database_snapshots` (90d, gated on `active = 0` via `purgeWhere` — a live snapshot row is the only record of where its remote file lives, so purging by age alone would orphan objects on the destination). |
 | `webhooks/dispatcher.go` | `Fire(event, data)` — async outbound webhooks, optional HMAC-SHA256 signing. |
 | `versions/versions.go` | Polls GitHub `releases/latest` for api/web/runner every 30 min; in-memory cache. |
 | `mailer/` | `mailer.go` (SMTP send + HTML template, config from `settings`), `prefs.go` (notification prefs, cooldowns, grace timers, unhealthy thresholds). |
@@ -456,6 +456,57 @@ self-correcting:
 - A watchdog runs every 30s and fails out any instance that has sat in a transitional status for
   more than `dbProvisionTimeout` (10m), with `provision_timeout` or `worker_offline`. **This is
   the backstop that makes "stuck in pending forever" impossible.**
+
+**Payload keys are constants, and there is a test that pins them.** `socket/protocol.go` defines a
+`Payload*` constant for every cross-boundary key, and `socket/db_payload_contract_test.go` asserts
+their wire spellings. This exists because **ten** defects shipped with one shape — the API writing
+one key name and the runner reading another, each yielding an empty value rather than an error:
+
+| API sent | runner read | result |
+|---|---|---|
+| `backup_destination` | `backup_dest` | every scheduled snapshot silently no-op'd, from May to July 2026 |
+| `backup_destination.type` | `dest_type` | `NewDestination("")` — every *manual* snapshot failed too |
+| `backup_destination.config` | `dest_config` | no credentials |
+| `filename` | `remote_path` | empty object key; the remote-delete path refused with "missing remote_path" |
+| `snapshot_id` (number) | `snapshot_id.(string)` | `""` → parsed to 0 → **every** snapshot status reply dropped |
+| `snapshot_id` (restore) | `restore_id` | restore correlation lost |
+
+The older `db_contract_test.go` and `db_dispatch_test.go` could not catch any of these: the first
+pins reply *type* names and correlation keys, the second greps source text for constant
+*identifiers*. Neither ever compared a payload's key set. **When adding or renaming a `db_*` payload
+key, change the constant, the contract test, and the runner in the same commit.** The runner also
+accepts the legacy spellings, so a runner upgraded ahead of the control plane repairs the family on
+its own — deploy the runner first.
+
+**A snapshot schedule requires a backup destination.** `distributeDbSchedules` only registers
+instances that have one, so a cron with a null `backup_destination_id` saves, renders, and never
+fires. Create and update reject that combination (`validateSnapshotSchedulable`), and the UI and MCP
+descriptions say so — the API guard is the load-bearing one, since `lattice-mcp` bypasses the UI.
+
+**Schedules reach the worker on change, not just on reconnect.** `routers.PushDbSchedule` is called
+by the create and update handlers; `routers.DistributeDbSchedules` is the worker-connect sync. Both
+build the payload with `routers.BuildDbSchedulePayload`, so a schedule cannot be expressed two ways.
+Clearing a schedule pushes an empty cron so the runner drops the job.
+
+**Backup fields can be unset.** `UpdateDatabaseInstanceRequest` has `ClearSnapshotSchedule`,
+`ClearRetentionCount` and `ClearBackupDestination`, because a nil pointer means "not supplied" and is
+indistinguishable from an explicit JSON null — so turning a schedule *off* was impossible: the UI
+sent null, the handler treated it as absent, and the schedule kept running. The update handler
+decodes the body twice (struct + `map[string]json.RawMessage`) to tell those apart.
+
+**Retention is enforced on snapshot completion** (`applySnapshotRetention` in
+`database_handlers.go`), sharing `routers.DeleteSnapshotArtifact` with the HTTP delete handler so an
+expiry and an operator deletion take the same path, including the remote file delete. Two
+invariants: a retention failure never fails the snapshot that triggered it, and retention never
+reduces an instance below **two** successful snapshots regardless of `retention_count` — "keep 1"
+plus a silently-failing backup is how one corrupt artifact becomes the only artifact. Before this,
+`retention_count` was accepted, forwarded to the runner, stored in the scheduler job, and read by
+nothing.
+
+**Scheduled snapshots are adopted, not pre-created.** The runner's own cron starts them, so no row
+exists when the first status arrives. `ensureScheduledSnapshotRow` finds-or-creates by
+`(database_instance_id, filename)` — which is why the runner computes the filename *before* anything
+can fail, and why a failed pre-flight still produces a visible failed snapshot row.
 
 **Command correlation** — every `db_*` command carries `database_instance_id`, `request_id` (per
 attempt) and `idempotency_key` (stable per logical operation), and every reply echoes all three

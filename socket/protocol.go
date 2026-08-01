@@ -126,6 +126,45 @@ const (
 	PayloadPhase = "phase"
 )
 
+// Payload keys carried by db_* commands.
+//
+// These are constants because the subsystem's defining failure mode was a
+// sender and a receiver disagreeing on a key name, silently: the API sent
+// `backup_destination`/`filename`/`snapshot_id`, the runner read
+// `backup_dest`/`remote_path`/`restore_id`, and every mismatch produced an
+// empty value rather than an error. Ten defects of that shape shipped. A name
+// used in two places must be defined in one.
+//
+// TestDbCommandPayloadContract pins the exact key set of every command built
+// from these; changing a value without changing the runner is a test failure,
+// not a silent no-op.
+const (
+	PayloadContainerName     = "container_name"
+	PayloadVolumeName        = "volume_name"
+	PayloadRemoveVolume      = "remove_volume"
+	PayloadEngine            = "engine"
+	PayloadEngineVersion     = "engine_version"
+	PayloadDatabaseName      = "database_name"
+	PayloadUsername          = "username"
+	PayloadPassword          = "password"
+	PayloadRootPassword      = "root_password"
+	PayloadPort              = "port"
+	PayloadCPULimit          = "cpu_limit"
+	PayloadMemoryLimit       = "memory_limit"
+	PayloadAdoptVolume       = "adopt_existing_volume"
+	PayloadCron              = "cron"
+	PayloadRetentionCount    = "retention_count"
+	PayloadSnapshotID        = "snapshot_id"
+	PayloadFilename          = "filename"
+	PayloadBackupDestination = "backup_destination"
+	PayloadDestType          = "type"
+	PayloadDestConfig        = "config"
+	PayloadScheduled         = "scheduled"
+	PayloadStatus            = "status"
+	PayloadSizeBytes         = "size_bytes"
+	PayloadErrorMessage      = "error_message"
+)
+
 // Reply phases for PayloadPhase.
 const (
 	PhaseAck       = "ack"

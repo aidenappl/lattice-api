@@ -11,6 +11,7 @@ import (
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/mailer"
 	"github.com/aidenappl/lattice-api/query"
+	"github.com/aidenappl/lattice-api/routers"
 	"github.com/aidenappl/lattice-api/socket"
 	"github.com/aidenappl/lattice-api/structs"
 	"github.com/aidenappl/lattice-api/webhooks"
@@ -51,7 +52,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 
 		// Distribute database snapshot schedules to the reconnected worker
 		safeGo("db-schedule-sync", func() {
-			distributeDbSchedules(session.WorkerID, wh.Hub)
+			routers.DistributeDbSchedules(session.WorkerID, wh.Hub)
 		})
 
 		// Ask the worker what database containers it actually has before
@@ -378,10 +379,34 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 			safeGo("db-snapshot", func() {
 				// snapshot_id arrives as a JSON number; payloadInt also tolerates
 				// the string form older runners sent.
-				snapshotID := payloadInt(msg.Payload, "snapshot_id")
-				status, _ := msg.Payload["status"].(string)
-				if snapshotID == 0 || status == "" {
+				snapshotID := payloadInt(msg.Payload, socket.PayloadSnapshotID)
+				status, _ := msg.Payload[socket.PayloadStatus].(string)
+				if status == "" {
 					return
+				}
+
+				// A scheduled snapshot has no row yet — the runner's own cron
+				// started it, so nothing created one. Adopt it by
+				// (database_instance_id, filename), which is why the runner
+				// computes the filename before it can fail.
+				if snapshotID == 0 {
+					instanceID := payloadInt(msg.Payload, socket.PayloadDbInstanceID)
+					filename, _ := msg.Payload[socket.PayloadFilename].(string)
+					if instanceID == 0 || filename == "" {
+						logger.Warn("database", "snapshot status with neither snapshot_id nor (instance,filename) — dropping", logger.F{
+							"worker_id": session.WorkerID,
+							"status":    status,
+						})
+						return
+					}
+					snapshot, err := ensureScheduledSnapshotRow(instanceID, filename)
+					if err != nil {
+						logger.Error("database", "failed to adopt scheduled snapshot", logger.F{
+							"database_instance_id": instanceID, "filename": filename, "error": err,
+						})
+						return
+					}
+					snapshotID = snapshot.ID
 				}
 				var sizeBytes *int64
 				if sb, ok := msg.Payload["size_bytes"].(float64); ok && sb > 0 {
@@ -398,12 +423,19 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 					})
 					return
 				}
-				if instanceID := payloadInt(msg.Payload, socket.PayloadDbInstanceID); instanceID != 0 && status == "failed" {
+				instanceID := payloadInt(msg.Payload, socket.PayloadDbInstanceID)
+				if instanceID != 0 && status == "failed" {
 					detail := "snapshot failed"
 					if errMsg != nil {
 						detail = *errMsg
 					}
 					dbLifecycle.RecordEvent(instanceID, structs.DBEventFailed, "snapshot "+detail, "worker")
+				}
+
+				// A completed snapshot is the moment retention becomes
+				// meaningful: there is a new copy, so the oldest may go.
+				if instanceID != 0 && status == "completed" {
+					applySnapshotRetention(instanceID, wh.Hub)
 				}
 			})
 
@@ -545,75 +577,5 @@ func configureAdminHandler(ah *socket.AdminHandler, workerHub *socket.WorkerHub)
 				Payload:   msg.Payload,
 			})
 		}
-	}
-}
-
-// distributeDbSchedules sends snapshot schedule configurations to a worker
-// for all database instances hosted on that worker. Called on worker reconnect
-// so the runner's scheduler is rehydrated.
-func distributeDbSchedules(workerID int, hub *socket.WorkerHub) {
-	instances, _, err := query.ListDatabaseInstances(db.DB, query.ListDatabaseInstancesRequest{
-		WorkerID: &workerID,
-		Limit:    db.MAX_LIMIT,
-	})
-	if err != nil || instances == nil {
-		return
-	}
-
-	for _, inst := range *instances {
-		if inst.SnapshotSchedule == nil || *inst.SnapshotSchedule == "" {
-			continue
-		}
-		if inst.BackupDestinationID == nil {
-			continue
-		}
-
-		dest, err := query.GetBackupDestinationByID(db.DB, *inst.BackupDestinationID)
-		if err != nil || dest == nil {
-			continue
-		}
-
-		retentionCount := 0
-		if inst.RetentionCount != nil {
-			retentionCount = *inst.RetentionCount
-		}
-
-		// Decrypt passwords for the runner
-		rootPw := ""
-		if inst.RootPassword != nil {
-			rootPw = *inst.RootPassword
-		}
-		pw := ""
-		if inst.Password != nil {
-			pw = *inst.Password
-		}
-
-		// Decode destination config
-		var destConfig map[string]any
-		if dest.Config != nil {
-			if err := json.Unmarshal([]byte(*dest.Config), &destConfig); err != nil {
-				logger.Warn("db-schedule-sync", "failed to parse backup destination config", logger.F{"dest_id": dest.ID, "error": err.Error()})
-				continue
-			}
-		}
-
-		_ = hub.SendJSONToWorker(workerID, socket.Envelope{
-			Type: socket.MsgDbUpdateSchedule,
-			Payload: map[string]any{
-				"database_instance_id": inst.ID,
-				"container_name":       inst.ContainerName,
-				"engine":               inst.Engine,
-				"database_name":        inst.DatabaseName,
-				"username":             inst.Username,
-				"password":             pw,
-				"root_password":        rootPw,
-				"cron":                 *inst.SnapshotSchedule,
-				"retention_count":      retentionCount,
-				"backup_destination": map[string]any{
-					"type":   dest.Type,
-					"config": destConfig,
-				},
-			},
-		})
 	}
 }

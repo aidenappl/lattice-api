@@ -98,6 +98,39 @@ func GetSnapshotByID(engine db.Queryable, id int) (*structs.DatabaseSnapshot, er
 	return s, nil
 }
 
+// GetSnapshotByInstanceAndFilename finds a snapshot by the pair that identifies
+// a scheduled run.
+//
+// Scheduled snapshots are started by the runner's own cron, so no row exists
+// when the first status arrives and there is no id to correlate on. The filename
+// is generated before the run can fail, which makes (instance, filename) a
+// stable key for the whole run.
+func GetSnapshotByInstanceAndFilename(engine db.Queryable, instanceID int, filename string) (*structs.DatabaseSnapshot, error) {
+	q := sq.Select(databaseSnapshotColumns...).
+		From("database_snapshots").
+		Where(sq.Eq{"database_snapshots.database_instance_id": instanceID}).
+		Where(sq.Eq{"database_snapshots.filename": filename}).
+		Where(sq.Eq{"database_snapshots.active": true}).
+		OrderBy("database_snapshots.id DESC").
+		Limit(1)
+
+	qStr, args, err := q.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build sql query: %w", err)
+	}
+
+	row := engine.QueryRow(qStr, args...)
+	s, err := scanDatabaseSnapshot(row)
+	if err != nil {
+		if isNoRows(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to scan database snapshot: %w", err)
+	}
+
+	return s, nil
+}
+
 type CreateSnapshotRequest struct {
 	DatabaseInstanceID  int
 	BackupDestinationID *int
