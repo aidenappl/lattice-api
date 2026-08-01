@@ -152,6 +152,7 @@ const (
 	PayloadCPULimit          = "cpu_limit"
 	PayloadMemoryLimit       = "memory_limit"
 	PayloadAdoptVolume       = "adopt_existing_volume"
+	PayloadBinlogRetention   = "binlog_retention_seconds"
 	PayloadCron              = "cron"
 	PayloadRetentionCount    = "retention_count"
 	PayloadSnapshotID        = "snapshot_id"

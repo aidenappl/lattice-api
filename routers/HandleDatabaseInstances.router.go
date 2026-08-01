@@ -400,7 +400,13 @@ func (h *DatabaseHandler) HandleCreateDatabaseInstance(w http.ResponseWriter, r 
 	payload["database_name"] = body.DatabaseName
 	payload["username"] = body.Username
 	payload["password"] = body.Password
-	payload["adopt_existing_volume"] = body.AdoptExistingVolume
+	payload[socket.PayloadAdoptVolume] = body.AdoptExistingVolume
+
+	// Durability flags are applied by the worker at create time and cannot be
+	// changed later without restarting the server, so the window to decide is
+	// now. Retention here bounds the binary logs, which is what a future
+	// point-in-time recovery would replay.
+	payload[socket.PayloadBinlogRetention] = defaultBinlogRetentionSeconds
 
 	if body.CPULimit != nil {
 		payload["cpu_limit"] = *body.CPULimit
@@ -498,6 +504,16 @@ func (h *DatabaseHandler) beginDeleteWithFinalSnapshot(w http.ResponseWriter, r 
 // in the UI, and can never fire. That is the same class of defect as every
 // other bug this subsystem has had — configuration that compiles, persists, and
 // does nothing — so it is refused at the boundary instead.
+// defaultBinlogRetentionSeconds bounds how long binary logs are kept on a new
+// instance: seven days.
+//
+// Set explicitly rather than inherited. MySQL's default is 30 days, so a
+// 35-day snapshot retention alongside it silently yields a 30-day recovery
+// window — and nothing in either system reports the disagreement. Seven days is
+// a deliberate, documented number rather than an accident of two defaults
+// meeting.
+const defaultBinlogRetentionSeconds = 7 * 24 * 60 * 60
+
 const errScheduleNeedsDestination = "a snapshot schedule requires a backup destination; set backup_destination_id, or clear snapshot_schedule"
 
 // validateSnapshotSchedulable reports whether the resulting instance state has a
