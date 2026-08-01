@@ -199,6 +199,7 @@ func main() {
 	admin.HandleFunc("/database-instances/{id}/lifecycle", routers.HandleGetDatabaseInstanceLifecycle).Methods(http.MethodGet)
 	admin.HandleFunc("/database-instances/{id}/metrics", routers.HandleGetDatabaseInstanceMetrics).Methods(http.MethodGet)
 	admin.HandleFunc("/database-instances/{id}/runs", routers.HandleGetDatabaseInstanceRuns).Methods(http.MethodGet)
+	admin.HandleFunc("/database-instances/{id}/backup-posture", routers.HandleGetDatabaseBackupPosture).Methods(http.MethodGet)
 	admin.HandleFunc("/database-instances/{id}/console", middleware.RequireEditor(app.databaseHandler.HandleOpenDatabaseConsole)).Methods(http.MethodPost)
 	admin.HandleFunc("/database-instances/{id}/snapshots", routers.HandleListSnapshots).Methods(http.MethodGet)
 	admin.HandleFunc("/database-instances/{id}/snapshots", middleware.RequireEditor(app.databaseHandler.HandleCreateSnapshot)).Methods(http.MethodPost)

@@ -541,6 +541,22 @@ Four deliberate behaviours, each with a test:
 - **`import _ "time/tzdata"`** — in a minimal image `LoadLocation` errors, and a naive fallback to UTC
   looks like it worked while being an hour wrong for half the year.
 
+**Backup posture (3-2-1) reports what is true, not what was configured.**
+`routers/HandleBackupPosture.router.go` scores three axes — three copies, two media, one off-site —
+and every axis is deliberately conservative:
+
+- a destination with no snapshot inside `postureFreshnessWindow` is **not** a copy (three copies
+  where two are six weeks old is not three copies);
+- **locality is asserted, never inferred.** `backup_destinations.locality` defaults to `unknown` and
+  `unknown` is never off-site. Lattice genuinely cannot tell an OpenBucket bucket on the very worker
+  being backed up from a bucket in another country — both are "type: s3" with a URL — so guessing
+  would manufacture false confidence, which is worse than no indicator because it stops you looking;
+- a `same_host` destination raises a warning that object-lock guarantees are cosmetic there:
+  immutability enforced by a process whose filesystem you can reach is not immutability.
+
+Expect every database to read `1/3` honestly while OpenBucket (which runs on this same fleet) is the
+only destination. That is the indicator working.
+
 **Backup freshness is the alarm nothing else can raise.** `flagStaleBackups` (`database_reconciler.go`,
 every 10m) flags an instance whose scheduled backups have stopped producing. Reconciliation compares
 observed containers to desired state and the watchdog catches hung operations — but a schedule that
@@ -829,6 +845,7 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 | GET | `/database-instances/{id}/events` | `HandleListDatabaseInstanceEvents` (lifecycle history) |
 | GET | `/database-instances/{id}/logs` | `HandleGetDatabaseInstanceLogs` (container stdout/stderr, resolved by container name) |
 | GET | `/database-instances/{id}/lifecycle` | `HandleGetDatabaseInstanceLifecycle` (worker lifecycle messages) |
+| GET | `/database-instances/{id}/backup-posture` | `HandleGetDatabaseBackupPosture` (3-2-1 axes, detail and warnings) |
 | GET | `/database-instances/{id}/runs` | `HandleGetDatabaseInstanceRuns` (scheduled attempts, including skipped slots and their reason) |
 | GET | `/database-instances/{id}/metrics` | `HandleGetDatabaseInstanceMetrics` (CPU/memory samples, addressed by worker+container name — the rows exist with `container_id NULL` and had no reader) |
 | POST | `/database-instances/{id}/console` | `DatabaseHandler.HandleOpenDatabaseConsole` `[E]` (authorises an exec session; returns the SQL client argv) |

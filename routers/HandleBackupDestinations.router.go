@@ -44,9 +44,10 @@ func HandleGetBackupDestination(w http.ResponseWriter, r *http.Request) {
 // HandleCreateBackupDestination creates a new backup destination.
 func HandleCreateBackupDestination(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name   string         `json:"name"`
-		Type   string         `json:"type"`
-		Config map[string]any `json:"config"`
+		Name     string         `json:"name"`
+		Type     string         `json:"type"`
+		Locality string         `json:"locality"`
+		Config   map[string]any `json:"config"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		responder.BadBody(w, err)
@@ -77,9 +78,10 @@ func HandleCreateBackupDestination(w http.ResponseWriter, r *http.Request) {
 	}
 
 	destination, err := query.CreateBackupDestination(db.DB, query.CreateBackupDestinationRequest{
-		Name:   body.Name,
-		Type:   body.Type,
-		Config: configJSON,
+		Name:     body.Name,
+		Type:     body.Type,
+		Locality: body.Locality,
+		Config:   configJSON,
 	})
 	if err != nil {
 		responder.QueryError(w, err, "failed to create backup destination")
@@ -99,10 +101,11 @@ func HandleUpdateBackupDestination(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Name   *string         `json:"name"`
-		Type   *string         `json:"type"`
-		Config *map[string]any `json:"config"`
-		Active *bool           `json:"active"`
+		Name     *string         `json:"name"`
+		Type     *string         `json:"type"`
+		Locality *string         `json:"locality"`
+		Config   *map[string]any `json:"config"`
+		Active   *bool           `json:"active"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		responder.BadBody(w, err)
@@ -119,9 +122,10 @@ func HandleUpdateBackupDestination(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req := query.UpdateBackupDestinationRequest{
-		Name:   body.Name,
-		Type:   body.Type,
-		Active: body.Active,
+		Name:     body.Name,
+		Type:     body.Type,
+		Locality: body.Locality,
+		Active:   body.Active,
 	}
 
 	if body.Config != nil {

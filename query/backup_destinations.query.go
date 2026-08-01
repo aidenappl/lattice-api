@@ -13,6 +13,7 @@ var backupDestinationColumns = []string{
 	"backup_destinations.id",
 	"backup_destinations.name",
 	"backup_destinations.type",
+	"backup_destinations.locality",
 	"backup_destinations.config",
 	"backup_destinations.active",
 	"backup_destinations.updated_at",
@@ -25,6 +26,7 @@ func scanBackupDestination(row scanner) (*structs.BackupDestination, error) {
 		&b.ID,
 		&b.Name,
 		&b.Type,
+		&b.Locality,
 		&b.Config,
 		&b.Active,
 		&b.UpdatedAt,
@@ -90,10 +92,22 @@ func GetBackupDestinationByID(engine db.Queryable, id int) (*structs.BackupDesti
 	return b, nil
 }
 
+// localityOrDefault falls back to `unknown` rather than to anything reassuring.
+// A destination whose location nobody has asserted must not be counted as
+// off-site, because Lattice cannot tell a bucket on this worker from a bucket in
+// another country.
+func localityOrDefault(l string) string {
+	if structs.IsValidLocality(l) {
+		return l
+	}
+	return structs.LocalityUnknown
+}
+
 type CreateBackupDestinationRequest struct {
-	Name   string
-	Type   string
-	Config string
+	Name     string
+	Type     string
+	Locality string
+	Config   string
 }
 
 func CreateBackupDestination(engine db.Queryable, req CreateBackupDestinationRequest) (*structs.BackupDestination, error) {
@@ -107,8 +121,8 @@ func CreateBackupDestination(engine db.Queryable, req CreateBackupDestinationReq
 	}
 
 	q := sq.Insert("backup_destinations").
-		Columns("name", "type", "config").
-		Values(req.Name, req.Type, encConfig)
+		Columns("name", "type", "locality", "config").
+		Values(req.Name, req.Type, localityOrDefault(req.Locality), encConfig)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
@@ -129,10 +143,11 @@ func CreateBackupDestination(engine db.Queryable, req CreateBackupDestinationReq
 }
 
 type UpdateBackupDestinationRequest struct {
-	Name   *string
-	Type   *string
-	Config *string
-	Active *bool
+	Name     *string
+	Type     *string
+	Locality *string
+	Config   *string
+	Active   *bool
 }
 
 func UpdateBackupDestination(engine db.Queryable, id int, req UpdateBackupDestinationRequest) (*structs.BackupDestination, error) {
@@ -145,6 +160,10 @@ func UpdateBackupDestination(engine db.Queryable, id int, req UpdateBackupDestin
 	}
 	if req.Type != nil {
 		q = q.Set("type", *req.Type)
+		hasUpdate = true
+	}
+	if req.Locality != nil {
+		q = q.Set("locality", localityOrDefault(*req.Locality))
 		hasUpdate = true
 	}
 	if req.Config != nil {
