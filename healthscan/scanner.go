@@ -37,6 +37,23 @@ type Anomaly struct {
 	Details       map[string]any `json:"details,omitempty"`
 }
 
+// managedDatabaseNames returns the container names of managed database instances
+// on a worker. They live outside the containers table by design.
+func (s *Scanner) managedDatabaseNames(workerID int) map[string]bool {
+	out := map[string]bool{}
+	instances, err := query.ListDatabaseInstancesByWorker(s.db, workerID)
+	if err != nil {
+		logger.Error("healthscan", "failed to list database instances for worker", logger.F{
+			"worker_id": workerID, "error": err,
+		})
+		return out
+	}
+	for _, inst := range instances {
+		out[inst.ContainerName] = true
+	}
+	return out
+}
+
 // Scanner periodically audits worker/container state and reports anomalies.
 type Scanner struct {
 	db        *sql.DB
@@ -180,6 +197,18 @@ func (s *Scanner) scan() {
 			}
 		}
 
+		// Managed databases are tracked in database_instances, not containers —
+		// that separation is deliberate (they are their own resource with their
+		// own lifecycle, reconciled by databaseReconciler against db_sync).
+		//
+		// They are excluded from this scan entirely rather than injected as
+		// "expected running": marking them expected would report a deliberately
+		// stopped database as a status mismatch, trading one false positive for
+		// another. Left unhandled they are reported as unmanaged forever — one
+		// permanent, unfixable anomaly per database, which is exactly the noise
+		// that teaches an operator to stop reading this list.
+		managedDatabases := s.managedDatabaseNames(w.ID)
+
 		workerNames := make(map[string]bool)
 		for _, name := range state.Containers {
 			workerNames[name] = true
@@ -187,6 +216,9 @@ func (s *Scanner) scan() {
 
 		// Check for orphaned/unmanaged containers on worker
 		for _, name := range state.Containers {
+			if managedDatabases[name] {
+				continue
+			}
 			if _, tracked := expectedNames[name]; !tracked {
 				aType := AnomalyUnmanaged
 				msg := "Container running on worker but not tracked in any stack"

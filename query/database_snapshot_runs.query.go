@@ -98,12 +98,21 @@ func GetSnapshotRunByID(engine db.Queryable, id int) (*structs.DatabaseSnapshotR
 	return run, nil
 }
 
-// HasRunInFlight reports whether an instance has a scheduled run that has not
-// finished. Used to skip rather than overlap.
-func HasRunInFlight(engine db.Queryable, instanceID int) (bool, error) {
+// HasRunInFlight reports whether an instance has an *other* scheduled run that
+// has not finished. Used to skip rather than overlap.
+//
+// excludeRunID is required, not optional, and that is the point: the caller has
+// necessarily just claimed a run of its own, and that row is itself `claimed`.
+// Counting it made every scheduled run skip itself with "the previous scheduled
+// snapshot is still running" — a self-inflicted deadlock that no unit test here
+// caught, because the bug is in the *sequence* (claim, then check) rather than
+// in either step. Making the parameter mandatory means the mistake cannot be
+// repeated by omission.
+func HasRunInFlight(engine db.Queryable, instanceID, excludeRunID int) (bool, error) {
 	q := sq.Select("COUNT(*)").
 		From("database_snapshot_runs").
 		Where(sq.Eq{"database_snapshot_runs.database_instance_id": instanceID}).
+		Where(sq.NotEq{"database_snapshot_runs.id": excludeRunID}).
 		Where(sq.Eq{"database_snapshot_runs.status": []string{
 			string(structs.SnapshotRunClaimed), string(structs.SnapshotRunRunning),
 		}})

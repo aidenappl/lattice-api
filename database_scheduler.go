@@ -213,7 +213,9 @@ func (s *databaseScheduler) dispatchSlot(instance structs.DatabaseInstance, slot
 	// 90%-complete backup to start one that will also overrun guarantees you
 	// never complete a backup; queueing turns an overrun into an unbounded
 	// backlog. Skipping is self-limiting.
-	inFlight, err := query.HasRunInFlight(db.DB, instance.ID)
+	// Exclude the run just claimed above — it is `claimed`, and counting it
+	// would make every run skip itself.
+	inFlight, err := query.HasRunInFlight(db.DB, instance.ID, run.ID)
 	if err == nil && inFlight {
 		skip("the previous scheduled snapshot is still running")
 		return
