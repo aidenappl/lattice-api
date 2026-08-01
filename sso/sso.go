@@ -126,15 +126,83 @@ func IsConfigured() bool {
 }
 
 // Config returns the public SSO configuration for the frontend
+// ProviderEntry is one login button in the shared SSO config contract.
+//
+// ⚠️ THE SHAPE IS SHARED with monitor-core and openbucket-api so a login page
+// written once renders against any of them. Modelled on Zulip's server_settings.
+// Do not add a field here without adding it to the other two.
+type ProviderEntry struct {
+	Name        string  `json:"name"`
+	DisplayName string  `json:"display_name"`
+	DisplayIcon *string `json:"display_icon"`
+
+	// ⚠️ Null is CONTRACTUAL for display_icon and the colours: it means "render a
+	// plain text button in the default style", which is the state a provider is in
+	// before branding is configured. Every client must handle it.
+	ButtonColor     *string `json:"button_color"`
+	ButtonTextColor *string `json:"button_text_color"`
+
+	// LoginURL is COMPUTED, never stored.
+	//
+	// ⚠️ A stored login URL is an administrator-controlled value that an
+	// unauthenticated page turns into a link the user is told to click — an
+	// open-redirect primitive on your own domain, and a phishing lure that survives
+	// review because the page really is yours.
+	LoginURL string `json:"login_url"`
+
+	SortOrder int `json:"sort_order"`
+}
+
+// Config returns the PUBLIC provider discovery payload.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// THIS SERVICE IS STILL SINGLE-PROVIDER, and the response is still an ARRAY.
+//
+// The array is the shared contract; this service simply happens to put at most
+// one entry in it. Emitting the shared shape now means the login page is written
+// once, against the contract, and does not change when the sso_providers table
+// lands here — at which point this function grows a loop and nothing else moves.
+//
+// ⚠️ UNAUTHENTICATED. Display data only — never an issuer URL, a client_id or a
+// scope list. Adding a field here publishes it.
+//
+// `enabled` and `button_label` are retained alongside `providers` for one deploy
+// so a login page still running the previous bundle keeps working while the new
+// one rolls out. They can be dropped once every frontend reads `providers`.
+// ─────────────────────────────────────────────────────────────────────────────
 func Config() map[string]any {
 	cfg := LoadConfig()
 	if !cfg.Enabled || cfg.ClientID == "" || cfg.AuthorizeURL == "" || cfg.TokenURL == "" {
-		return map[string]any{"enabled": false}
+		return map[string]any{
+			"enabled":   false,
+			"providers": []ProviderEntry{},
+		}
 	}
+
+	label := cfg.ButtonLabel
+	if label == "" {
+		label = "Sign in with SSO"
+	}
+
 	return map[string]any{
+		// Legacy fields, retained for one deploy. See the note above.
 		"enabled":      true,
-		"button_label": cfg.ButtonLabel,
+		"button_label": label,
 		"login_url":    "/auth/sso/login",
+
+		"providers": []ProviderEntry{{
+			Name:        ProviderSlug,
+			DisplayName: label,
+			// Branding has no storage on this service yet — the sso_providers table
+			// is where those columns live, and it has not landed here. Null is the
+			// contractual "text button in the default style", so the login page
+			// renders correctly today and picks up branding for free later.
+			DisplayIcon:     nil,
+			ButtonColor:     nil,
+			ButtonTextColor: nil,
+			LoginURL:        "/auth/sso/login",
+			SortOrder:       0,
+		}},
 	}
 }
 

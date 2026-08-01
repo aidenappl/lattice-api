@@ -125,8 +125,12 @@ type DatabaseInstance struct {
 	SnapshotSchedule    *string        `json:"snapshot_schedule"`
 	RetentionCount      *int           `json:"retention_count"`
 	BackupDestinationID *int           `json:"backup_destination_id"`
-	ContainerName       string         `json:"container_name"`
-	VolumeName          string         `json:"volume_name"`
+	// MirrorBackupDestinationID is an optional second destination each snapshot
+	// is copied to. One primary plus one mirror is what 3-2-1 needs; general
+	// fan-out is a different feature.
+	MirrorBackupDestinationID *int   `json:"mirror_backup_destination_id"`
+	ContainerName             string `json:"container_name"`
+	VolumeName                string `json:"volume_name"`
 
 	// DeletionProtection refuses DELETE while set. Deleting a database destroys
 	// its data volume, so the guard exists to make "turn the guard off" a

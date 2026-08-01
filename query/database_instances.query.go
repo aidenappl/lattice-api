@@ -31,6 +31,7 @@ var databaseInstanceColumns = []string{
 	"database_instances.snapshot_schedule",
 	"database_instances.retention_count",
 	"database_instances.backup_destination_id",
+	"database_instances.mirror_backup_destination_id",
 	"database_instances.container_name",
 	"database_instances.volume_name",
 	"database_instances.deletion_protection",
@@ -65,6 +66,7 @@ func scanDatabaseInstance(row scanner) (*structs.DatabaseInstance, error) {
 		&d.SnapshotSchedule,
 		&d.RetentionCount,
 		&d.BackupDestinationID,
+		&d.MirrorBackupDestinationID,
 		&d.ContainerName,
 		&d.VolumeName,
 		&d.DeletionProtection,
@@ -306,6 +308,9 @@ type UpdateDatabaseInstanceRequest struct {
 	StartedAt           *time.Time
 	Active              *bool
 
+	MirrorBackupDestinationID *int
+	ClearMirrorDestination    bool
+
 	DeletionProtection   *bool
 	PendingFinalSnapshot *bool
 	VolumeSizeBytes      *int64
@@ -392,6 +397,13 @@ func UpdateDatabaseInstance(engine db.Queryable, id int, req UpdateDatabaseInsta
 		hasUpdate = true
 	} else if req.RetentionCount != nil {
 		q = q.Set("retention_count", *req.RetentionCount)
+		hasUpdate = true
+	}
+	if req.ClearMirrorDestination {
+		q = q.Set("mirror_backup_destination_id", nil)
+		hasUpdate = true
+	} else if req.MirrorBackupDestinationID != nil {
+		q = q.Set("mirror_backup_destination_id", *req.MirrorBackupDestinationID)
 		hasUpdate = true
 	}
 	if req.ClearBackupDestination {

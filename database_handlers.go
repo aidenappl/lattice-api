@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -538,4 +539,147 @@ func reconcileDatabaseInstance(instance structs.DatabaseInstance, obs observedDb
 			dbLifecycle.SetHealth(instance.ID, health, "observed by worker sync")
 		}
 	}
+}
+
+// recordPrimaryReplicaAndMirror records the primary copy of a completed snapshot
+// and, if the instance has a mirror destination, asks the worker to copy it
+// there.
+//
+// The mirror is a separate step *after* the primary succeeds, not a second
+// concurrent upload. Streaming to both at once would let the slower destination
+// apply backpressure to the dump — the same hazard that makes an unbuffered pipe
+// dangerous — and a partial failure would leave an artifact whose state is
+// ambiguous. Sequential with per-replica status keeps the primary's success
+// independent of the mirror's.
+func recordPrimaryReplicaAndMirror(snapshotID int, sizeBytes *int64, hub *socket.WorkerHub) {
+	snapshot, err := query.GetSnapshotByID(db.DB, snapshotID)
+	if err != nil || snapshot.BackupDestinationID == nil {
+		return
+	}
+
+	if err := query.UpsertSnapshotReplica(db.DB, query.UpsertReplicaRequest{
+		SnapshotID:          snapshot.ID,
+		BackupDestinationID: *snapshot.BackupDestinationID,
+		Role:                structs.ReplicaRolePrimary,
+		Status:              structs.ReplicaCompleted,
+		SizeBytes:           sizeBytes,
+	}); err != nil {
+		logger.Error("database", "failed to record primary replica", logger.F{
+			"snapshot_id": snapshot.ID, "error": err,
+		})
+	}
+
+	instance, err := query.GetDatabaseInstanceByID(db.DB, snapshot.DatabaseInstanceID)
+	if err != nil || instance.MirrorBackupDestinationID == nil {
+		return
+	}
+	if *instance.MirrorBackupDestinationID == *snapshot.BackupDestinationID {
+		return // a mirror to the same destination is not a second copy
+	}
+
+	source, err := query.GetBackupDestinationByID(db.DB, *snapshot.BackupDestinationID)
+	if err != nil {
+		return
+	}
+	target, err := query.GetBackupDestinationByID(db.DB, *instance.MirrorBackupDestinationID)
+	if err != nil {
+		return
+	}
+
+	_ = query.UpsertSnapshotReplica(db.DB, query.UpsertReplicaRequest{
+		SnapshotID:          snapshot.ID,
+		BackupDestinationID: target.ID,
+		Role:                structs.ReplicaRoleMirror,
+		Status:              structs.ReplicaPending,
+	})
+
+	if !hub.IsConnected(instance.WorkerID) {
+		reason := fmt.Sprintf("worker %d is not connected", instance.WorkerID)
+		_ = query.UpsertSnapshotReplica(db.DB, query.UpsertReplicaRequest{
+			SnapshotID: snapshot.ID, BackupDestinationID: target.ID,
+			Role: structs.ReplicaRoleMirror, Status: structs.ReplicaFailed, ErrorMessage: &reason,
+		})
+		return
+	}
+
+	payload := map[string]any{
+		socket.PayloadDbInstanceID:      instance.ID,
+		socket.PayloadSnapshotID:        snapshot.ID,
+		socket.PayloadFilename:          snapshot.Filename,
+		socket.PayloadSourceDestination: destinationPayload(source),
+		socket.PayloadTargetDestination: destinationPayload(target),
+	}
+
+	if err := hub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
+		Type:    socket.MsgDbMirrorSnapshot,
+		Payload: payload,
+	}); err != nil {
+		reason := err.Error()
+		_ = query.UpsertSnapshotReplica(db.DB, query.UpsertReplicaRequest{
+			SnapshotID: snapshot.ID, BackupDestinationID: target.ID,
+			Role: structs.ReplicaRoleMirror, Status: structs.ReplicaFailed, ErrorMessage: &reason,
+		})
+	}
+}
+
+func destinationPayload(dest *structs.BackupDestination) map[string]any {
+	out := map[string]any{socket.PayloadDestType: dest.Type}
+	if dest.Config != nil {
+		var cfg map[string]any
+		if err := json.Unmarshal([]byte(*dest.Config), &cfg); err == nil {
+			out[socket.PayloadDestConfig] = cfg
+		}
+	}
+	return out
+}
+
+// handleMirrorStatus records the outcome of a mirror copy.
+//
+// A failed mirror never fails the snapshot: the primary copy exists, and marking
+// the backup failed would push an operator toward re-running a dump that already
+// succeeded. It degrades backup posture instead, which is exactly the signal
+// that should move.
+func handleMirrorStatus(payload map[string]any) {
+	snapshotID := payloadInt(payload, socket.PayloadSnapshotID)
+	status, _ := payload[socket.PayloadStatus].(string)
+	if snapshotID == 0 || status == "" {
+		return
+	}
+
+	snapshot, err := query.GetSnapshotByID(db.DB, snapshotID)
+	if err != nil {
+		return
+	}
+	instance, err := query.GetDatabaseInstanceByID(db.DB, snapshot.DatabaseInstanceID)
+	if err != nil || instance.MirrorBackupDestinationID == nil {
+		return
+	}
+
+	req := query.UpsertReplicaRequest{
+		SnapshotID:          snapshotID,
+		BackupDestinationID: *instance.MirrorBackupDestinationID,
+		Role:                structs.ReplicaRoleMirror,
+		Status:              structs.ReplicaFailed,
+	}
+	if status == "completed" {
+		req.Status = structs.ReplicaCompleted
+		if sb, ok := payload[socket.PayloadSizeBytes].(float64); ok && sb > 0 {
+			v := int64(sb)
+			req.SizeBytes = &v
+		}
+	} else if em, ok := payload[socket.PayloadErrorMessage].(string); ok && em != "" {
+		req.ErrorMessage = &em
+	}
+
+	if err := query.UpsertSnapshotReplica(db.DB, req); err != nil {
+		logger.Error("database", "failed to record mirror replica", logger.F{
+			"snapshot_id": snapshotID, "error": err,
+		})
+		return
+	}
+
+	logger.Info("database", "snapshot mirror "+req.Status, logger.F{
+		"snapshot_id":          snapshotID,
+		"database_instance_id": instance.ID,
+	})
 }

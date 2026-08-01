@@ -35,6 +35,7 @@ func TestDbReplyTypesHaveDispatchCase(t *testing.T) {
 		MsgDbRestoreStatus:        "MsgDbRestoreStatus",
 		MsgDbDeleteSnapshotResult: "MsgDbDeleteSnapshotResult",
 		MsgDbScheduleStatus:       "MsgDbScheduleStatus",
+		MsgDbMirrorStatus:         "MsgDbMirrorStatus",
 		MsgDbSync:                 "MsgDbSync",
 		MsgBackupDestTestResult:   "MsgBackupDestTestResult",
 	}

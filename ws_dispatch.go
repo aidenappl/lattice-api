@@ -441,6 +441,10 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 					closeRunForSnapshot(snapshotID, status == "completed")
 				}
 
+				if status == "completed" {
+					recordPrimaryReplicaAndMirror(snapshotID, sizeBytes, wh.Hub)
+				}
+
 				if instanceID != 0 && status == "completed" {
 					dbLifecycle.ClearWarning(instanceID, structs.DBErrCodeBackupStale)
 					// A delete that was waiting on this snapshot can now proceed.

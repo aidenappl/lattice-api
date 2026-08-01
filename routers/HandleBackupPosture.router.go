@@ -58,28 +58,15 @@ func computeBackupPosture(instance *structs.DatabaseInstance) BackupPosture {
 		Detail: []string{"the live data volume on the worker"},
 	}
 
-	snapshots, err := query.ListSnapshotsByInstance(db.DB, instance.ID)
-	if err != nil || snapshots == nil {
-		p.Warnings = append(p.Warnings, "could not read this database's snapshots")
-		return finalisePosture(p)
-	}
-
 	cutoff := time.Now().UTC().Add(-postureFreshnessWindow)
 
-	// Group fresh, successful snapshots by the destination they landed on.
-	freshByDestination := map[int]int{}
-	for _, s := range *snapshots {
-		if s.Status != "completed" || s.BackupDestinationID == nil {
-			continue
-		}
-		when := s.UpdatedAt
-		if s.CompletedAt != nil {
-			when = *s.CompletedAt
-		}
-		if when.Before(cutoff) {
-			continue
-		}
-		freshByDestination[*s.BackupDestinationID]++
+	// Count *replicas*, not snapshots: the question 3-2-1 asks is "does a copy
+	// exist on that destination", which a snapshot row alone cannot answer once
+	// a snapshot can live in more than one place.
+	freshByDestination, err := query.FreshReplicasByDestination(db.DB, instance.ID, cutoff)
+	if err != nil {
+		p.Warnings = append(p.Warnings, "could not read this database's snapshot copies")
+		return finalisePosture(p)
 	}
 
 	if len(freshByDestination) == 0 {

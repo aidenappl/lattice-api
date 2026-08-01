@@ -78,6 +78,15 @@ var dbPayloadKeys = map[string][]string{
 		PayloadFilename,
 		PayloadBackupDestination,
 	},
+	MsgDbMirrorSnapshot: {
+		PayloadDbInstanceID,
+		PayloadRequestID,
+		PayloadIdempotencyKey,
+		PayloadSnapshotID,
+		PayloadFilename,
+		PayloadSourceDestination,
+		PayloadTargetDestination,
+	},
 	MsgDbRemove: {
 		PayloadDbInstanceID,
 		PayloadRequestID,
@@ -113,6 +122,8 @@ func TestDbPayloadKeyValuesStable(t *testing.T) {
 		"PayloadSnapshotID":        "snapshot_id",
 		"PayloadFilename":          "filename",
 		"PayloadBackupDestination": "backup_destination",
+		"PayloadSourceDestination": "source_destination",
+		"PayloadTargetDestination": "target_destination",
 		"PayloadDestType":          "type",
 		"PayloadDestConfig":        "config",
 		"PayloadScheduled":         "scheduled",
@@ -140,6 +151,8 @@ func TestDbPayloadKeyValuesStable(t *testing.T) {
 		"PayloadSnapshotID":        PayloadSnapshotID,
 		"PayloadFilename":          PayloadFilename,
 		"PayloadBackupDestination": PayloadBackupDestination,
+		"PayloadSourceDestination": PayloadSourceDestination,
+		"PayloadTargetDestination": PayloadTargetDestination,
 		"PayloadDestType":          PayloadDestType,
 		"PayloadDestConfig":        PayloadDestConfig,
 		"PayloadScheduled":         PayloadScheduled,
@@ -164,6 +177,7 @@ func TestDbPayloadKeysDeclaredForEveryDataCommand(t *testing.T) {
 		MsgDbSnapshot,
 		MsgDbRestore,
 		MsgDbDeleteSnapshot,
+		MsgDbMirrorSnapshot,
 		MsgDbRemove,
 	}
 	for _, cmd := range dataCommands {

@@ -74,6 +74,8 @@ const (
 	MsgDbRestore        = "db_restore"
 	MsgDbUpdateSchedule = "db_update_schedule"
 	MsgDbDeleteSnapshot = "db_delete_snapshot_file"
+	// MsgDbMirrorSnapshot copies an existing snapshot to a second destination.
+	MsgDbMirrorSnapshot = "db_mirror_snapshot"
 	MsgBackupDestTest   = "backup_dest_test"
 	// MsgDbSyncRequest asks a worker to report every database container it can
 	// see. The reply (MsgDbSync) is the observed state the reconciler diffs
@@ -89,6 +91,7 @@ const (
 	MsgDbRestoreStatus        = "db_restore_status"
 	MsgDbDeleteSnapshotResult = "db_delete_snapshot_result"
 	MsgDbScheduleStatus       = "db_schedule_status"
+	MsgDbMirrorStatus         = "db_mirror_status"
 	MsgDbSync                 = "db_sync"
 	MsgBackupDestTestResult   = "backup_dest_test_result"
 )
@@ -106,6 +109,7 @@ var DbReplyTypes = []string{
 	MsgDbRestoreStatus,
 	MsgDbDeleteSnapshotResult,
 	MsgDbScheduleStatus,
+	MsgDbMirrorStatus,
 	MsgDbSync,
 	MsgBackupDestTestResult,
 }
@@ -158,6 +162,8 @@ const (
 	PayloadSnapshotID        = "snapshot_id"
 	PayloadFilename          = "filename"
 	PayloadBackupDestination = "backup_destination"
+	PayloadSourceDestination = "source_destination"
+	PayloadTargetDestination = "target_destination"
 	PayloadDestType          = "type"
 	PayloadDestConfig        = "config"
 	PayloadScheduled         = "scheduled"
