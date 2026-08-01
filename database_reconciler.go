@@ -29,6 +29,15 @@ const (
 
 	// dbWatchdogInterval is how often stuck instances are swept for.
 	dbWatchdogInterval = 30 * time.Second
+
+	// dbBackupFreshnessInterval is how often backup staleness is swept for. Slow
+	// on purpose: the condition it detects develops over hours or days, and the
+	// check walks cron expressions backwards.
+	dbBackupFreshnessInterval = 10 * time.Minute
+
+	// staleBackupLookback bounds that backwards walk. Wide enough to cover a
+	// monthly schedule, so "0 3 1 * *" is still evaluated rather than skipped.
+	staleBackupLookback = 70 * 24 * time.Hour
 )
 
 // databaseReconciler keeps database_instances rows honest.
@@ -64,6 +73,7 @@ func newDatabaseReconciler(workerHub *socket.WorkerHub) *databaseReconciler {
 func (rc *databaseReconciler) Start() {
 	go rc.runLoop("db-reconcile", dbReconcileInterval, rc.reconcileAll)
 	go rc.runLoop("db-watchdog", dbWatchdogInterval, rc.failStuckInstances)
+	go rc.runLoop("db-backup-freshness", dbBackupFreshnessInterval, rc.flagStaleBackups)
 	logger.Info("database", "reconciler started", logger.F{
 		"reconcile_interval": dbReconcileInterval.String(),
 		"provision_timeout":  dbProvisionTimeout.String(),
@@ -174,6 +184,71 @@ func (rc *databaseReconciler) failStuckInstances() {
 		})
 		rc.release(instance.ID)
 	}
+}
+
+// flagStaleBackups raises a warning on any instance whose scheduled backups have
+// stopped producing.
+//
+// This is the control that catches what every other check in this subsystem
+// misses. Reconciliation compares observed containers against desired state, and
+// the watchdog catches operations that hang — but a backup schedule that silently
+// stops firing produces *no* observation and *no* stuck operation. It is only
+// detectable by knowing when a run was due and noticing nothing arrived.
+//
+// The bar is two consecutive missed runs rather than one: a single miss is
+// plausible on a busy worker or across a restart, while two means the schedule is
+// not working. Instances that have never produced a snapshot are held to the same
+// rule, measured from whichever is later — the instance's creation or the
+// schedule's second-most-recent fire time.
+func (rc *databaseReconciler) flagStaleBackups() {
+	instances, _, err := query.ListDatabaseInstances(db.DB, query.ListDatabaseInstancesRequest{
+		Limit: db.MAX_LIMIT,
+	})
+	if err != nil || instances == nil {
+		return
+	}
+
+	now := time.Now().UTC()
+
+	for _, instance := range *instances {
+		if instance.SnapshotSchedule == nil || *instance.SnapshotSchedule == "" || instance.BackupDestinationID == nil {
+			continue
+		}
+
+		// Two most recent fire times. Without at least two the schedule has not
+		// had a chance to miss twice yet.
+		fires := cronPreviousFires(*instance.SnapshotSchedule, now, 2, staleBackupLookback)
+		if len(fires) < 2 {
+			continue
+		}
+		deadline := fires[1]
+
+		// A schedule that only started mattering after the instance existed.
+		if instance.InsertedAt.After(deadline) {
+			continue
+		}
+
+		lastSuccess, err := query.GetLastSuccessfulSnapshotAt(db.DB, instance.ID)
+		if err != nil {
+			continue
+		}
+		if lastSuccess != nil && !lastSuccess.Before(deadline) {
+			dbLifecycle.ClearWarning(instance.ID, structs.DBErrCodeBackupStale)
+			continue
+		}
+
+		detail := fmt.Sprintf("no successful snapshot since %s; schedule %q should have run at least twice by now",
+			describeLastSuccess(lastSuccess), *instance.SnapshotSchedule)
+
+		dbLifecycle.SetWarning(instance.ID, newDatabaseError(structs.DBErrCodeBackupStale, detail, true), "control-plane")
+	}
+}
+
+func describeLastSuccess(at *time.Time) string {
+	if at == nil {
+		return "this database was created (it has never produced one)"
+	}
+	return at.UTC().Format(time.RFC3339)
 }
 
 // claim marks an instance as being reconciled. Returns false if another

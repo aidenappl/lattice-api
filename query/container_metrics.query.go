@@ -129,6 +129,51 @@ func ListContainerMetrics(engine db.Queryable, req ListContainerMetricsRequest) 
 	return metrics, rows.Err()
 }
 
+// ListContainerMetricsByName returns a time series addressed by worker and
+// container name rather than containers.id.
+//
+// Managed databases have no row in `containers`, so `handleContainerMetrics`
+// stores their samples with `container_id NULL` keyed on the name — the rows have
+// been accumulating since the subsystem shipped, with no way to read them. Every
+// other reader here requires an id, which is why a database's Overview tab could
+// only ever show its *configured* limits and never its actual usage.
+func ListContainerMetricsByName(engine db.Queryable, workerID int, containerName string, since *time.Time, limit int) ([]structs.ContainerMetrics, error) {
+	q := sq.Select(containerMetricsColumns...).
+		From("container_metrics").
+		Where(sq.Eq{"container_metrics.worker_id": workerID}).
+		Where(sq.Eq{"container_metrics.container_name": containerName}).
+		OrderBy("container_metrics.recorded_at DESC")
+
+	if since != nil {
+		q = q.Where(sq.GtOrEq{"container_metrics.recorded_at": *since})
+	}
+	if limit == 0 || limit > db.MAX_LIMIT {
+		limit = db.DEFAULT_LIMIT
+	}
+	q = q.Limit(uint64(limit))
+
+	qStr, args, err := q.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build sql query: %w", err)
+	}
+
+	rows, err := engine.Query(qStr, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute sql query: %w", err)
+	}
+	defer rows.Close()
+
+	var metrics []structs.ContainerMetrics
+	for rows.Next() {
+		m, err := scanContainerMetrics(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan container metrics: %w", err)
+		}
+		metrics = append(metrics, *m)
+	}
+	return metrics, rows.Err()
+}
+
 // GetLatestWorkerContainerMetrics returns the most recent metrics row for each
 // container on a given worker, giving an instant snapshot of resource usage.
 func GetLatestWorkerContainerMetrics(engine db.Queryable, workerID int) ([]structs.ContainerMetrics, error) {

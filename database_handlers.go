@@ -120,6 +120,62 @@ func ensureScheduledSnapshotRow(instanceID int, filename string) (*structs.Datab
 	})
 }
 
+// finaliseDeleteAfterSnapshot destroys a database whose final snapshot has just
+// completed.
+//
+// This is the second half of a delete that asked for a last backup. The ordering
+// is the whole point: the volume may only be destroyed once a restorable copy
+// exists, so the delete waits here rather than racing the dump. If the snapshot
+// had failed, this is never reached and the database is still present — the
+// correct outcome, since the operator asked not to lose it without a copy.
+//
+// Returns true when it took ownership of the instance.
+func finaliseDeleteAfterSnapshot(instanceID int, hub *socket.WorkerHub) bool {
+	instance, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
+	if err != nil || !instance.PendingFinalSnapshot {
+		return false
+	}
+
+	pending := false
+	if _, err := query.UpdateDatabaseInstance(db.DB, instanceID, query.UpdateDatabaseInstanceRequest{
+		PendingFinalSnapshot: &pending,
+	}); err != nil {
+		logger.Error("database", "failed to clear pending final snapshot", logger.F{
+			"database_instance_id": instanceID, "error": err,
+		})
+		return false
+	}
+
+	if !hub.IsConnected(instance.WorkerID) {
+		message := fmt.Sprintf("final snapshot completed but worker %d is no longer connected; the database was not destroyed", instance.WorkerID)
+		dbLifecycle.SetWarning(instanceID, newDatabaseError(structs.DBErrCodeRemoveFailed, message, true), "control-plane")
+		return true
+	}
+
+	payload := map[string]any{
+		socket.PayloadDbInstanceID:  instanceID,
+		socket.PayloadContainerName: instance.ContainerName,
+		socket.PayloadVolumeName:    instance.VolumeName,
+		socket.PayloadRemoveVolume:  true,
+	}
+	if err := hub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
+		Type:    socket.MsgDbRemove,
+		Payload: payload,
+	}); err != nil {
+		logger.Error("database", "failed to send delete after final snapshot", logger.F{
+			"database_instance_id": instanceID, "error": err,
+		})
+		return true
+	}
+
+	dbLifecycle.BeginDeleting(instanceID, "control-plane")
+	logger.Info("database", "final snapshot complete, destroying database", logger.F{
+		"database_instance_id": instanceID,
+		"name":                 instance.Name,
+	})
+	return true
+}
+
 // applySnapshotRetention prunes an instance's oldest successful snapshots once a
 // new one completes, removing the remote file as well as the row.
 //
@@ -318,6 +374,10 @@ type observedDbContainer struct {
 	// startup failure in the container's logs (bad volume ownership, a
 	// non-empty Postgres data directory, and so on).
 	FatalHint string
+	// VolumeSizeBytes is the data volume's measured size, or 0 when the worker
+	// has not managed to measure it. Reported on a slow cadence: the measurement
+	// walks the volume, so it is cached worker-side between syncs.
+	VolumeSizeBytes int64
 }
 
 // handleDbSync reconciles a worker's full report of the database containers it
@@ -346,11 +406,12 @@ func handleDbSync(workerID int, payload map[string]any) {
 		health, _ := entry["health"].(string)
 		fatalHint, _ := entry["fatal_hint"].(string)
 		observed[name] = observedDbContainer{
-			ContainerName: name,
-			State:         state,
-			Health:        health,
-			RestartCount:  payloadInt(entry, "restart_count"),
-			FatalHint:     fatalHint,
+			ContainerName:   name,
+			State:           state,
+			Health:          health,
+			RestartCount:    payloadInt(entry, "restart_count"),
+			FatalHint:       fatalHint,
+			VolumeSizeBytes: int64(payloadInt(entry, "volume_size_bytes")),
 		}
 	}
 
@@ -371,6 +432,21 @@ func handleDbSync(workerID int, payload map[string]any) {
 func reconcileDatabaseInstance(instance structs.DatabaseInstance, obs observedDbContainer, observed map[string]observedDbContainer) {
 	_, present := observed[instance.ContainerName]
 	current := structs.DatabaseStatus(instance.Status)
+
+	// Record what the database costs on disk whenever the worker reports it.
+	// Independent of status: a stopped database still occupies its volume, and
+	// that is exactly when someone is deciding whether to delete it.
+	if obs.VolumeSizeBytes > 0 &&
+		(instance.VolumeSizeBytes == nil || *instance.VolumeSizeBytes != obs.VolumeSizeBytes) {
+		size := obs.VolumeSizeBytes
+		if _, err := query.UpdateDatabaseInstance(db.DB, instance.ID, query.UpdateDatabaseInstanceRequest{
+			VolumeSizeBytes: &size,
+		}); err != nil {
+			logger.Warn("database", "failed to record volume size", logger.F{
+				"database_instance_id": instance.ID, "error": err,
+			})
+		}
+	}
 
 	if !present {
 		// A container that doesn't exist has no health to report.

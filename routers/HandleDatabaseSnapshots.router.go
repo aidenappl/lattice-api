@@ -53,18 +53,36 @@ func (h *DatabaseHandler) HandleCreateSnapshot(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	destination, err := query.GetBackupDestinationByID(db.DB, *instance.BackupDestinationID)
-	if err != nil {
-		responder.QueryError(w, err, "failed to get backup destination")
-		return
-	}
-
 	if !h.WorkerHub.IsConnected(instance.WorkerID) {
 		responder.SendError(w, http.StatusBadRequest, "worker is not connected")
 		return
 	}
 
-	filename := fmt.Sprintf("%s_%s_%s.sql.gz", instance.ContainerName, instance.DatabaseName, time.Now().UTC().Format("20060102T150405Z"))
+	snapshot, err := h.startSnapshot(instance, "manual")
+	if err != nil {
+		responder.QueryError(w, err, "failed to create snapshot")
+		return
+	}
+
+	dbEvent(instance.ID, structs.DBEventRequested, "snapshot requested: "+snapshot.Filename, r)
+	logAudit(r, "create", "database_snapshot", intPtr(snapshot.ID), strPtr(instance.Name))
+	responder.NewCreated(w, snapshot, "snapshot created")
+}
+
+// startSnapshot creates the snapshot row and dispatches the dump to the worker.
+//
+// Shared by the manual snapshot endpoint and the final-snapshot-on-delete path,
+// so both produce an identical artifact and an identical row — the only
+// difference is trigger_type, which is what later tells an operator why a
+// snapshot exists.
+func (h *DatabaseHandler) startSnapshot(instance *structs.DatabaseInstance, trigger string) (*structs.DatabaseSnapshot, error) {
+	destination, err := query.GetBackupDestinationByID(db.DB, *instance.BackupDestinationID)
+	if err != nil {
+		return nil, err
+	}
+
+	filename := fmt.Sprintf("%s_%s_%s.sql.gz", instance.ContainerName, instance.DatabaseName,
+		time.Now().UTC().Format("20060102T150405Z"))
 
 	snapshot, err := query.CreateSnapshot(db.DB, query.CreateSnapshotRequest{
 		DatabaseInstanceID:  instance.ID,
@@ -72,46 +90,41 @@ func (h *DatabaseHandler) HandleCreateSnapshot(w http.ResponseWriter, r *http.Re
 		Filename:            filename,
 		Engine:              instance.Engine,
 		DatabaseName:        instance.DatabaseName,
-		TriggerType:         "manual",
+		TriggerType:         trigger,
 	})
 	if err != nil {
-		responder.QueryError(w, err, "failed to create snapshot")
-		return
+		return nil, err
 	}
 
 	payload := dbCommandPayload(instance.ID, socket.MsgDbSnapshot)
-	payload["snapshot_id"] = snapshot.ID
-	payload["container_name"] = instance.ContainerName
-	payload["engine"] = instance.Engine
-	payload["database_name"] = instance.DatabaseName
-	payload["username"] = instance.Username
-	payload["filename"] = filename
-	payload["backup_destination"] = map[string]any{
-		"type": destination.Type,
-	}
+	payload[socket.PayloadSnapshotID] = snapshot.ID
+	payload[socket.PayloadContainerName] = instance.ContainerName
+	payload[socket.PayloadEngine] = instance.Engine
+	payload[socket.PayloadDatabaseName] = instance.DatabaseName
+	payload[socket.PayloadUsername] = instance.Username
+	payload[socket.PayloadFilename] = filename
 	if instance.Password != nil {
-		payload["password"] = *instance.Password
+		payload[socket.PayloadPassword] = *instance.Password
 	}
+
+	destPayload := map[string]any{socket.PayloadDestType: destination.Type}
 	if destination.Config != nil {
 		var configMap map[string]any
 		if err := json.Unmarshal([]byte(*destination.Config), &configMap); err != nil {
-			responder.SendError(w, http.StatusInternalServerError, "failed to parse backup destination config")
-			return
+			return nil, fmt.Errorf("backup destination %d has unparseable config: %w", destination.ID, err)
 		}
-		payload["backup_destination"].(map[string]any)["config"] = configMap
+		destPayload[socket.PayloadDestConfig] = configMap
 	}
+	payload[socket.PayloadBackupDestination] = destPayload
 
 	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
 		Type:    socket.MsgDbSnapshot,
 		Payload: payload,
 	}); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send snapshot command: %v", err))
-		return
+		return nil, fmt.Errorf("failed to send snapshot command: %w", err)
 	}
 
-	dbEvent(instance.ID, structs.DBEventRequested, "snapshot requested: "+filename, r)
-	logAudit(r, "create", "database_snapshot", intPtr(snapshot.ID), strPtr(instance.Name))
-	responder.NewCreated(w, snapshot, "snapshot created")
+	return snapshot, nil
 }
 
 // HandleRestoreSnapshot restores a database instance from a snapshot.

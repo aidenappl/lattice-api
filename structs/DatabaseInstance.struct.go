@@ -90,6 +90,11 @@ const (
 	DBErrCodeWorkerOffline    = "worker_offline"
 	DBErrCodeSnapshotFailed   = "snapshot_failed"
 	DBErrCodeRestoreFailed    = "restore_failed"
+	// DBErrCodeBackupStale means a scheduled backup has not succeeded when it
+	// should have. It is deliberately *not* a status: the database itself may be
+	// perfectly healthy, and conflating "this database is broken" with "its
+	// backups are not running" hides one behind the other.
+	DBErrCodeBackupStale = "backup_stale"
 )
 
 // DatabaseError is the structured failure detail attached to an instance. It is
@@ -122,8 +127,21 @@ type DatabaseInstance struct {
 	BackupDestinationID *int           `json:"backup_destination_id"`
 	ContainerName       string         `json:"container_name"`
 	VolumeName          string         `json:"volume_name"`
-	Active              bool           `json:"active"`
-	StartedAt           *time.Time     `json:"started_at"`
-	UpdatedAt           time.Time      `json:"updated_at"`
-	InsertedAt          time.Time      `json:"inserted_at"`
+
+	// DeletionProtection refuses DELETE while set. Deleting a database destroys
+	// its data volume, so the guard exists to make "turn the guard off" a
+	// separate, deliberate act from "delete this".
+	DeletionProtection bool `json:"deletion_protection"`
+	// PendingFinalSnapshot means a delete is waiting on a last backup before the
+	// volume may be destroyed. The teardown is asynchronous, so the intent has to
+	// outlive the request that expressed it.
+	PendingFinalSnapshot bool `json:"pending_final_snapshot"`
+	// VolumeSizeBytes is the data volume's on-disk size as last observed by the
+	// worker — nil until one has reported.
+	VolumeSizeBytes     *int64     `json:"volume_size_bytes"`
+	VolumeSizeCheckedAt *time.Time `json:"volume_size_checked_at"`
+	Active              bool       `json:"active"`
+	StartedAt           *time.Time `json:"started_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+	InsertedAt          time.Time  `json:"inserted_at"`
 }

@@ -208,6 +208,28 @@ func CountSnapshotsByInstance(engine db.Queryable, instanceID int) (int, error) 
 	return count, nil
 }
 
+// GetLastSuccessfulSnapshotAt returns when an instance last completed a snapshot,
+// or nil if it never has. This is the freshness signal: "the last backup
+// succeeded" is a far weaker claim than "a backup succeeded recently".
+func GetLastSuccessfulSnapshotAt(engine db.Queryable, instanceID int) (*time.Time, error) {
+	q := sq.Select("MAX(COALESCE(completed_at, updated_at))").
+		From("database_snapshots").
+		Where(sq.Eq{"database_instance_id": instanceID}).
+		Where(sq.Eq{"status": "completed"}).
+		Where(sq.Eq{"active": true})
+
+	qStr, args, err := q.ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build sql query: %w", err)
+	}
+
+	var at *time.Time
+	if err := engine.QueryRow(qStr, args...).Scan(&at); err != nil {
+		return nil, fmt.Errorf("failed to read last successful snapshot: %w", err)
+	}
+	return at, nil
+}
+
 func DeleteSnapshot(engine db.Queryable, id int) error {
 	_, err := engine.Exec("UPDATE database_snapshots SET active = 0 WHERE id = ?", id)
 	return err

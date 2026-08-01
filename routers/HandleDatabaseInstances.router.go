@@ -441,6 +441,55 @@ func (h *DatabaseHandler) HandleCreateDatabaseInstance(w http.ResponseWriter, r 
 	responder.NewCreated(w, instance, "database instance created")
 }
 
+// beginDeleteWithFinalSnapshot takes a last backup and defers the teardown until
+// it completes.
+//
+// The ordering is the entire feature. Destroying the volume and *then* taking a
+// snapshot is not a final snapshot, and taking both concurrently races the dump
+// against the removal. So this marks `pending_final_snapshot`, starts the
+// snapshot, and returns; the snapshot's completion is what triggers the actual
+// removal (see finaliseDeleteAfterSnapshot). If the snapshot fails, the database
+// is still here — which is the correct outcome, since the operator asked not to
+// lose it without a copy.
+func (h *DatabaseHandler) beginDeleteWithFinalSnapshot(w http.ResponseWriter, r *http.Request, instance *structs.DatabaseInstance) {
+	if instance.BackupDestinationID == nil {
+		responder.SendError(w, http.StatusBadRequest,
+			"a final snapshot needs a backup destination; configure one, or delete without final_snapshot")
+		return
+	}
+	if !h.WorkerHub.IsConnected(instance.WorkerID) {
+		responder.SendError(w, http.StatusConflict,
+			fmt.Sprintf("worker %d is not connected, so a final snapshot cannot be taken", instance.WorkerID))
+		return
+	}
+	if instance.Status != string(structs.DBStatusRunning) {
+		responder.SendError(w, http.StatusConflict,
+			fmt.Sprintf("database is %s — a final snapshot can only be taken from a running instance", instance.Status))
+		return
+	}
+
+	snapshot, err := h.startSnapshot(instance, "final")
+	if err != nil {
+		responder.QueryError(w, err, "failed to start the final snapshot")
+		return
+	}
+
+	pending := true
+	if _, err := query.UpdateDatabaseInstance(db.DB, instance.ID, query.UpdateDatabaseInstanceRequest{
+		PendingFinalSnapshot: &pending,
+	}); err != nil {
+		responder.QueryError(w, err, "failed to record the pending delete")
+		return
+	}
+
+	dbEvent(instance.ID, structs.DBEventRequested,
+		fmt.Sprintf("delete requested, pending final snapshot %s", snapshot.Filename), r)
+	logAudit(r, "delete", "database_instance", intPtr(instance.ID), strPtr(instance.Name))
+
+	responder.New(w, snapshot,
+		"final snapshot started; the database will be destroyed once it completes")
+}
+
 // errScheduleNeedsDestination is the message for a snapshot schedule that has
 // nowhere to write.
 //
@@ -484,6 +533,7 @@ func (h *DatabaseHandler) HandleUpdateDatabaseInstance(w http.ResponseWriter, r 
 		RetentionCount      *int     `json:"retention_count"`
 		BackupDestinationID *int     `json:"backup_destination_id"`
 		Active              *bool    `json:"active"`
+		DeletionProtection  *bool    `json:"deletion_protection"`
 	}
 	// Read the body once, then decode it twice: into the struct for values, and
 	// into raw fields to tell an explicit JSON null from an omitted key. Pointer
@@ -585,6 +635,8 @@ func (h *DatabaseHandler) HandleUpdateDatabaseInstance(w http.ResponseWriter, r 
 		BackupDestinationID: body.BackupDestinationID,
 		Active:              body.Active,
 
+		DeletionProtection: body.DeletionProtection,
+
 		ClearSnapshotSchedule:  clearSchedule,
 		ClearRetentionCount:    clearRetention,
 		ClearBackupDestination: clearDestination,
@@ -626,6 +678,22 @@ func (h *DatabaseHandler) HandleDeleteDatabaseInstance(w http.ResponseWriter, r 
 	instance, err := query.GetDatabaseInstanceByID(db.DB, id)
 	if err != nil {
 		responder.QueryError(w, err, "failed to get database instance")
+		return
+	}
+
+	// Deletion protection is checked before anything else, including force: its
+	// whole purpose is that no single request can destroy the data.
+	if instance.DeletionProtection {
+		responder.SendError(w, http.StatusConflict, fmt.Sprintf(
+			"database %q has deletion protection enabled; turn it off in settings before deleting", instance.Name))
+		return
+	}
+
+	// A final snapshot has to complete *before* the volume is destroyed, so the
+	// delete is staged: take the snapshot, record the intent, and let the
+	// snapshot's completion drive the teardown.
+	if r.URL.Query().Get("final_snapshot") == "true" {
+		h.beginDeleteWithFinalSnapshot(w, r, instance)
 		return
 	}
 

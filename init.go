@@ -53,6 +53,18 @@ func initApp() *appContext {
 	versions.Start()
 
 	db.Init()
+
+	// Schema migrations run before anything is served. A migration file only
+	// exists inside the image that carries it, and the code depending on a new
+	// column ships in that same image — so applying them here is what makes a
+	// deploy self-contained. Failure is fatal on purpose: serving requests
+	// against a schema the migrations could not reach is how the sso_sessions
+	// fail-open happened, and a container that refuses to start is a far better
+	// outcome than one that answers wrongly.
+	if err := db.RunMigrations(); err != nil {
+		log.Fatal("failed to apply schema migrations: ", err)
+	}
+
 	crypto.Init()
 	retention.Start(db.DB)
 	watcher.Start()
@@ -130,6 +142,42 @@ func initApp() *appContext {
 			AdminHub:  adminHub,
 			Lifecycle: dbLifecycle,
 		},
+	}
+}
+
+// runMigrate applies pending schema migrations and exits, without starting the
+// server or any background loop.
+//
+// Migrations also run on boot (see initApp), which is what makes a deploy
+// self-contained. This subcommand exists for the cases where that is not enough:
+// applying a change ahead of a deploy, and `migrate status` to see what a
+// database actually has without changing it.
+func runMigrate(args []string) {
+	logger.Init(env.LogLevel, env.LogFormat)
+
+	if len(args) > 0 && args[0] == "status" {
+		statuses, err := db.MigrationsStatus()
+		if err != nil {
+			fmt.Printf("❌ failed to read migration status: %v\n", err)
+			os.Exit(1)
+		}
+		pending := 0
+		for _, s := range statuses {
+			mark := "✅ applied"
+			if !s.Applied {
+				mark = "⏳ pending"
+				pending++
+			}
+			fmt.Printf("  %s  %s\n", mark, s.Name)
+		}
+		fmt.Printf("\n%d migration(s), %d pending\n", len(statuses), pending)
+		return
+	}
+
+	fmt.Println("Applying schema migrations...")
+	if err := db.RunMigrations(); err != nil {
+		fmt.Printf("❌ migration failed: %v\n", err)
+		os.Exit(1)
 	}
 }
 

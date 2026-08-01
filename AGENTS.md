@@ -508,6 +508,52 @@ exists when the first status arrives. `ensureScheduledSnapshotRow` finds-or-crea
 `(database_instance_id, filename)` — which is why the runner computes the filename *before* anything
 can fail, and why a failed pre-flight still produces a visible failed snapshot row.
 
+**Backup freshness is the alarm nothing else can raise.** `flagStaleBackups` (`database_reconciler.go`,
+every 10m) flags an instance whose scheduled backups have stopped producing. Reconciliation compares
+observed containers to desired state and the watchdog catches hung operations — but a schedule that
+silently stops firing produces **no observation and no stuck operation**, so absence is only
+detectable by knowing when a run was due. `cron.go` is a 5-field evaluator mirroring the runner's,
+walked *backwards* to find the last two fire times; the bar is **two consecutive missed runs**, since
+one miss is plausible across a restart. `staleBackupLookback` is 70 days so a monthly schedule still
+gets two fires to judge.
+
+The result is written as a **warning, not a status**: `dbLifecycle.SetWarning` sets `last_error` with
+code `backup_stale` while leaving `status` alone, because a database whose backups stopped is usually
+running perfectly — and moving it to `error` would both lie about the database and be erased by the
+next reconcile that observes a healthy container. `ClearWarning` removes it on the next successful
+snapshot. The web renders `backup_stale` regardless of status for the same reason.
+
+**Schema migrations** — `db/migrate.go` + `db/migrations/NNN_*.sql`, embedded, applied in filename
+order, recorded in `schema_migrations`, run both on boot (fatal on failure) and via the `migrate` /
+`migrate status` subcommands. Ported from forta-api so the two do not diverge.
+
+⚠️ **The ~52 inline `migrate()` calls in `db/db.go` are frozen.** They still run on every boot and
+still build a fresh database, but no new DDL goes in them: that mechanism keeps no record of what
+ran, achieves idempotence by swallowing a fixed list of MySQL error numbers, and downgrades every
+other failure to a *warning* while the server starts anyway — which is how `sso_sessions` came to be
+referenced by code that no statement ever created, surfacing as an unbounded fail-open on a
+revocation check. `TestNewDDLDoesNotGoInTheLegacyBlock` trips if that block grows.
+
+New migrations must be **re-runnable**: the runner retries a failed file in full, and
+`TestMigrationsAreGuarded` fails the build on a `CREATE TABLE`/`CREATE INDEX`/`ADD COLUMN`/`DROP
+COLUMN` without its `IF [NOT] EXISTS` guard. Filenames are `NNN_lower_snake.sql`, zero-padded to
+three digits, because lexical order is apply order.
+
+**Deletion protection and final snapshots** — `deletion_protection` is checked before anything else
+in the delete path, **including `?force=true`**: force exists for a dead worker and must never
+become a way around a guard whose job is preventing data loss. `?final_snapshot=true` stages the
+delete instead of performing it — it marks `pending_final_snapshot`, starts a snapshot, and returns
+with the database still present; `finaliseDeleteAfterSnapshot` performs the teardown when that
+snapshot completes. A failed final snapshot therefore leaves the database intact, which is the
+point. Retention is skipped for that completion — expiring an old copy while destroying the database
+is the worst possible timing.
+
+**Volume size** — reported by the worker in `db_sync` and persisted to `volume_size_bytes` by
+`reconcileDatabaseInstance`, regardless of status (a stopped database still occupies its volume, and
+that is exactly when someone is deciding whether to delete it). The worker measures by walking the
+volume on an hourly cache, **never** `docker system df -v`, which holds the daemon's container lock
+and would wedge `docker ps` host-wide for minutes.
+
 **Command correlation** — every `db_*` command carries `database_instance_id`, `request_id` (per
 attempt) and `idempotency_key` (stable per logical operation), and every reply echoes all three
 plus a `phase` (`ack` → `completed`/`failed`). `dbCommandPayload` in
@@ -720,6 +766,7 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 | GET | `/database-instances/{id}/events` | `HandleListDatabaseInstanceEvents` (lifecycle history) |
 | GET | `/database-instances/{id}/logs` | `HandleGetDatabaseInstanceLogs` (container stdout/stderr, resolved by container name) |
 | GET | `/database-instances/{id}/lifecycle` | `HandleGetDatabaseInstanceLifecycle` (worker lifecycle messages) |
+| GET | `/database-instances/{id}/metrics` | `HandleGetDatabaseInstanceMetrics` (CPU/memory samples, addressed by worker+container name — the rows exist with `container_id NULL` and had no reader) |
 | POST | `/database-instances/{id}/console` | `DatabaseHandler.HandleOpenDatabaseConsole` `[E]` (authorises an exec session; returns the SQL client argv) |
 | GET | `/workers/{id}/port-availability` | `HandleGetWorkerPortAvailability` (claimed host ports + a free suggestion; pass `?port=` to check one) |
 | GET / POST | `/database-instances/{id}/snapshots` | `HandleListSnapshots` / `DatabaseHandler.HandleCreateSnapshot` `[E]` |

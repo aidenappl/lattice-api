@@ -433,9 +433,17 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				}
 
 				// A completed snapshot is the moment retention becomes
-				// meaningful: there is a new copy, so the oldest may go.
+				// meaningful: there is a new copy, so the oldest may go. It is
+				// also proof the schedule is alive again.
 				if instanceID != 0 && status == "completed" {
-					applySnapshotRetention(instanceID, wh.Hub)
+					dbLifecycle.ClearWarning(instanceID, structs.DBErrCodeBackupStale)
+					// A delete that was waiting on this snapshot can now proceed.
+					// Retention is skipped in that case: the instance is on its
+					// way out, and expiring an old copy while destroying the
+					// database would be exactly the wrong moment.
+					if !finaliseDeleteAfterSnapshot(instanceID, wh.Hub) {
+						applySnapshotRetention(instanceID, wh.Hub)
+					}
 				}
 			})
 

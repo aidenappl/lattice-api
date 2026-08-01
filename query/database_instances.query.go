@@ -33,6 +33,10 @@ var databaseInstanceColumns = []string{
 	"database_instances.backup_destination_id",
 	"database_instances.container_name",
 	"database_instances.volume_name",
+	"database_instances.deletion_protection",
+	"database_instances.pending_final_snapshot",
+	"database_instances.volume_size_bytes",
+	"database_instances.volume_size_checked_at",
 	"database_instances.active",
 	"database_instances.started_at",
 	"database_instances.updated_at",
@@ -63,6 +67,10 @@ func scanDatabaseInstance(row scanner) (*structs.DatabaseInstance, error) {
 		&d.BackupDestinationID,
 		&d.ContainerName,
 		&d.VolumeName,
+		&d.DeletionProtection,
+		&d.PendingFinalSnapshot,
+		&d.VolumeSizeBytes,
+		&d.VolumeSizeCheckedAt,
 		&d.Active,
 		&d.StartedAt,
 		&d.UpdatedAt,
@@ -298,6 +306,10 @@ type UpdateDatabaseInstanceRequest struct {
 	StartedAt           *time.Time
 	Active              *bool
 
+	DeletionProtection   *bool
+	PendingFinalSnapshot *bool
+	VolumeSizeBytes      *int64
+
 	// LastError sets the structured failure detail. ClearLastError wins if both
 	// are set — recovery should never leave a stale error behind.
 	LastError      *structs.DatabaseError
@@ -395,6 +407,19 @@ func UpdateDatabaseInstance(engine db.Queryable, id int, req UpdateDatabaseInsta
 	}
 	if req.Active != nil {
 		q = q.Set("active", *req.Active)
+		hasUpdate = true
+	}
+	if req.DeletionProtection != nil {
+		q = q.Set("deletion_protection", *req.DeletionProtection)
+		hasUpdate = true
+	}
+	if req.PendingFinalSnapshot != nil {
+		q = q.Set("pending_final_snapshot", *req.PendingFinalSnapshot)
+		hasUpdate = true
+	}
+	if req.VolumeSizeBytes != nil {
+		q = q.Set("volume_size_bytes", *req.VolumeSizeBytes)
+		q = q.Set("volume_size_checked_at", time.Now())
 		hasUpdate = true
 	}
 	if req.ClearLastError {

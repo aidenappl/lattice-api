@@ -207,6 +207,82 @@ func (l *databaseLifecycle) FinalizeDeletion(instanceID int, volumeRemoved bool)
 	return true
 }
 
+// SetWarning attaches a failure record to an instance **without changing its
+// status**, and ClearWarning removes one.
+//
+// Backup staleness is the motivating case and shows why the distinction matters:
+// a database whose scheduled backups stopped is usually running perfectly. Moving
+// it to `error` would be a lie about the database and would also be erased by the
+// next reconcile that observes a healthy container — so the warning would vanish
+// while the problem persisted. Status describes the container; a warning
+// describes something true about the instance that the container cannot tell you.
+func (l *databaseLifecycle) SetWarning(instanceID int, warning *structs.DatabaseError, actor string) {
+	if warning == nil {
+		return
+	}
+
+	current, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
+	if err != nil {
+		return
+	}
+	// Don't overwrite a real failure with a warning, and don't rewrite the same
+	// warning on every sweep.
+	if current.LastError != nil {
+		if current.LastError.Code == warning.Code {
+			return
+		}
+		if current.Status == string(structs.DBStatusError) {
+			return
+		}
+	}
+
+	if _, err := query.UpdateDatabaseInstance(db.DB, instanceID, query.UpdateDatabaseInstanceRequest{
+		LastError: warning,
+	}); err != nil {
+		logger.Error("database", "failed to write warning", logger.F{
+			"database_instance_id": instanceID, "code": warning.Code, "error": err,
+		})
+		return
+	}
+
+	l.recordEvent(instanceID, structs.DBEventFailed, nil, warning.Message, &warning.Code, actor)
+	l.broadcast("db_instance_changed", map[string]any{
+		"database_instance_id": instanceID,
+		"status":               current.Status,
+		"message":              warning.Message,
+		"last_error":           warning,
+	})
+	logger.Warn("database", "instance warning raised", logger.F{
+		"database_instance_id": instanceID,
+		"name":                 current.Name,
+		"code":                 warning.Code,
+		"message":              warning.Message,
+	})
+}
+
+// ClearWarning removes a warning of a specific code, leaving any other failure
+// detail untouched — recovery from one problem must not erase another.
+func (l *databaseLifecycle) ClearWarning(instanceID int, code string) {
+	current, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
+	if err != nil || current.LastError == nil || current.LastError.Code != code {
+		return
+	}
+
+	if _, err := query.UpdateDatabaseInstance(db.DB, instanceID, query.UpdateDatabaseInstanceRequest{
+		ClearLastError: true,
+	}); err != nil {
+		return
+	}
+
+	l.recordEvent(instanceID, structs.DBEventTransition, nil, "backup freshness recovered", &code, "control-plane")
+	l.broadcast("db_instance_changed", map[string]any{
+		"database_instance_id": instanceID,
+		"status":               current.Status,
+		"message":              "backup freshness recovered",
+		"last_error":           nil,
+	})
+}
+
 // SetHealth records observed container health, independently of status. A
 // running instance can legitimately be unhealthy.
 func (l *databaseLifecycle) SetHealth(instanceID int, health structs.DatabaseHealth, message string) {

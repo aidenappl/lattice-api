@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/query"
@@ -21,6 +22,43 @@ import (
 // They were unreachable only because the read path was keyed on containers.id,
 // which managed databases do not have. These handlers address the same stored
 // rows by (worker_id, container_name) instead.
+
+// HandleGetDatabaseInstanceMetrics returns CPU and memory samples for a database
+// instance.
+//
+// The samples were already being collected and stored — the runner reports stats
+// for every container on the host, and they land in container_metrics with a NULL
+// container_id keyed on the name. They were simply unreadable, because every
+// other reader takes a containers.id that a managed database does not have. Same
+// fix as the logs and lifecycle handlers above: address by (worker, name).
+func HandleGetDatabaseInstanceMetrics(w http.ResponseWriter, r *http.Request) {
+	instance, ok := loadInstanceForObservability(w, r)
+	if !ok {
+		return
+	}
+
+	limit := 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+
+	var since *time.Time
+	if v := r.URL.Query().Get("since"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			since = &t
+		}
+	}
+
+	metrics, err := query.ListContainerMetricsByName(db.DB, instance.WorkerID, instance.ContainerName, since, limit)
+	if err != nil {
+		responder.QueryError(w, err, "failed to fetch database metrics")
+		return
+	}
+
+	responder.New(w, metrics, "database metrics retrieved")
+}
 
 // HandleGetDatabaseInstanceLogs returns stdout/stderr for a database instance.
 func HandleGetDatabaseInstanceLogs(w http.ResponseWriter, r *http.Request) {
