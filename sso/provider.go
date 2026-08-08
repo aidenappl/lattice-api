@@ -26,7 +26,14 @@ const ProviderSlug = "sso"
 
 // Provider maps the stored SSOConfig onto the library's provider view.
 //
-// Kind is always KindOAuth2. Lattice configures explicit authorize/token/userinfo
+// ⚠️ THE KIND FOLLOWS sso.issuer_url, and the difference is a security one.
+// IssuerURL set → KindOIDC: discovery, a SIGNED id_token, nonce verification and
+// `sid`. Empty → KindOAuth2: no id_token at all, so identity comes from an
+// unsigned UserInfo call and anything able to obtain an access token can become
+// that user. The fallback exists so an existing deployment survives the upgrade,
+// not because the two are equivalent.
+//
+// Historically KindOAuth2 always. Lattice configures explicit authorize/token/userinfo
 // URLs rather than an issuer, so there is no discovery document to read and no
 // id_token to verify.
 //
@@ -43,7 +50,8 @@ func (c *SSOConfig) Provider() *ssolib.Provider {
 	return &ssolib.Provider{
 		Slug:        ProviderSlug,
 		DisplayName: c.ButtonLabel,
-		Kind:        ssolib.KindOAuth2,
+		Kind:        c.kind(),
+		IssuerURL:   c.IssuerURL,
 
 		AuthorizeURL:  c.AuthorizeURL,
 		TokenURL:      c.TokenURL,
@@ -99,4 +107,12 @@ func (c *SSOConfig) Provider() *ssolib.Provider {
 // validating an address; it is distinguishing two generations of stored data.
 func LooksLikeEmail(subject string) bool {
 	return strings.Contains(subject, "@")
+}
+
+// kind reports which adapter this configuration should use. See Provider.
+func (c *SSOConfig) kind() ssolib.Kind {
+	if strings.TrimSpace(c.IssuerURL) != "" {
+		return ssolib.KindOIDC
+	}
+	return ssolib.KindOAuth2
 }

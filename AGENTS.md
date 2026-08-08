@@ -292,6 +292,43 @@ individual mutating routes wrap the handler in `RequireEditor` or `RequireAdmin`
 > settings — there are no `FORTA_*` vars or `/forta/*` routes anymore. A DB migration renames
 > `users.forta_id → sso_subject`. If you find a stray Forta reference anywhere, it is stale.
 
+### ⚠️ `sso.issuer_url` — OAuth2 vs OIDC is a security choice, not a preference
+
+The adapter is chosen by whether an issuer is configured (`SSOConfig.kind()`):
+
+| `sso.issuer_url` | Adapter | What you get |
+|---|---|---|
+| set | `KindOIDC` | discovery, a **signed id_token**, nonce verification, and `sid` |
+| empty | `KindOAuth2` | no id_token — identity comes from an **unsigned** UserInfo call |
+
+Without an issuer, anything able to obtain an access token can become that user, and there is no
+`sid`, so session-scoped back-channel logout is impossible. The OAuth2 fallback exists only so an
+existing deployment survives the upgrade. Point it at `https://auth.appleby.cloud`.
+
+⚠️ **`sid` is captured only at login and cannot be backfilled.** Sessions established before the
+issuer is set have `sid NULL` forever and are reachable only by subject-wide logout. Users must
+re-login once after the switch.
+
+### Back-channel logout (`POST /auth/sso/backchannel-logout`)
+
+⚠️ **Deleting the `sso_sessions` row is NOT enough**, for the same reason `RevokeLocalTokens`
+exists: Lattice issues its own access and refresh JWTs, validated locally with no lookup against
+`sso_sessions`, so they outlive the row. `DeleteSessionsBySID`/`BySubject` therefore read the
+affected user ids **before** deleting and stamp `tokens_revoked_at` for each. go-forta's handler
+does not do this and has no way to know it is needed; omitting it reintroduces the exact bug the
+checkpoint path already had, through a new door.
+
+⚠️ **It is exempt from `CSRFMiddleware` and must stay exempt**, and must never move behind
+`DualAuthMiddleware`. The notification is a server-to-server POST with no cookie and no auth
+header; otherwise it hits the double-submit check it can never satisfy and is refused 403, after
+which the provider retries six times and marks the delivery exhausted while revocation silently
+stays at poll speed. monitor-core shipped that on 2026-08-08 with a *passing* routing test,
+because the router was never what rejected it.
+
+⚠️ **It requires `sso.issuer_url`.** Verification needs the provider's JWKS, which only the OIDC
+adapter discovers; with an OAuth2 provider go-forta answers **501** rather than acting on a token
+it cannot verify.
+
 `DualAuthMiddleware` (`middleware/auth.go`) authenticates a request by trying, in order:
 
 1. **Local JWT** from `Authorization: Bearer` — HS512, validated by `jwt.ValidateToken`,

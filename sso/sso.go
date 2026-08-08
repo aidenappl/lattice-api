@@ -25,8 +25,25 @@ const SSOStateCookie = "lattice-sso-state"
 
 // SSOConfig holds all SSO configuration values.
 type SSOConfig struct {
-	Enabled        bool
-	ClientID       string
+	Enabled  bool
+	ClientID string
+
+	// IssuerURL, when set, upgrades this provider from OAuth2 to OIDC.
+	//
+	// ─────────────────────────────────────────────────────────────────────────
+	// ⚠️ A SECURITY UPGRADE, NOT A CONFIGURATION PREFERENCE.
+	//
+	// Without an issuer there is no discovery document and no id_token, so the
+	// subject arrives from a UserInfo call authenticated by a bearer token and
+	// signed by nothing — anything able to obtain an access token can become that
+	// user. With an issuer the library verifies a signed id_token, checks the
+	// nonce, and surfaces the `sid` back-channel logout needs to name a session.
+	//
+	// Empty keeps the legacy OAuth2 path so an existing deployment survives the
+	// upgrade. It is a state to leave, not to stay in.
+	// ─────────────────────────────────────────────────────────────────────────
+	IssuerURL string
+
 	ClientSecret   string
 	AuthorizeURL   string
 	TokenURL       string
@@ -75,6 +92,7 @@ func LoadConfig() *SSOConfig {
 	cfg := &SSOConfig{
 		Enabled:        settings["sso.enabled"] == "true",
 		ClientID:       strings.TrimSpace(settings["sso.client_id"]),
+		IssuerURL:      strings.TrimSpace(settings["sso.issuer_url"]),
 		AuthorizeURL:   strings.TrimSpace(settings["sso.authorize_url"]),
 		TokenURL:       strings.TrimSpace(settings["sso.token_url"]),
 		UserInfoURL:    strings.TrimSpace(settings["sso.userinfo_url"]),

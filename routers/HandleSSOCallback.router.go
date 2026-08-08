@@ -248,7 +248,18 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	if err := sso.NewSessionStore().SaveSession(r.Context(), int64(user.ID), ssolib.Session{
 		Provider: sso.ProviderSlug,
 		Subject:  subject,
-		Tokens:   *tokens,
+
+		// ⚠️ THE ONLY MOMENT `sid` IS AVAILABLE. It lives in the id_token of this
+		// exchange and nowhere else — not in the access token, not in UserInfo, not
+		// in any later introspection. A session saved without it is unreachable by a
+		// session-scoped back-channel logout for the rest of its life, and no
+		// migration can repair that.
+		//
+		// Empty is expected while sso.issuer_url is unset: the OAuth2 adapter has no
+		// id_token at all.
+		SID: identity.SID,
+
+		Tokens: *tokens,
 	}); err != nil {
 		// Non-fatal: the login has succeeded and the user gets their session. The cost
 		// is that this session is not checkpointed until the next login.

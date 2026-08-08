@@ -44,7 +44,11 @@ func (s *SessionStore) SaveSession(_ context.Context, userID int64, sess ssolib.
 		}
 	}
 
-	return query.UpsertSSOSession(db.DB, userID, encAccess, encRefresh)
+	// Subject and SID are persisted even though nothing reads them until a logout
+	// token arrives. Neither can be added later: `sid` lives only in the id_token
+	// of the login that created this row, and it stays empty while sso.issuer_url
+	// is unset because the OAuth2 adapter has no id_token at all.
+	return query.UpsertSSOSession(db.DB, userID, ProviderSlug, sess.Subject, sess.SID, encAccess, encRefresh)
 }
 
 // LoadSession returns the decrypted session, or (nil, nil) when the user has none.
@@ -77,9 +81,79 @@ func (s *SessionStore) LoadSession(_ context.Context, userID int64) (*ssolib.Ses
 
 	return &ssolib.Session{
 		Provider:      ProviderSlug,
+		Subject:       derefOr(row.Subject),
+		SID:           derefOr(row.SID),
 		Tokens:        ssolib.TokenSet{AccessToken: access, RefreshToken: refresh},
 		LastCheckedAt: row.LastCheckedAt,
 	}, nil
+}
+
+// derefOr flattens a nullable column. NULL and "" mean the same thing to every
+// caller here: this session cannot be addressed that way.
+func derefOr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BackchannelLogoutTarget — the receiving half of OIDC Back-Channel Logout 1.0.
+//
+// ⚠️ DELETING THE ROW IS NOT ENOUGH, FOR EXACTLY THE REASON RevokeLocalTokens
+// EXISTS BELOW. Lattice issues its own access and refresh JWTs, validated locally
+// with no lookup against sso_sessions, so they outlive the row. A back-channel
+// logout that only deleted rows would end nothing the user notices — the same bug
+// the checkpoint path already had, arriving through a new door.
+//
+// go-forta's handler does not call RevokeLocalTokens and has no way to know it is
+// needed, so stamping tokens_revoked_at is this implementation's job. The user ids
+// are read BEFORE the delete because afterwards they are unrecoverable.
+//
+// ⚠️ Both methods return (0, nil) for "nothing matched", never an error: a
+// duplicate delivery, an expired session and a pre-column row all land here and
+// all are normal.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// DeleteSessionsBySID ends the single session with this OIDC session id.
+func (s *SessionStore) DeleteSessionsBySID(ctx context.Context, provider, sid string) (int, error) {
+	ids, err := query.SSOSessionUserIDsBySID(db.DB, provider, sid)
+	if err != nil {
+		return 0, err
+	}
+	n, err := query.DeleteSSOSessionsBySID(db.DB, provider, sid)
+	if err != nil {
+		return 0, err
+	}
+	return n, s.revokeAll(ctx, ids)
+}
+
+// DeleteSessionsBySubject ends every session this subject holds with the provider.
+func (s *SessionStore) DeleteSessionsBySubject(ctx context.Context, provider, subject string) (int, error) {
+	ids, err := query.SSOSessionUserIDsBySubject(db.DB, provider, subject)
+	if err != nil {
+		return 0, err
+	}
+	n, err := query.DeleteSSOSessionsBySubject(db.DB, provider, subject)
+	if err != nil {
+		return 0, err
+	}
+	return n, s.revokeAll(ctx, ids)
+}
+
+// revokeAll stamps tokens_revoked_at for every affected user.
+//
+// The error is returned, not swallowed: the session row is already gone, so if
+// this does not land the user keeps working local tokens and the revocation
+// silently did nothing. Returning it makes the receiver answer 500, which makes
+// the provider RETRY — the one case where retrying is exactly right.
+func (s *SessionStore) revokeAll(ctx context.Context, userIDs []int64) error {
+	for _, id := range userIDs {
+		if err := s.RevokeLocalTokens(ctx, id); err != nil {
+			return fmt.Errorf("sso: revoke local tokens for user %d: %w", id, err)
+		}
+	}
+	return nil
 }
 
 // TouchSession resets the checkpoint interval after a successful check.

@@ -32,6 +32,7 @@ func HandleGetSSOConfig(w http.ResponseWriter, r *http.Request) {
 		"enabled":         cfg.Enabled,
 		"client_id":       cfg.ClientID,
 		"client_secret":   maskedSecret,
+		"issuer_url":      cfg.IssuerURL,
 		"authorize_url":   cfg.AuthorizeURL,
 		"token_url":       cfg.TokenURL,
 		"userinfo_url":    cfg.UserInfoURL,
@@ -50,9 +51,11 @@ func HandleGetSSOConfig(w http.ResponseWriter, r *http.Request) {
 // PUT /admin/sso-config
 func HandleUpdateSSOConfig(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Enabled        *bool   `json:"enabled"`
-		ClientID       *string `json:"client_id"`
-		ClientSecret   *string `json:"client_secret"`
+		Enabled      *bool   `json:"enabled"`
+		ClientID     *string `json:"client_id"`
+		ClientSecret *string `json:"client_secret"`
+		// IssuerURL upgrades this provider from OAuth2 to OIDC — see sso.SSOConfig.
+		IssuerURL      *string `json:"issuer_url"`
 		AuthorizeURL   *string `json:"authorize_url"`
 		TokenURL       *string `json:"token_url"`
 		UserInfoURL    *string `json:"userinfo_url"`
@@ -108,6 +111,7 @@ func HandleUpdateSSOConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	setIf("sso.issuer_url", body.IssuerURL)
 	setIf("sso.authorize_url", body.AuthorizeURL)
 	setIf("sso.token_url", body.TokenURL)
 	setIf("sso.userinfo_url", body.UserInfoURL)
