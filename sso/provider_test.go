@@ -45,6 +45,25 @@ func TestProviderKindFollowsIssuer(t *testing.T) {
 		}
 	})
 
+	// ⚠️ THE REGRESSION THAT BROKE EVERY LOGIN ON 2026-08-09.
+	//
+	// forta-api's id_token carries no email claim — OIDC Core §2 wants `sub`
+	// stable and never reassigned, so Forta declines to put a reassignable
+	// address beside it. This service REFUSES a login with no email
+	// (sso_no_email). Under KindOAuth2 that never showed, because UserInfo was
+	// the only identity source; under KindOIDC the adapter calls UserInfo only
+	// when FetchUserInfo is set. Switching to OIDC without it turned every login
+	// into "the SSO provider did not return an email address".
+	t.Run("oidc_still_fetches_userinfo_for_the_email", func(t *testing.T) {
+		c := &SSOConfig{IssuerURL: "https://auth.appleby.cloud"}
+		if !c.Provider().FetchUserInfo {
+			t.Fatal("FetchUserInfo is false under OIDC. Forta's id_token has no email claim " +
+				"and this service refuses a login without one, so every SSO login fails with " +
+				"sso_no_email. The library still enforces the OIDC Core §5.3.2 sub check on " +
+				"the UserInfo response, so this adds claims without weakening identity.")
+		}
+	})
+
 	t.Run("subject_claim_stays_empty", func(t *testing.T) {
 		// ⚠️ Regression guard. sso.user_identifier used to name the claim treated as
 		// identity and defaulted to "email"; reconnecting it here would key identity
