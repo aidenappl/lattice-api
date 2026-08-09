@@ -134,30 +134,6 @@ func Init() {
 		"last_checked_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"+
 		"inserted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)")
 
-	// Back-channel logout (OIDC Back-Channel Logout 1.0) finds sessions by what
-	// the logout token names — a `sid`, or failing that a `sub`. sso_sessions
-	// could be looked up by neither; its only key is user_id.
-	//
-	// ⚠️ NEITHER CAN BE BACKFILLED. `sid` exists only inside the id_token of the
-	// login that created the session, and that token is gone by the time anything
-	// else runs, so every session established before this is unreachable by a
-	// session-scoped logout for its whole life. The columns therefore land now
-	// rather than when the feature is finished — the cost of waiting is paid by
-	// sessions, not by code.
-	//
-	// ⚠️ `sid` STAYS NULL UNTIL sso.issuer_url IS SET, because the OAuth2 adapter
-	// has no id_token to take one from. The column existing is not the same as it
-	// being populated.
-	//
-	// Lookups are scoped by provider as well as the identifier: `sid` and `sub`
-	// are unique only WITHIN an issuer, so an unscoped match would let one
-	// identity provider end another's sessions.
-	migrate(db, "ALTER TABLE sso_sessions ADD COLUMN provider VARCHAR(64) NOT NULL DEFAULT 'sso'")
-	migrate(db, "ALTER TABLE sso_sessions ADD COLUMN subject VARCHAR(255) NULL")
-	migrate(db, "ALTER TABLE sso_sessions ADD COLUMN sid VARCHAR(64) NULL")
-	migrate(db, "ALTER TABLE sso_sessions ADD INDEX idx_sso_sessions_provider_sid (provider, sid)")
-	migrate(db, "ALTER TABLE sso_sessions ADD INDEX idx_sso_sessions_provider_subject (provider, subject)")
-
 	// Auto-create global_env_vars table if it doesn't exist
 	migrate(db, "CREATE TABLE IF NOT EXISTS global_env_vars ("+
 		"id INT AUTO_INCREMENT PRIMARY KEY,"+
