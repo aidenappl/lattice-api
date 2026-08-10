@@ -37,10 +37,32 @@ func HandleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reject refresh tokens issued before the revocation timestamp
-	if user.TokensRevokedAt != nil && claims.IssuedAt != nil {
-		if claims.IssuedAt.Time.Before(*user.TokensRevokedAt) {
-			log.Printf("auth/refresh: token revoked (user_id=%d, issued=%v, revoked=%v)", user.ID, claims.IssuedAt.Time, *user.TokensRevokedAt)
+	// Reject refresh tokens issued at or before the revocation timestamp.
+	//
+	// ⚠️ `!After` AND `nil iat` MUST MATCH validateLatticeToken IN
+	// middleware/auth.go — the two comparisons had diverged.
+	//
+	// This used `Before` and required a non-nil iat, so a token minted in the
+	// SAME SECOND as the revocation passed here while the middleware rejected
+	// it, and a token with no iat passed here while the middleware treated it as
+	// revoked. Refresh is precisely where that gap matters: the middleware
+	// rejects the access token, the client refreshes, and a weaker check here
+	// hands back a brand-new pair whose iat is after the stamp — undoing the
+	// revocation entirely.
+	//
+	// openbucket-api had the same class of hole with no check at all; confirmed
+	// in production 2026-08-10 when a revoked session refreshed itself back in
+	// one second after back-channel logout reported "ended 1 session(s)".
+	if user.TokensRevokedAt != nil {
+		if claims.IssuedAt == nil || !claims.IssuedAt.Time.After(*user.TokensRevokedAt) {
+			// ⚠️ nil-safe: the condition above ENTERS this branch when IssuedAt is
+			// nil, so dereferencing it here would panic on exactly the token this
+			// check exists to reject.
+			issued := "nil"
+			if claims.IssuedAt != nil {
+				issued = claims.IssuedAt.Time.String()
+			}
+			log.Printf("auth/refresh: token revoked (user_id=%d, issued=%s, revoked=%v)", user.ID, issued, *user.TokensRevokedAt)
 			responder.SendError(w, http.StatusUnauthorized, "token has been revoked")
 			return
 		}
