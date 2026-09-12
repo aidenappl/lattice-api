@@ -58,6 +58,17 @@ func (h *DatabaseHandler) HandleCreateSnapshot(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// A container can be `running` while the engine is still initialising and
+	// refusing connections. Dumping then fails with the engine's own socket
+	// error — "Can't connect to local server through socket" — which reads like
+	// a broken database rather than a premature request. Refuse with the actual
+	// reason instead.
+	if instance.HealthStatus == string(structs.DBHealthStarting) {
+		responder.SendError(w, http.StatusConflict,
+			"database is still starting and is not accepting connections yet; wait for it to become healthy")
+		return
+	}
+
 	snapshot, err := h.StartSnapshot(instance, "manual")
 	if err != nil {
 		responder.QueryError(w, err, "failed to create snapshot")
