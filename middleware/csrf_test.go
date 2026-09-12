@@ -102,6 +102,7 @@ func TestCSRFExemptPaths(t *testing.T) {
 		"/auth/refresh",
 		"/ws/worker",
 		"/api/deploy/123",
+		"/api/automations/abc123",
 		"/auth/sso/callback",
 	}
 

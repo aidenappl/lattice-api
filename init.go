@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/aidenappl/lattice-api/automations"
 	"github.com/aidenappl/lattice-api/bootstrap"
 	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
@@ -38,6 +39,7 @@ type appContext struct {
 	volumeHandler          *routers.VolumeHandler
 	networkHandler         *routers.NetworkHandler
 	databaseHandler        *routers.DatabaseHandler
+	automationHandler      *routers.AutomationHandler
 }
 
 // initApp bootstraps all services, creates WebSocket hubs and handler structs,
@@ -138,6 +140,16 @@ func initApp() *appContext {
 	dbScheduler = newDatabaseScheduler(workerHub, databaseHandler)
 	dbScheduler.Start()
 
+	containerActionHandler := &routers.ContainerActionHandler{
+		WorkerHub: workerHub,
+	}
+
+	// Automations recreate containers through the same handler the Recreate
+	// button uses, and their schedule triggers run on the scheduler above —
+	// one scheduler, not two.
+	automationExecutor := automations.NewExecutor(automations.DBStore{}, containerActionHandler)
+	dbScheduler.StartAutomations(automationExecutor)
+
 	return &appContext{
 		workerHub:     workerHub,
 		adminHub:      adminHub,
@@ -149,9 +161,7 @@ func initApp() *appContext {
 			WorkerHub: workerHub,
 			AdminHub:  adminHub,
 		},
-		containerActionHandler: &routers.ContainerActionHandler{
-			WorkerHub: workerHub,
-		},
+		containerActionHandler: containerActionHandler,
 		workerActionHandler: &routers.WorkerActionHandler{
 			WorkerHub: workerHub,
 		},
@@ -162,6 +172,9 @@ func initApp() *appContext {
 			WorkerHub: workerHub,
 		},
 		databaseHandler: databaseHandler,
+		automationHandler: &routers.AutomationHandler{
+			Executor: automationExecutor,
+		},
 	}
 }
 

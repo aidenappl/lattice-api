@@ -199,8 +199,12 @@ func RateLimitMiddleware(next http.Handler) http.Handler {
 
 		ip := getClientIP(r)
 
-		// Deploy token + auth endpoints: 1 rps, burst 5
+		// Deploy token + automation webhook + auth endpoints: 1 rps, burst 5.
+		// Automation webhooks share the token bucket deliberately: a retried
+		// webhook storm is the failure mode the automation concurrency guard
+		// exists to absorb, and the limiter stops it from ever getting that far.
 		if strings.HasPrefix(path, "/api/deploy/") ||
+			strings.HasPrefix(path, "/api/automations/") ||
 			path == "/auth/login" || path == "/auth/refresh" {
 			if !authLimiter.allow(ip, 1, 5) {
 				w.Header().Set("Content-Type", "application/json")

@@ -14,6 +14,7 @@ var auditColumns = []string{
 	"audit_log.action",
 	"audit_log.resource_type",
 	"audit_log.resource_id",
+	"audit_log.automation_run_id",
 	"audit_log.details",
 	"audit_log.ip_address",
 	"audit_log.inserted_at",
@@ -27,6 +28,7 @@ func scanAuditEntry(row scanner) (*structs.AuditLogEntry, error) {
 		&a.Action,
 		&a.ResourceType,
 		&a.ResourceID,
+		&a.AutomationRunID,
 		&a.Details,
 		&a.IPAddress,
 		&a.InsertedAt,
@@ -93,14 +95,17 @@ type CreateAuditLogRequest struct {
 	Action       string
 	ResourceType string
 	ResourceID   *int
-	Details      *string
-	IPAddress    *string
+	// AutomationRunID marks an action performed by an automation run acting as
+	// UserID. Nil for everything a person did directly.
+	AutomationRunID *int
+	Details         *string
+	IPAddress       *string
 }
 
 func CreateAuditLog(engine db.Queryable, req CreateAuditLogRequest) error {
 	q := sq.Insert("audit_log").
-		Columns("user_id", "action", "resource_type", "resource_id", "details", "ip_address").
-		Values(req.UserID, req.Action, req.ResourceType, req.ResourceID, req.Details, req.IPAddress)
+		Columns("user_id", "action", "resource_type", "resource_id", "automation_run_id", "details", "ip_address").
+		Values(req.UserID, req.Action, req.ResourceType, req.ResourceID, req.AutomationRunID, req.Details, req.IPAddress)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

@@ -394,45 +394,10 @@ func (h *DeployHandler) handleSingleContainerDeploy(w http.ResponseWriter, r *ht
 		return
 	}
 
-	// Build the recreate payload (same as HandleRecreateContainer)
-	payload := map[string]any{
-		"container_name": target.Name,
-		"container_id":   target.ID,
-		"image":          target.Image,
-		"tag":            target.Tag,
-	}
-
-	// Include registry auth so the runner can pull before recreating
-	if target.RegistryID != nil {
-		reg, regErr := query.GetRegistryByID(db.DB, *target.RegistryID)
-		if regErr == nil && reg != nil && reg.Username != nil && reg.Password != nil {
-			payload["auth"] = map[string]any{
-				"username": *reg.Username,
-				"password": *reg.Password,
-			}
-		}
-	} else {
-		allRegistries, _ := query.ListRegistries(db.DB)
-		if allRegistries != nil {
-			for _, reg := range *allRegistries {
-				regHost := strings.TrimPrefix(strings.TrimPrefix(reg.URL, "https://"), "http://")
-				regHost = strings.TrimSuffix(regHost, "/")
-				if strings.HasPrefix(target.Image, regHost+"/") || target.Image == regHost {
-					if reg.Username != nil && reg.Password != nil {
-						payload["auth"] = map[string]any{
-							"username": *reg.Username,
-							"password": *reg.Password,
-						}
-					}
-					break
-				}
-			}
-		}
-	}
-
+	// Same payload as HandleRecreateContainer and automations — one builder.
 	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.Envelope{
 		Type:    socket.MsgRecreate,
-		Payload: payload,
+		Payload: recreateContainerPayload(target),
 	}); err != nil {
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send recreate command: %v", err))
 		return

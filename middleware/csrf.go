@@ -57,7 +57,11 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 		// Exempting is correct: CSRF defends ambient cookie authority and this
 		// endpoint has none — its only authentication is the signature on the logout
 		// token, verified against the provider's JWKS, which is strictly stronger.
-		if path == "/auth/login" || path == "/auth/refresh" || path == "/ws/worker" || strings.HasPrefix(path, "/api/deploy/") || path == "/auth/sso/callback" || path == "/auth/sso/backchannel-logout" {
+		//
+		// /api/automations/{token} is exempt for the same reason as /api/deploy/:
+		// it is called by CI with no cookie, and its only authentication is the
+		// token in the path. Without this every automation webhook would 403.
+		if path == "/auth/login" || path == "/auth/refresh" || path == "/ws/worker" || strings.HasPrefix(path, "/api/deploy/") || strings.HasPrefix(path, "/api/automations/") || path == "/auth/sso/callback" || path == "/auth/sso/backchannel-logout" {
 			next.ServeHTTP(w, r)
 			return
 		}

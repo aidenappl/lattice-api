@@ -70,6 +70,11 @@ func main() {
 	// CI/CD deploy (public, token-authenticated)
 	r.HandleFunc("/api/deploy/{token}", app.deployHandler.HandlePublicDeploy).Methods(http.MethodPost)
 
+	// Automation webhook (public, token-authenticated). Beside /api/deploy on
+	// purpose: same credential model, same CSRF exemption, same rate limit —
+	// and it must never move behind DualAuthMiddleware.
+	r.HandleFunc("/api/automations/{token}", app.automationHandler.HandleAutomationWebhook).Methods(http.MethodPost)
+
 	// Auth (unprotected)
 	r.HandleFunc("/auth/login", routers.HandleLocalLogin).Methods(http.MethodPost)
 	r.HandleFunc("/auth/refresh", routers.HandleAuthRefresh).Methods(http.MethodPost)
@@ -150,6 +155,19 @@ func main() {
 	admin.HandleFunc("/stacks/{id}/deploy-tokens", routers.HandleListDeployTokens).Methods(http.MethodGet)
 	admin.HandleFunc("/stacks/{id}/deploy-tokens", middleware.RequireAdmin(routers.HandleCreateDeployToken)).Methods(http.MethodPost)
 	admin.HandleFunc("/deploy-tokens/{id}", middleware.RequireAdmin(routers.HandleDeleteDeployToken)).Methods(http.MethodDelete)
+
+	// Automations. Routes are editor-gated; which trigger and action types a
+	// person may own is decided per definition by automations.Authorise.
+	admin.HandleFunc("/automations", app.automationHandler.HandleListAutomations).Methods(http.MethodGet)
+	admin.HandleFunc("/automations", middleware.RequireEditor(app.automationHandler.HandleCreateAutomation)).Methods(http.MethodPost)
+	admin.HandleFunc("/automations/{id}", app.automationHandler.HandleGetAutomation).Methods(http.MethodGet)
+	admin.HandleFunc("/automations/{id}", middleware.RequireEditor(app.automationHandler.HandleUpdateAutomation)).Methods(http.MethodPut)
+	admin.HandleFunc("/automations/{id}", middleware.RequireEditor(app.automationHandler.HandleDeleteAutomation)).Methods(http.MethodDelete)
+	admin.HandleFunc("/automations/{id}/enable", middleware.RequireEditor(app.automationHandler.HandleEnableAutomation)).Methods(http.MethodPost)
+	admin.HandleFunc("/automations/{id}/disable", middleware.RequireEditor(app.automationHandler.HandleDisableAutomation)).Methods(http.MethodPost)
+	admin.HandleFunc("/automations/{id}/run", middleware.RequireEditor(app.automationHandler.HandleRunAutomation)).Methods(http.MethodPost)
+	admin.HandleFunc("/automations/{id}/rotate-token", middleware.RequireEditor(app.automationHandler.HandleRotateAutomationToken)).Methods(http.MethodPost)
+	admin.HandleFunc("/automations/{id}/runs", app.automationHandler.HandleListAutomationRuns).Methods(http.MethodGet)
 
 	// Containers
 	admin.HandleFunc("/containers", routers.HandleListAllContainers).Methods(http.MethodGet)

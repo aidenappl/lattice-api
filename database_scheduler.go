@@ -123,6 +123,13 @@ func (s *databaseScheduler) runLoop(name string, interval time.Duration, fn func
 // jitterFor returns a stable offset for an instance, bounded by both the cap and
 // the schedule's own period — a jitter wider than the period would reorder runs.
 func (s *databaseScheduler) jitterFor(instanceID int, period time.Duration) time.Duration {
+	return s.jitterForKey(fmt.Sprintf("instance:%d", instanceID), period)
+}
+
+// jitterForKey is jitterFor for any scheduled entity. The key namespaces the
+// hash ("instance:7", "automation:7"), so a database instance and an automation
+// that happen to share an id do not share an offset.
+func (s *databaseScheduler) jitterForKey(key string, period time.Duration) time.Duration {
 	max := schedulerMaxJitter
 	if period > 0 && period < max {
 		max = period / 2
@@ -132,7 +139,7 @@ func (s *databaseScheduler) jitterFor(instanceID int, period time.Duration) time
 	}
 
 	h := fnv.New64a()
-	_, _ = h.Write([]byte(fmt.Sprintf("instance:%d", instanceID)))
+	_, _ = h.Write([]byte(key))
 	offset := (h.Sum64() ^ s.jitterSeed) % uint64(max/time.Second+1)
 	return time.Duration(offset) * time.Second
 }

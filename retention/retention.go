@@ -56,6 +56,10 @@ func run(db *sql.DB) {
 	// reconcile and credential reveal.
 	purge(db, "database_instance_events", "inserted_at", "180 DAY")
 
+	// Automation runs: keep 90 days, matching deployment logs. A "* * * * *"
+	// schedule writes 1,440 rows a day, and every skipped firing is a row too.
+	purge(db, "automation_runs", "inserted_at", "90 DAY")
+
 	// Retired snapshot rows: keep 90 days, and only rows already soft-deleted.
 	//
 	// The active = 0 condition is load-bearing. A live snapshot row is the only
