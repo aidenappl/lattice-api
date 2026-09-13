@@ -15,6 +15,7 @@ import (
 	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/responder"
+	"gopkg.in/yaml.v3"
 )
 
 // safeServiceName validates that a Docker service name contains only safe characters.
@@ -37,19 +38,34 @@ func composeArgs(extra ...string) []string {
 // serviceImageRef returns the image reference compose resolves for a service,
 // with ${VAR} interpolation already applied.
 func serviceImageRef(service string, extraEnv []string) (string, error) {
-	cmd := exec.Command("docker", composeArgs("config", "--images", service)...)
+	cmd := exec.Command("docker", composeArgs("config", service)...)
 	cmd.Env = append(os.Environ(), extraEnv...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve image for service %q: %w", service, err)
 	}
-	// One image per line; a single service yields one.
-	for _, line := range strings.Split(string(out), "\n") {
-		if ref := strings.TrimSpace(line); ref != "" {
-			return ref, nil
-		}
+	return imageFromComposeConfig(out, service)
+}
+
+// imageFromComposeConfig picks one service's image out of `docker compose
+// config` output. It cannot be read line by line: naming a service also emits
+// every service it depends on, and lattice-api depends on mariadb, whose image
+// sorts first. That is how self-update came to pull mariadb:11 for the API, see
+// a "new" image on every run, and never answer "already up to date".
+func imageFromComposeConfig(out []byte, service string) (string, error) {
+	var cfg struct {
+		Services map[string]struct {
+			Image string `yaml:"image"`
+		} `yaml:"services"`
 	}
-	return "", fmt.Errorf("compose reported no image for service %q", service)
+	if err := yaml.Unmarshal(out, &cfg); err != nil {
+		return "", fmt.Errorf("failed to parse compose config: %w", err)
+	}
+	svc, ok := cfg.Services[service]
+	if !ok || svc.Image == "" {
+		return "", fmt.Errorf("compose reported no image for service %q", service)
+	}
+	return svc.Image, nil
 }
 
 // runningImageID returns the image ID the service's running container was

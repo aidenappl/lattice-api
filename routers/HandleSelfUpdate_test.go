@@ -199,3 +199,39 @@ func TestSafeImageTag(t *testing.T) {
 		}
 	}
 }
+
+func TestImageFromComposeConfig(t *testing.T) {
+	// What `docker compose config lattice-api` prints: the named service AND its
+	// depends_on, with mariadb first. The first-line reader returned mariadb:11.
+	config := `name: lattice
+services:
+  lattice-api:
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    image: registry.appleby.cloud/lattice-api:v1.3.34
+  mariadb:
+    image: mariadb:11
+`
+	tests := []struct {
+		name    string
+		out     string
+		service string
+		want    string
+		wantErr bool
+	}{
+		{"named service, not its dependency", config, "lattice-api", "registry.appleby.cloud/lattice-api:v1.3.34", false},
+		{"dependency by its own name", config, "mariadb", "mariadb:11", false},
+		{"service missing", config, "lattice-web", "", true},
+		{"service without an image", "services:\n  lattice-api:\n    build: .\n", "lattice-api", "", true},
+		{"not yaml", "services: [", "lattice-api", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := imageFromComposeConfig([]byte(tt.out), tt.service)
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Errorf("imageFromComposeConfig() = %q, %v; want %q, error=%v", got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}

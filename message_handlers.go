@@ -419,7 +419,7 @@ func handleContainerStatus(workerID int, payload map[string]any) map[string]any 
 		// Invalidate the cache so the next sync/status read sees fresh Status/HealthCheck
 		// rather than the stale copy this write just superseded (up to a 60s TTL).
 		containerNameCache.Invalidate(c.Name)
-		logger.Info("container", "status updated", logger.F{"container_name": containerName, "status": dbStatus})
+		logContainerTransition("status", containerName, c.Status, dbStatus)
 
 		// Write a lifecycle entry to lifecycle_logs so it persists in the log viewer.
 		lifecycleMessages := map[string]string{
@@ -486,6 +486,27 @@ func handleLifecycleLog(workerID int, payload map[string]any) {
 }
 
 // handleContainerHealthStatus processes health_status messages from workers.
+// logContainerTransition records a container's status or health. Runners
+// re-report both constantly — every health probe, every sync — so logging each
+// report buried the few that mean something. A change is logged at info, or warn
+// when a container turns unhealthy; a repeat goes to debug, which neither stdout
+// at the default LOG_LEVEL nor Monitor (without MONITOR_DEBUG) receives.
+func logContainerTransition(field, containerName, previous, current string) {
+	fields := logger.F{"container_name": containerName, field: current, "previous": previous}
+	msg := "status updated"
+	if field == "health_status" {
+		msg = "health status updated"
+	}
+	switch {
+	case previous == current:
+		logger.Debug("container", msg+" (unchanged)", fields)
+	case field == "health_status" && current == "unhealthy":
+		logger.Warn("container", msg, fields)
+	default:
+		logger.Info("container", msg, fields)
+	}
+}
+
 func handleContainerHealthStatus(payload map[string]any) {
 	containerName, _ := payload["container_name"].(string)
 	healthStatus, _ := payload["health_status"].(string)
@@ -507,7 +528,7 @@ func handleContainerHealthStatus(payload map[string]any) {
 		logger.Error("container", "failed to update health status", logger.F{"container_name": containerName, "health_status": healthStatus, "error": err})
 	} else {
 		containerNameCache.Invalidate(c.Name)
-		logger.Info("container", "health status updated", logger.F{"container_name": containerName, "health_status": healthStatus})
+		logContainerTransition("health_status", containerName, c.HealthStatus, healthStatus)
 	}
 }
 

@@ -1174,7 +1174,9 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
   recreate reproduced the same image — and before v1.3.19 the endpoint reported success anyway, so
   it looked like an update that refused to stick.
 - **Self-update pre-flight.** `HandleUpdateAPI` compares the running container's image ID against
-  the ID the pull resolved, and verifies `DOCKER_HELPER_CONTAINER` is running before claiming
+  the ID the pull resolved (the service's image is read from `docker compose config` YAML by
+  `imageFromComposeConfig` — naming a service also emits its `depends_on`, so the old first-line
+  read resolved the API to `mariadb:11` and recreated on every run), and verifies `DOCKER_HELPER_CONTAINER` is running before claiming
   success — the API cannot recreate itself (Docker kills every process in the container during the
   stop step), so a missing helper means the recreate silently never happens. Both cases now return
   an actionable error or a no-op result rather than an optimistic 200. `?force=true` recreates even
@@ -1245,7 +1247,7 @@ retries) before they are counted as dropped.
 | Event | Level | What |
 |-------|-------|------|
 | `http.request.end` | info / warn (4xx) / error (5xx) | Every request except `/healthcheck`: route template as `path` (so `/api/deploy/{token}` never puts a token in the grouping key), status, duration, bytes, client IP (trusted-proxy aware), user agent, `user_id` once `DualAuthMiddleware` has verified a credential, and the responder's `error_message` / `error` / `error_code` — including the internal error a 5xx hides from the client. WebSocket upgrades report `101` with `websocket: true`. |
-| `<component>.log.<level>` | as logged | Every `logger.Info/Warn/Error` call (`Debug` too with `MONITOR_DEBUG`), whatever `LOG_LEVEL` is. `caller` is the logging line; `message`, `component` and the call's fields ride along. |
+| `<component>.log.<level>` | as logged | Every `logger.Info/Warn/Error` call (`Debug` too with `MONITOR_DEBUG`), whatever `LOG_LEVEL` is. `caller` is the logging line; `message`, `component` and the call's fields ride along. Container status and health are logged **only on a change** (`logContainerTransition`: info, warn when a container turns unhealthy, with `previous`); runners re-report both constantly, so repeats go to debug. `healthscan` likewise logs only when what it found changes. Don't add an Info log to a per-message or per-tick path. |
 | `panic.recovered` | error | Every recovered panic, with the stack where it happened: HTTP handlers (`RecoverMiddleware`), worker/admin WebSocket callbacks and pumps, `safeGo`, every background loop and goroutine. |
 | `<resource_type>.<action>.success` | info | A mirror of every `logAudit` call, on the request's ids. Details are left out — they are free text. |
 | `service.startup` / `service.shutdown` | info | Boot (version, spool on/off) and the signal that stopped it. |

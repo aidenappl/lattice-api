@@ -142,7 +142,7 @@ func (s *Scanner) GetAnomalies() []Anomaly {
 }
 
 func (s *Scanner) scan() {
-	logger.Info("healthscan", "starting worker health scan")
+	logger.Debug("healthscan", "starting worker health scan")
 
 	var anomalies []Anomaly
 
@@ -275,10 +275,16 @@ func (s *Scanner) scan() {
 		s.broadcast(anomalies)
 	}
 
-	if len(anomalies) > 0 {
-		logger.Info("healthscan", "scan complete", logger.F{"anomalies": len(anomalies)})
-	} else {
-		logger.Info("healthscan", "scan complete, all workers healthy")
+	// Every five minutes, forever: only a change in what the scan found is news.
+	switch {
+	case changed && len(anomalies) > 0:
+		logger.Warn("healthscan", "scan found anomalies", logger.F{"anomalies": len(anomalies)})
+	case changed:
+		logger.Info("healthscan", "scan complete, anomalies resolved")
+	case len(anomalies) > 0:
+		logger.Debug("healthscan", "scan complete, anomalies unchanged", logger.F{"anomalies": len(anomalies)})
+	default:
+		logger.Debug("healthscan", "scan complete, all workers healthy")
 	}
 }
 
