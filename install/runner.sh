@@ -188,11 +188,20 @@ echo ""
 log "Lattice Runner installed to ${INSTALL_DIR}/${BINARY_NAME}"
 echo ""
 
+# Both systemd units below depend on Docker with Wants= + After= + PartOf= and
+# never Requires=. Under Requires=docker.service, a single failed Docker start
+# job marks the runner "Dependency failed" and systemd never starts it again —
+# Restart=always only fires when the process exits. That stranded
+# trailblaze-prod-worker-1 offline for three days in September 2026 while its
+# containers kept serving. These units must match lattice-runner's
+# cmd/setup.go serviceTemplate; routers/install_script_test.go pins them here.
+
 if [ "$IS_UPGRADE" = true ]; then
     # ── Upgrade path: restart the existing service ──────────────────────────
 
     # Ensure the systemd service file exists (may be missing if the original
-    # install was interrupted or the binary was placed manually).
+    # install was interrupted or the binary was placed manually), and repair
+    # units written before the Docker dependency changed.
     if [ ! -f "/etc/systemd/system/${SERVICE_NAME}.service" ]; then
         log "Systemd service not found — creating..."
 
@@ -217,7 +226,8 @@ ENVEOF
 [Unit]
 Description=Lattice Runner
 After=network.target docker.service
-Requires=docker.service
+Wants=docker.service
+PartOf=docker.service
 
 [Service]
 Type=simple
@@ -233,6 +243,14 @@ SVCEOF
         systemctl daemon-reload
         systemctl enable "$SERVICE_NAME"
         log "Created and enabled ${SERVICE_NAME}.service"
+    elif grep -q '^Requires=docker\.service$' "/etc/systemd/system/${SERVICE_NAME}.service"; then
+        # A unit written before the dependency changed. Rewrite only that line so
+        # any local edits to the rest of the unit survive; the restart below
+        # picks it up after daemon-reload.
+        log "Migrating ${SERVICE_NAME}.service off Requires=docker.service..."
+        sed -i 's/^Requires=docker\.service$/Wants=docker.service\nPartOf=docker.service/' "/etc/systemd/system/${SERVICE_NAME}.service"
+        systemctl daemon-reload
+        log "${SERVICE_NAME}.service now uses Wants= + PartOf=docker.service"
     fi
 
     # Delay the restart by 3 seconds so that the process that invoked this
@@ -265,7 +283,8 @@ ENVEOF
 [Unit]
 Description=Lattice Runner
 After=network.target docker.service
-Requires=docker.service
+Wants=docker.service
+PartOf=docker.service
 
 [Service]
 Type=simple
