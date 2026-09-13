@@ -1,10 +1,15 @@
 package logger
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -135,26 +140,135 @@ func formatValue(v any) string {
 	}
 }
 
+// ─── Sinks ───────────────────────────────────────────────────────────────────
+
+// Record is one log call, as handed to the sink.
+type Record struct {
+	Level     Level
+	Component string
+	Msg       string
+	Fields    map[string]any
+	// Caller is the file:line of the logging call.
+	Caller string
+}
+
+// PanicRecord is one recovered panic, as handed to the panic sink.
+type PanicRecord struct {
+	Goroutine string
+	Recovered any
+	// Stack is captured while the panicking frames are still on the stack, so it
+	// shows where the panic happened, not where it was reported.
+	Stack  string
+	Fields map[string]any
+}
+
+type (
+	sinkFunc      func(Record)
+	panicSinkFunc func(context.Context, PanicRecord)
+)
+
+var (
+	sink      atomic.Pointer[sinkFunc]
+	panicSink atomic.Pointer[panicSinkFunc]
+)
+
+// SetSink receives every Debug/Info/Warn/Error call, whatever LOG_LEVEL is —
+// LOG_LEVEL decides what reaches stdout, the sink decides what it keeps.
+// Request lines are not passed on: the request middleware reports each request
+// itself, with more than a log line can carry. nil removes the sink.
+func SetSink(fn func(Record)) {
+	if fn == nil {
+		sink.Store(nil)
+		return
+	}
+	f := sinkFunc(fn)
+	sink.Store(&f)
+}
+
+// SetPanicSink receives every panic reported through Panic, PanicContext and
+// Recover. nil removes it.
+func SetPanicSink(fn func(context.Context, PanicRecord)) {
+	if fn == nil {
+		panicSink.Store(nil)
+		return
+	}
+	f := panicSinkFunc(fn)
+	panicSink.Store(&f)
+}
+
+// record writes one public-API call and hands it to the sink. It must be called
+// directly by Debug/Info/Warn/Error: the caller depth is fixed.
+func record(level Level, component, msg string, fields map[string]any) {
+	if p := sink.Load(); p != nil {
+		caller := ""
+		if _, file, line, ok := runtime.Caller(2); ok {
+			caller = fmt.Sprintf("%s:%d", filepath.Base(file), line)
+		}
+		(*p)(Record{Level: level, Component: component, Msg: msg, Fields: fields, Caller: caller})
+	}
+	emit(level, component, msg, fields)
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 func Debug(component, msg string, fields ...map[string]any) {
-	f := mergeFields(fields)
-	emit(LevelDebug, component, msg, f)
+	record(LevelDebug, component, msg, mergeFields(fields))
 }
 
 func Info(component, msg string, fields ...map[string]any) {
-	f := mergeFields(fields)
-	emit(LevelInfo, component, msg, f)
+	record(LevelInfo, component, msg, mergeFields(fields))
 }
 
 func Warn(component, msg string, fields ...map[string]any) {
-	f := mergeFields(fields)
-	emit(LevelWarn, component, msg, f)
+	record(LevelWarn, component, msg, mergeFields(fields))
 }
 
 func Error(component, msg string, fields ...map[string]any) {
+	record(LevelError, component, msg, mergeFields(fields))
+}
+
+// ─── Panics ──────────────────────────────────────────────────────────────────
+
+// Recover recovers a panic in the calling goroutine and reports it. It must be
+// deferred directly —
+//
+//	defer logger.Recover("retention", logger.F{"table": t})
+//
+// — because recover only stops a panic when the deferred function itself calls
+// it; wrapped in another closure this is a no-op. A panic on a goroutine nothing
+// recovers kills the whole process, every worker connection with it.
+func Recover(goroutine string, fields ...map[string]any) {
+	if rec := recover(); rec != nil {
+		PanicContext(context.Background(), goroutine, rec, fields...)
+	}
+}
+
+// Panic reports a value the caller has already recovered, for code with its own
+// recover that decides what happens next.
+func Panic(goroutine string, recovered any, fields ...map[string]any) {
+	PanicContext(context.Background(), goroutine, recovered, fields...)
+}
+
+// PanicContext is Panic for a panic that belongs to a request: the context's ids
+// travel with the report.
+func PanicContext(ctx context.Context, goroutine string, recovered any, fields ...map[string]any) {
 	f := mergeFields(fields)
-	emit(LevelError, component, msg, f)
+	if f == nil {
+		f = F{}
+	}
+	stack := string(debug.Stack())
+
+	if p := panicSink.Load(); p != nil {
+		(*p)(ctx, PanicRecord{Goroutine: goroutine, Recovered: recovered, Stack: stack, Fields: f})
+	}
+
+	out := make(F, len(f)+2)
+	for k, v := range f {
+		out[k] = v
+	}
+	out["goroutine"] = goroutine
+	out["stack"] = stack
+	emit(LevelError, "panic", fmt.Sprint(recovered), out)
 }
 
 // F is a convenience alias for map[string]any

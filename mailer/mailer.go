@@ -114,6 +114,7 @@ func SendSync(subject, body string) error {
 // Send sends an email asynchronously (fire-and-forget).
 func Send(subject, body string) {
 	go func() {
+		defer logger.Recover("mailer.send", logger.F{"subject": subject})
 		if err := doSend(subject, renderEmail(subject, body)); err != nil {
 			logger.Error("mailer", "failed to send email", logger.F{"error": err, "subject": subject})
 		} else {

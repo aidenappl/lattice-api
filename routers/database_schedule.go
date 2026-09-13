@@ -2,9 +2,9 @@ package routers
 
 import (
 	"encoding/json"
-	"log"
 
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/socket"
 	"github.com/aidenappl/lattice-api/structs"
@@ -26,16 +26,14 @@ func BuildDbSchedulePayload(instance *structs.DatabaseInstance) map[string]any {
 
 	dest, err := query.GetBackupDestinationByID(db.DB, *instance.BackupDestinationID)
 	if err != nil || dest == nil {
-		log.Printf("database instance %d: cannot resolve backup destination %d for schedule: %v",
-			instance.ID, *instance.BackupDestinationID, err)
+		logger.Error("database", "schedule: cannot resolve backup destination", logger.F{"instance_id": instance.ID, "destination_id": *instance.BackupDestinationID, "error": err})
 		return nil
 	}
 
 	var destConfig map[string]any
 	if dest.Config != nil {
 		if err := json.Unmarshal([]byte(*dest.Config), &destConfig); err != nil {
-			log.Printf("database instance %d: backup destination %d has unparseable config: %v",
-				instance.ID, dest.ID, err)
+			logger.Error("database", "schedule: backup destination has unparseable config", logger.F{"instance_id": instance.ID, "destination_id": dest.ID, "error": err})
 			return nil
 		}
 	}
@@ -105,8 +103,7 @@ func PushDbSchedule(hub *socket.WorkerHub, instance *structs.DatabaseInstance) {
 			socket.PayloadRetentionCount: 0,
 		},
 	}); err != nil {
-		log.Printf("database instance %d: failed to clear worker-side schedule on worker %d: %v",
-			instance.ID, instance.WorkerID, err)
+		logger.Warn("database", "schedule: failed to clear worker-side schedule", logger.F{"instance_id": instance.ID, "worker_id": instance.WorkerID, "error": err})
 	}
 }
 

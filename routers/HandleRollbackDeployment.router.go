@@ -3,13 +3,13 @@ package routers
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
@@ -120,7 +120,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 	for _, dc := range *prevContainers {
 		c, err := query.GetContainerByID(db.DB, dc.ContainerID)
 		if err != nil {
-			log.Printf("rollback: container %d not found, skipping: %v", dc.ContainerID, err)
+			logger.Warn("deploy", "rollback: container not found, skipping", logger.F{"container_id": dc.ContainerID, "error": err})
 			continue
 		}
 
@@ -136,7 +136,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		if c.PortMappings != nil {
 			var pm []any
 			if err := json.Unmarshal([]byte(*c.PortMappings), &pm); err != nil {
-				log.Printf("rollback: invalid port_mappings JSON for container %s: %v", c.Name, err)
+				logger.Warn("deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "port_mappings", "error": err})
 			} else {
 				// Resolve environment variable references in port mappings
 				resolved := resolveVarsInValue(pm, mergedEnvVars)
@@ -147,7 +147,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		if c.EnvVars != nil {
 			var ev map[string]any
 			if err := json.Unmarshal([]byte(*c.EnvVars), &ev); err != nil {
-				log.Printf("rollback: invalid env_vars JSON for container %s: %v", c.Name, err)
+				logger.Warn("deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "env_vars", "error": err})
 			} else {
 				// Preserve compose semantics: only include env keys explicitly defined
 				// for the service, but resolve ${VAR} references from stack-level env.
@@ -168,7 +168,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		if c.Volumes != nil {
 			var vol map[string]any
 			if err := json.Unmarshal([]byte(*c.Volumes), &vol); err != nil {
-				log.Printf("rollback: invalid volumes JSON for container %s: %v", c.Name, err)
+				logger.Warn("deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "volumes", "error": err})
 			} else {
 				// Resolve environment variable references in volumes
 				resolved := resolveVarsInValue(vol, mergedEnvVars)
@@ -186,7 +186,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		if c.Command != nil {
 			var cmd []string
 			if err := json.Unmarshal([]byte(*c.Command), &cmd); err != nil {
-				log.Printf("rollback: invalid command JSON for container %s: %v", c.Name, err)
+				logger.Warn("deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "command", "error": err})
 			} else {
 				spec["command"] = cmd
 			}
@@ -195,7 +195,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		if c.Entrypoint != nil {
 			var ep []string
 			if err := json.Unmarshal([]byte(*c.Entrypoint), &ep); err != nil {
-				log.Printf("rollback: invalid entrypoint JSON for container %s: %v", c.Name, err)
+				logger.Warn("deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "entrypoint", "error": err})
 			} else {
 				spec["entrypoint"] = ep
 			}
@@ -204,7 +204,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		if c.HealthCheck != nil {
 			var hc map[string]any
 			if err := json.Unmarshal([]byte(*c.HealthCheck), &hc); err != nil {
-				log.Printf("rollback: invalid health_check JSON for container %s: %v", c.Name, err)
+				logger.Warn("deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "health_check", "error": err})
 			} else {
 				// Resolve environment variable references in health check (e.g., ${PORT_FOO} in test command)
 				resolved := resolveVarsInValue(hc, mergedEnvVars)
@@ -334,7 +334,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		Type:    socket.MsgDeploy,
 		Payload: payload,
 	}); err != nil {
-		log.Printf("rollback: failed to send to worker=%d: %v", *stack.WorkerID, err)
+		logger.Error("deploy", "rollback: failed to send to worker", logger.F{"worker_id": *stack.WorkerID, "deployment_id": rollbackDeployment.ID, "error": err})
 		_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
 			DeploymentID: rollbackDeployment.ID,
 			Level:        "error",

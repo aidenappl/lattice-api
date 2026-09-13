@@ -5,6 +5,7 @@ go 1.25.5
 require (
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/aidenappl/go-forta v1.9.0
+	github.com/aidenappl/go-monitor v0.0.9-0.20260912224748-17017e52efeb
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0

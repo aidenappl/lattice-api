@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/gorilla/websocket"
 )
 
@@ -36,6 +37,12 @@ type WorkerSession struct {
 	// mid-send would panic ("send on closed channel") and crash the process.
 	done           chan struct{}
 	DisconnectOnce sync.Once
+
+	// cause is why the connection ended, handed to OnDisconnect. The first
+	// cause wins: once one side of the connection fails, the other side's error
+	// is only a consequence of it.
+	causeMu sync.Mutex
+	cause   error
 }
 
 func (s *WorkerSession) Close() {
@@ -48,6 +55,20 @@ func (s *WorkerSession) Close() {
 		}
 		_ = s.Conn.Close()
 	})
+}
+
+func (s *WorkerSession) setCloseCause(err error) {
+	s.causeMu.Lock()
+	defer s.causeMu.Unlock()
+	if s.cause == nil {
+		s.cause = err
+	}
+}
+
+func (s *WorkerSession) closeCause() error {
+	s.causeMu.Lock()
+	defer s.causeMu.Unlock()
+	return s.cause
 }
 
 // WorkerHub manages all connected worker WebSocket sessions.
@@ -68,9 +89,10 @@ func (h *WorkerHub) Register(session *WorkerSession) error {
 
 	// Allow re-registration of existing worker (replaces old session)
 	if old, ok := h.sessions[session.WorkerID]; ok {
+		old.setCloseCause(errors.New("replaced by a new connection from the same worker"))
 		old.Close()
 	} else if len(h.sessions) >= MaxWorkerSessions {
-		log.Printf("socket: worker=%d rejected, max connections reached (%d)", session.WorkerID, MaxWorkerSessions)
+		logger.Warn("socket", "worker rejected, max connections reached", logger.F{"worker_id": session.WorkerID, "max": MaxWorkerSessions})
 		return ErrMaxConnections
 	}
 
@@ -138,6 +160,7 @@ func (h *WorkerHub) SendToWorker(workerID int, payload []byte) (err error) {
 	// but recover here so a hub bug can never crash the whole process.
 	defer func() {
 		if rec := recover(); rec != nil {
+			logger.Panic("socket.send_to_worker", rec, logger.F{"worker_id": workerID})
 			err = fmt.Errorf("%w: %d (recovered: %v)", ErrWorkerNotConnected, workerID, rec)
 		}
 	}()
@@ -178,7 +201,7 @@ func (h *WorkerHub) BroadcastAll(payload []byte) {
 		case <-session.done:
 			// session is shutting down — skip it
 		default:
-			log.Printf("socket: broadcast queue full for worker=%d", session.WorkerID)
+			logger.Warn("socket", "broadcast queue full, message dropped", logger.F{"worker_id": session.WorkerID})
 		}
 	}
 }

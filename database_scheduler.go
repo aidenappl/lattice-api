@@ -109,11 +109,7 @@ func (s *databaseScheduler) runLoop(name string, interval time.Duration, fn func
 			return
 		case <-ticker.C:
 			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						logger.Error("panic", fmt.Sprintf("%v", r), logger.F{"goroutine": name})
-					}
-				}()
+				defer logger.Recover(name)
 				fn()
 			}()
 		}

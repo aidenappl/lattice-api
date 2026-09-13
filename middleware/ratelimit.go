@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aidenappl/lattice-api/env"
+	"github.com/aidenappl/lattice-api/logger"
 )
 
 // maxBuckets caps the number of per-IP buckets a single limiter tracks, so a
@@ -30,6 +31,7 @@ type rateLimiter struct {
 func newRateLimiter() *rateLimiter {
 	rl := &rateLimiter{buckets: make(map[string]*tokenBucket)}
 	go func() {
+		defer logger.Recover("ratelimit-eviction")
 		for {
 			time.Sleep(5 * time.Minute)
 			rl.mu.Lock()

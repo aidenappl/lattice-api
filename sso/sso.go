@@ -284,8 +284,10 @@ func (s *StateStore) ConsumeState(_ context.Context, state string) ([]byte, erro
 
 // sweepExpiredStates prunes expired or unparseable records.
 func sweepExpiredStates() {
+	defer logger.Recover("sso.sweep-states")
 	states, err := query.GetSettingsByPrefix(db.DB, statePrefix)
 	if err != nil {
+		logger.Warn("sso", "could not sweep expired login states", logger.F{"error": err})
 		return
 	}
 	for k, v := range states {

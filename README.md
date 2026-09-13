@@ -10,7 +10,7 @@ Central orchestrator API for the Lattice container-orchestration platform — wo
 
 `lattice-api` is the brain of Lattice (an in-house replacement for Portainer). It is a monolithic Go HTTP + WebSocket server that holds all persistent state in a MariaDB `lattice` database and is the only component that can issue commands to workers. Each host runs a `lattice-runner` agent that dials **outbound** to `/ws/worker`; the API pushes deploy/start/stop/rollback and database commands down that socket and ingests heartbeats, metrics, and lifecycle telemetry back. The Next.js dashboard talks to it over REST plus a second admin WebSocket (`/ws/admin`) for live updates.
 
-It owns the data model, command dispatch, deployment bookkeeping (record + watchdog that pings, retries, and force-fails stalled deploys), auth/RBAC, and fleet observability plumbing (health scanning, metrics, anomalies, retention, webhooks, SMTP alerts). It does **not** perform the Docker work itself — pulling images and executing the blue-green/canary/rolling strategy step-by-step lives in `lattice-runner`; the API only sends a `strategy` string and a resolved container spec.
+It owns the data model, command dispatch, deployment bookkeeping (record + watchdog that pings, retries, and force-fails stalled deploys), auth/RBAC, fleet observability plumbing (health scanning, metrics, anomalies, retention, webhooks, SMTP alerts), and **automations** — named rules pairing a webhook or cron trigger with an ordered list of actions, so one CI call can redeploy containers across any number of stacks (a deploy token is bound to one), with every firing recorded as a run. It does **not** perform the Docker work itself — pulling images and executing the blue-green/canary/rolling strategy step-by-step lives in `lattice-runner`; the API only sends a `strategy` string and a resolved container spec.
 
 ## Role in the Lattice ecosystem
 
@@ -50,7 +50,7 @@ dev up                    # start MariaDB + API + web via docker compose
 dev                       # sources .env, go run .
 ```
 
-Set at least `DATABASE_DSN` and `JWT_SIGNING_KEY` (min 32 chars; production panics on weak/known-default keys). In production `ENCRYPTION_KEY` (64 hex chars) is **required** — the app panics at boot without it rather than storing secrets as plaintext; in development it may be omitted (loud warning, plaintext passthrough). Set `TRUSTED_PROXIES` (comma-separated IPs/CIDRs) if the API sits behind a reverse proxy so rate limiting reads the forwarded client IP instead of the proxy's. SSO is optional — uncomment the `SSO_*` block in `.env.example` or configure it at runtime via `PUT /admin/sso-config`. See `.env.example` for the full list.
+Set at least `DATABASE_DSN` and `JWT_SIGNING_KEY` (min 32 chars; production panics on weak/known-default keys). In production `ENCRYPTION_KEY` (64 hex chars) is **required** — the app panics at boot without it rather than storing secrets as plaintext; in development it may be omitted (loud warning, plaintext passthrough). Set `TRUSTED_PROXIES` (comma-separated IPs/CIDRs) if the API sits behind a reverse proxy so rate limiting reads the forwarded client IP instead of the proxy's. SSO is optional — uncomment the `SSO_*` block in `.env.example` or configure it at runtime via `PUT /admin/sso-config`. Monitor telemetry is optional too, and never a boot requirement: set `MONITOR_INGEST_URL` and an ingest-scoped `MONITOR_API_KEY` (plus `MONITOR_SPOOL_DIR` on a persistent volume) to ship every log line, request, panic and boot failure to the appleby zone — see *Monitor telemetry* in [`AGENTS.md`](AGENTS.md). See `.env.example` for the rest.
 
 ## Development
 
@@ -85,6 +85,7 @@ message_handlers.go  # Worker & admin WebSocket OnConnect/OnDisconnect/OnMessage
 ws_dispatch.go       # Persistence helpers for inbound worker messages
 container_cache.go   # 60s name→container cache (kills the per-message N+1 lookup)
 env/  db/  logger/    # Env vars; MariaDB pool + Queryable + in-code migrations; structured logging
+telemetry/           # Monitor wiring — logger/panic tee, boot-failure reporting (never a boot requirement)
 middleware/          # DualAuth, RejectPending, RequireAdmin/Editor, WorkerTokenAuth, CSRF, rate limit
 jwt/  crypto/  sso/    # Local JWTs (HS512); AES-256-GCM secrets; OAuth2/OIDC client + introspection
 routers/             # ~80 Handle<Verb><Entity>.router.go handlers (+ deployment monitor, audit helper)
@@ -93,6 +94,8 @@ structs/             # 20 domain types with json tags + pointer nullables
 socket/              # WorkerHub / AdminHub, connection handler, protocol constants
 registry/            # Docker Registry v2 client (repos, tags, credential test, manifest digest)
 healthscan/ watcher/ retention/ webhooks/ versions/ mailer/  # Background subsystems
+automations/         # Automation executor — webhook/cron trigger → ordered steps, run records, run-time authorisation
+cron/                # The one 5-field cron evaluator + validator (snapshot scheduler, staleness alarm, automations)
 bootstrap/ tools/    # First-run admin creation; password/token hashing + validators
 ```
 

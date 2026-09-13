@@ -4,6 +4,8 @@ github.com/Masterminds/squirrel v1.5.4 h1:uUcX/aBc8O7Fg9kaISIUsHXdKuqehiXAMQTYX8
 github.com/Masterminds/squirrel v1.5.4/go.mod h1:NNaOrjSoIDfDA40n7sr2tPNZRfjzjA400rg+riTZj10=
 github.com/aidenappl/go-forta v1.9.0 h1:9JRD7oF7etARm8wLh/06SQFRzcaXI6SDBQUqGLiJ2sg=
 github.com/aidenappl/go-forta v1.9.0/go.mod h1:rWBBthu4VVez71aY2odJQ3290Z/bCL8jsWOwJcah48A=
+github.com/aidenappl/go-monitor v0.0.9-0.20260912224748-17017e52efeb h1:dSJO3WsMx6hU+0OOP5FfuyLAxSzV6GZYX6b553BlS1k=
+github.com/aidenappl/go-monitor v0.0.9-0.20260912224748-17017e52efeb/go.mod h1:oa9BLzq+hdIRTjg2q4P6SSgsRlDypYEga5zcbekCto8=
 github.com/coreos/go-oidc/v3 v3.20.0 h1:EtE0WIBHk03N+DqGkY4+UONzzZHk7amKt6IyNd7OsZE=
 github.com/coreos/go-oidc/v3 v3.20.0/go.mod h1:DYCf24+ncYi+XkIH97GY1+dqoRlbaSI26KVTCI9SrY4=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=

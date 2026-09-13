@@ -272,6 +272,7 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AdminHandler) writePump(ctx context.Context, session *AdminSession) {
+	defer logger.Recover("socket.admin.write_pump", logger.F{"session_id": session.ID})
 	ticker := time.NewTicker(pingPeriod)
 	defer ticker.Stop()
 	defer session.Close()
@@ -300,6 +301,7 @@ func (h *AdminHandler) writePump(ctx context.Context, session *AdminSession) {
 }
 
 func (h *AdminHandler) readPump(ctx context.Context, session *AdminSession) {
+	defer logger.Recover("socket.admin.read_pump", logger.F{"session_id": session.ID})
 	defer session.Close()
 
 	session.Conn.SetReadLimit(maxMessageSize)
@@ -327,7 +329,14 @@ func (h *AdminHandler) readPump(ctx context.Context, session *AdminSession) {
 			if err := json.Unmarshal(payload, &msg); err != nil {
 				continue
 			}
-			h.OnMessage(session, msg)
+			h.dispatch(session, msg)
 		}
 	}
+}
+
+// dispatch contains a panicking OnMessage to the one message: on the read
+// pump's goroutine nothing else could recover it.
+func (h *AdminHandler) dispatch(session *AdminSession, msg IncomingMessage) {
+	defer logger.Recover("socket.admin.on_message", logger.F{"session_id": session.ID, "message_type": msg.Type})
+	h.OnMessage(session, msg)
 }

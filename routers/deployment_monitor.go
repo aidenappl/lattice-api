@@ -62,11 +62,7 @@ func (h *DeployHandler) startDeploymentMonitor(deploymentID, stackID, workerID i
 // the bounded monitorDeployment pool — but it ensures no deploy is left without
 // a force-fail guarantee.
 func (h *DeployHandler) lightweightDeploymentWatchdog(deploymentID, stackID int) {
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Error("panic", fmt.Sprintf("%v", r), logger.F{"goroutine": "deployment-watchdog", "deployment_id": deploymentID})
-		}
-	}()
+	defer logger.Recover("deployment-watchdog", logger.F{"deployment_id": deploymentID})
 
 	ticker := time.NewTicker(deployPingInterval)
 	defer ticker.Stop()
@@ -112,11 +108,7 @@ func (h *DeployHandler) lightweightDeploymentWatchdog(deploymentID, stackID int)
 }
 
 func (h *DeployHandler) monitorDeployment(deploymentID, stackID, workerID int, payload map[string]any) {
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Error("panic", fmt.Sprintf("%v", r), logger.F{"goroutine": "deployment-monitor", "deployment_id": deploymentID})
-		}
-	}()
+	defer logger.Recover("deployment-monitor", logger.F{"deployment_id": deploymentID})
 
 	ticker := time.NewTicker(deployPingInterval)
 	defer ticker.Stop()

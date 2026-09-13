@@ -3,6 +3,7 @@ package versions
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/aidenappl/lattice-api/logger"
 	"log"
 	"net/http"
 	"sync"
@@ -41,12 +42,18 @@ var cache = &Cache{
 func Start() {
 	// Initial fetch (non-blocking — runs in background).
 	go func() {
-		Refresh()
+		safeRefresh()
 		ticker := time.NewTicker(pollInterval)
 		for range ticker.C {
-			Refresh()
+			safeRefresh()
 		}
 	}()
+}
+
+// safeRefresh is one poll that cannot end the loop.
+func safeRefresh() {
+	defer logger.Recover("versions.refresh")
+	Refresh()
 }
 
 // Refresh fetches the latest release for all repos and updates the cache.
@@ -54,7 +61,7 @@ func Refresh() {
 	for _, repo := range repos {
 		tag, err := fetchLatestRelease(repo)
 		if err != nil {
-			log.Printf("versions: failed to fetch latest release for %s: %v", repo, err)
+			logger.Warn("versions", "failed to fetch latest release", logger.F{"repo": repo, "error": err})
 			continue
 		}
 		cache.mu.Lock()

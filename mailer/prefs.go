@@ -148,6 +148,7 @@ func ClearUnhealthy(containerName string) {
 // bound as containers and workers come and go.
 func StartEviction() {
 	go func() {
+		defer logger.Recover("mailer.eviction")
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
@@ -191,7 +192,10 @@ func ScheduleDisconnectAlert(workerID int, alertFn func()) {
 	if grace <= 0 {
 		// No grace period — alert immediately
 		if ShouldAlert("worker.disconnected", intToStr(workerID)) {
-			go alertFn()
+			go func() {
+				defer logger.Recover("mailer.disconnect-alert", logger.F{"worker_id": workerID})
+				alertFn()
+			}()
 		}
 		return
 	}
@@ -206,6 +210,7 @@ func ScheduleDisconnectAlert(workerID int, alertFn func()) {
 	}
 
 	graceTimers[workerID] = time.AfterFunc(grace, func() {
+		defer logger.Recover("mailer.disconnect-alert", logger.F{"worker_id": workerID})
 		graceMu.Lock()
 		delete(graceTimers, workerID)
 		graceMu.Unlock()

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/structs"
 )
@@ -82,6 +83,7 @@ func (c *containerCache) evictExpired() {
 // cache entries, bounding memory over the lifetime of the process.
 func (c *containerCache) StartEviction() {
 	go func() {
+		defer logger.Recover("container-cache-eviction")
 		ticker := time.NewTicker(cacheTTL)
 		defer ticker.Stop()
 		for range ticker.C {

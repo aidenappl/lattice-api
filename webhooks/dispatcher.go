@@ -16,6 +16,7 @@ import (
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/tools"
+	"net/url"
 )
 
 const (
@@ -54,8 +55,13 @@ type Response struct {
 // Fire sends a webhook notification to all configured endpoints that subscribe to the given event.
 func Fire(event string, data any) {
 	go func() {
+		defer logger.Recover("webhooks.fire", logger.F{"event": event})
 		configs, err := query.ListWebhookConfigs(db.DB)
-		if err != nil || configs == nil {
+		if err != nil {
+			logger.Error("webhook", "could not load webhook configs", logger.F{"event": event, "error": err})
+			return
+		}
+		if configs == nil {
 			return
 		}
 
@@ -66,6 +72,7 @@ func Fire(event string, data any) {
 		}
 		body, err := json.Marshal(payload)
 		if err != nil {
+			logger.Error("webhook", "could not encode payload", logger.F{"event": event, "error": err})
 			return
 		}
 
@@ -146,7 +153,18 @@ func Deliver(ctx context.Context, r Request) (*Response, error) {
 	return &Response{StatusCode: resp.StatusCode, Body: string(snippet)}, nil
 }
 
+// redactedURL is a webhook URL fit for a log line: scheme and host only. The
+// path of a chat webhook (hooks.slack.com/services/…) is its credential.
+func redactedURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "(unparseable url)"
+	}
+	return u.Scheme + "://" + u.Host
+}
+
 func sendWebhook(url string, secret *string, body []byte) {
+	defer logger.Recover("webhooks.send", logger.F{"url": redactedURL(url)})
 	resp, err := Deliver(context.Background(), Request{
 		Method:  http.MethodPost,
 		URL:     url,
@@ -155,11 +173,11 @@ func sendWebhook(url string, secret *string, body []byte) {
 		Secret:  secret,
 	})
 	if err != nil {
-		logger.Error("webhook", "delivery failed", logger.F{"url": url, "error": err})
+		logger.Error("webhook", "delivery failed", logger.F{"url": redactedURL(url), "error": err})
 		return
 	}
 
 	if resp.StatusCode >= 400 {
-		logger.Warn("webhook", "delivery returned error status", logger.F{"url": url, "status": resp.StatusCode})
+		logger.Warn("webhook", "delivery returned error status", logger.F{"url": redactedURL(url), "status": resp.StatusCode})
 	}
 }

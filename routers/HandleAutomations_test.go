@@ -95,7 +95,9 @@ func (s *webhookStore) GetStack(id int) (*structs.Stack, error) {
 	return s.stack, nil
 }
 
-func (s *webhookStore) ListStackContainers(int) ([]structs.Container, error) { return s.containers, nil }
+func (s *webhookStore) ListStackContainers(int) ([]structs.Container, error) {
+	return s.containers, nil
+}
 
 func (s *webhookStore) CreateAuditLog(query.CreateAuditLogRequest) error { s.writes++; return nil }
 

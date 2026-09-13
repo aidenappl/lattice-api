@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"os"
 
+	monitor "github.com/aidenappl/go-monitor"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/routers"
 	"github.com/aidenappl/lattice-api/sso"
+	"github.com/aidenappl/lattice-api/telemetry"
 	"github.com/gorilla/mux"
 )
 
@@ -20,6 +22,8 @@ var installRunnerScript []byte
 var Version = "dev"
 
 func main() {
+	defer telemetry.CrashGuard()
+
 	// One-off subcommands run instead of the server and exit.
 	if len(os.Args) > 1 && os.Args[1] == "migrate-encrypt" {
 		runMigrateEncrypt(os.Args[2:])
@@ -36,20 +40,26 @@ func main() {
 
 	// Health check (before middleware)
 	r.HandleFunc("/healthcheck", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		// Telemetry counters ride along so lost or spooled events are visible
+		// from outside: a service whose events stop arriving cannot report it.
+		body := map[string]any{"status": "ok", "db": "ok", "telemetry": monitor.Stats()}
+		status := http.StatusOK
 		if err := db.DB.Ping(); err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte(`{"status":"degraded","db":"error"}`))
-			return
+			body["status"], body["db"] = "degraded", "error"
+			status = http.StatusServiceUnavailable
 		}
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok","db":"ok"}`))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(body)
 	}).Methods(http.MethodGet)
 
 	// Global middleware
-	r.Use(middleware.RateLimitMiddleware)
 	r.Use(middleware.RequestIDMiddleware)
 	r.Use(middleware.LoggingMiddleware)
+	r.Use(middleware.RecoverMiddleware)
+	// Inside logging, so a 429 is recorded like any other response — with the
+	// request id the client was given.
+	r.Use(middleware.RateLimitMiddleware)
 	r.Use(middleware.MuxHeaderMiddleware)
 	r.Use(middleware.SecurityHeadersMiddleware)
 	r.Use(middleware.CSRFMiddleware)

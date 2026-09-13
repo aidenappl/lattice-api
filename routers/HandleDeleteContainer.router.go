@@ -1,11 +1,11 @@
 package routers
 
 import (
-	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/socket"
@@ -35,7 +35,7 @@ func (h *ContainerActionHandler) HandleDeleteContainer(w http.ResponseWriter, r 
 				"container_id":   container.ID,
 			},
 		}); err != nil {
-			log.Printf("delete container %d: failed to send remove to worker %d: %v", id, *stack.WorkerID, err)
+			logger.Warn("container", "delete: failed to send remove to worker", logger.F{"container_id": id, "worker_id": *stack.WorkerID, "error": err})
 		}
 	}
 

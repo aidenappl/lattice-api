@@ -3,12 +3,12 @@ package routers
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/socket"
@@ -251,11 +251,9 @@ func DeleteSnapshotArtifact(hub *socket.WorkerHub, snapshot *structs.DatabaseSna
 		destination, destErr := query.GetBackupDestinationByID(db.DB, *snapshot.BackupDestinationID)
 		switch {
 		case destErr != nil:
-			log.Printf("delete snapshot %d: cannot resolve destination, remote file %q left in place",
-				snapshot.ID, snapshot.Filename)
+			logger.Warn("database", "snapshot delete: destination unresolvable, remote file left in place", logger.F{"snapshot_id": snapshot.ID, "filename": snapshot.Filename})
 		case !hub.IsConnected(instance.WorkerID):
-			log.Printf("delete snapshot %d: worker %d offline, remote file %q left in place",
-				snapshot.ID, instance.WorkerID, snapshot.Filename)
+			logger.Warn("database", "snapshot delete: worker offline, remote file left in place", logger.F{"snapshot_id": snapshot.ID, "worker_id": instance.WorkerID, "filename": snapshot.Filename})
 		default:
 			payload := dbCommandPayload(instance.ID, socket.MsgDbDeleteSnapshot)
 			payload[socket.PayloadSnapshotID] = snapshot.ID
@@ -273,8 +271,7 @@ func DeleteSnapshotArtifact(hub *socket.WorkerHub, snapshot *structs.DatabaseSna
 				Type:    socket.MsgDbDeleteSnapshot,
 				Payload: payload,
 			}); sendErr != nil {
-				log.Printf("delete snapshot %d: failed to send remote delete to worker %d: %v",
-					snapshot.ID, instance.WorkerID, sendErr)
+				logger.Error("database", "snapshot delete: failed to send remote delete to worker", logger.F{"snapshot_id": snapshot.ID, "worker_id": instance.WorkerID, "error": sendErr})
 			}
 		}
 	}
@@ -303,7 +300,7 @@ func (h *DatabaseHandler) HandleDeleteSnapshot(w http.ResponseWriter, r *http.Re
 
 	instance, instErr := query.GetDatabaseInstanceByID(db.DB, snapshot.DatabaseInstanceID)
 	if instErr != nil {
-		log.Printf("delete snapshot %d: cannot resolve instance, remote file %q left in place", id, snapshot.Filename)
+		logger.Warn("database", "snapshot delete: instance unresolvable, remote file left in place", logger.F{"snapshot_id": id, "filename": snapshot.Filename})
 		instance = nil
 	}
 

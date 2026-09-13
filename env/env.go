@@ -69,6 +69,21 @@ var (
 	RegistryURL      = getEnv("REGISTRY_URL", "")
 	RegistryUsername = getEnv("REGISTRY_USERNAME", "")
 	RegistryPassword = getEnv("REGISTRY_PASSWORD", "")
+
+	// Monitor telemetry — all optional. Without MONITOR_INGEST_URL no event
+	// leaves the process and nothing else changes. Monitor runs as a Lattice
+	// stack, so it can never be a boot requirement here: with MONITOR_SPOOL_DIR
+	// set, events wait on disk until it answers.
+	MonitorIngestURL = getEnv("MONITOR_INGEST_URL", "")
+	MonitorAPIKey    = getEnv("MONITOR_API_KEY", "")
+	MonitorZone      = getEnv("MONITOR_ZONE", "appleby")
+	MonitorEnv       = getEnv("MONITOR_ENV", "production")
+	MonitorSpoolDir  = getEnv("MONITOR_SPOOL_DIR", "")
+	MonitorDebug     = getEnv("MONITOR_DEBUG", "false") == "true"
+	// MonitorStdout also prints every event to stdout. Off by default: the
+	// logger already writes each line once, and the orchestrator's disk has
+	// filled from an unrotated container log before.
+	MonitorStdout = getEnv("MONITOR_STDOUT", "false") == "true"
 )
 
 // weakJWTKeys is a blocklist of known-insecure default signing keys that must

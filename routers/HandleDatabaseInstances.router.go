@@ -7,13 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
@@ -71,7 +71,7 @@ func dbEvent(instanceID int, kind, message string, r *http.Request) {
 		Message:            message,
 		Actor:              actor,
 	}); err != nil {
-		log.Printf("database instance %d: failed to record %s event: %v", instanceID, kind, err)
+		logger.Error("database", "failed to record instance event", logger.F{"instance_id": instanceID, "kind": kind, "error": err})
 	}
 }
 
@@ -725,8 +725,7 @@ func (h *DatabaseHandler) HandleDeleteDatabaseInstance(w http.ResponseWriter, r 
 			return
 		}
 
-		log.Printf("delete database instance %d: forced while worker %d offline, container %s and volume %s left in place",
-			id, instance.WorkerID, instance.ContainerName, instance.VolumeName)
+		logger.Warn("database", "instance delete forced while worker offline; container and volume left in place", logger.F{"instance_id": id, "worker_id": instance.WorkerID, "container": instance.ContainerName, "volume": instance.VolumeName})
 		dbEvent(id, structs.DBEventRequested, fmt.Sprintf(
 			"delete forced while worker %d was offline — container %s and data volume %s abandoned on the worker",
 			instance.WorkerID, instance.ContainerName, instance.VolumeName), r)

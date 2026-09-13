@@ -20,6 +20,7 @@ import (
 	"github.com/aidenappl/lattice-api/routers"
 	"github.com/aidenappl/lattice-api/socket"
 	"github.com/aidenappl/lattice-api/sso"
+	"github.com/aidenappl/lattice-api/telemetry"
 	"github.com/aidenappl/lattice-api/versions"
 	"github.com/aidenappl/lattice-api/watcher"
 )
@@ -46,6 +47,10 @@ type appContext struct {
 // and returns an appContext ready for route registration.
 func initApp() *appContext {
 	logger.Init(env.LogLevel, env.LogFormat)
+	// Before anything that can fail: every later failure, the boot panics
+	// included (see telemetry.CrashGuard), is then reported. It never blocks or
+	// fails — Monitor is a Lattice stack and may well not be up yet.
+	telemetry.Init(Version)
 	logger.Info("server", fmt.Sprintf("Lattice API %s starting", Version))
 
 	routers.InstallScript = installRunnerScript
@@ -87,11 +92,11 @@ func initApp() *appContext {
 	containerNameCache.StartEviction()
 
 	if err := db.PingDB(db.DB); err != nil {
-		log.Fatal("failed to ping db: ", err)
+		telemetry.Fatal("service.startup.db_unreachable", "failed to ping db: ", err)
 	}
 
 	if err := bootstrap.EnsureAdminUser(db.DB); err != nil {
-		log.Fatal("failed to bootstrap admin: ", err)
+		telemetry.Fatal("service.startup.bootstrap_failed", "failed to bootstrap admin: ", err)
 	}
 
 	routers.BackfillNetworksFromCompose(db.DB)

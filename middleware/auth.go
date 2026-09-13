@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	ssolib "github.com/aidenappl/go-forta/sso"
+	monitor "github.com/aidenappl/go-monitor"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/jwt"
 	"github.com/aidenappl/lattice-api/logger"
@@ -41,6 +43,16 @@ func GetUserFromContext(ctx context.Context) (*structs.User, bool) {
 	return user, ok
 }
 
+// withUser attaches an authenticated user to the request — to its context, to
+// the request's Monitor event, and to every event emitted while serving it.
+// Only ever called after a credential has been verified.
+func withUser(w http.ResponseWriter, r *http.Request, user *structs.User) *http.Request {
+	id := strconv.Itoa(user.ID)
+	SetUser(w, id)
+	ctx := context.WithValue(r.Context(), UserContextKey, user)
+	return r.WithContext(monitor.WithUserID(ctx, id))
+}
+
 // DualAuthMiddleware checks authentication from either:
 // 1. Lattice-issued JWT (local users) via Authorization: Bearer header
 // 2. Lattice-issued JWT from lattice-access-token cookie
@@ -53,8 +65,7 @@ func DualAuthMiddleware(next http.Handler) http.Handler {
 		// Try Lattice JWT from Authorization header
 		if bearerToken != "" {
 			if user := validateLatticeToken(bearerToken); user != nil {
-				ctx := context.WithValue(r.Context(), UserContextKey, user)
-				next.ServeHTTP(w, r.WithContext(ctx))
+				next.ServeHTTP(w, withUser(w, r, user))
 				return
 			}
 		}
@@ -62,8 +73,7 @@ func DualAuthMiddleware(next http.Handler) http.Handler {
 		// Try Lattice JWT from cookie
 		if cookie, err := r.Cookie(latticeTokenName); err == nil && cookie.Value != "" {
 			if user := validateLatticeToken(cookie.Value); user != nil {
-				ctx := context.WithValue(r.Context(), UserContextKey, user)
-				next.ServeHTTP(w, r.WithContext(ctx))
+				next.ServeHTTP(w, withUser(w, r, user))
 				return
 			}
 		}
@@ -75,8 +85,7 @@ func DualAuthMiddleware(next http.Handler) http.Handler {
 					responder.SendError(w, http.StatusForbidden, "api token scope does not permit this operation")
 					return
 				}
-				ctx := context.WithValue(r.Context(), UserContextKey, user)
-				next.ServeHTTP(w, r.WithContext(ctx))
+				next.ServeHTTP(w, withUser(w, r, user))
 				return
 			}
 		}

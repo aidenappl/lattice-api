@@ -1,9 +1,8 @@
 package routers
 
 import (
-	"log"
-
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"gopkg.in/yaml.v3"
 )
@@ -52,10 +51,10 @@ func BackfillNetworksFromCompose(engine db.Queryable) {
 				Name:    name,
 				Driver:  driver,
 			}); err != nil {
-				log.Printf("backfill: failed to create network %q for stack %d: %v", name, stack.ID, err)
+				logger.Error("backfill", "failed to create network", logger.F{"network": name, "stack_id": stack.ID, "error": err})
 			}
 		}
 
-		log.Printf("backfill: created %d network(s) for stack %q (id=%d)", len(compose.Networks), stack.Name, stack.ID)
+		logger.Info("backfill", "created networks from compose", logger.F{"count": len(compose.Networks), "stack": stack.Name, "stack_id": stack.ID})
 	}
 }

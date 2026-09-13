@@ -129,9 +129,7 @@ func (h *WorkerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.OnConnect != nil {
-		h.OnConnect(session)
-	}
+	h.notifyConnect(session)
 
 	// Send connected acknowledgment
 	hello := Envelope{
@@ -150,16 +148,38 @@ func (h *WorkerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		<-ctx.Done()
-		session.DisconnectOnce.Do(func() {
-			if h.OnDisconnect != nil {
-				h.OnDisconnect(session, nil)
-			}
-		})
+		session.DisconnectOnce.Do(func() { h.notifyDisconnect(session) })
 		h.Hub.removeIfMatch(session)
 	}()
 }
 
+// The callbacks run on this package's goroutines, where nothing else can
+// recover them: a panic in one would take the process — and every worker
+// connection — down with it. Each is contained to the call that panicked.
+
+func (h *WorkerHandler) notifyConnect(session *WorkerSession) {
+	if h.OnConnect == nil {
+		return
+	}
+	defer logger.Recover("socket.worker.on_connect", logger.F{"worker_id": session.WorkerID})
+	h.OnConnect(session)
+}
+
+func (h *WorkerHandler) notifyDisconnect(session *WorkerSession) {
+	if h.OnDisconnect == nil {
+		return
+	}
+	defer logger.Recover("socket.worker.on_disconnect", logger.F{"worker_id": session.WorkerID})
+	h.OnDisconnect(session, session.closeCause())
+}
+
+func (h *WorkerHandler) dispatch(session *WorkerSession, msg IncomingMessage) {
+	defer logger.Recover("socket.worker.on_message", logger.F{"worker_id": session.WorkerID, "message_type": msg.Type})
+	h.OnMessage(session, msg)
+}
+
 func (h *WorkerHandler) writePump(ctx context.Context, session *WorkerSession) {
+	defer logger.Recover("socket.worker.write_pump", logger.F{"worker_id": session.WorkerID})
 	ticker := time.NewTicker(pingPeriod)
 	defer ticker.Stop()
 	defer session.Close()
@@ -186,6 +206,7 @@ func (h *WorkerHandler) writePump(ctx context.Context, session *WorkerSession) {
 			}
 
 			if err := session.Conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				session.setCloseCause(fmt.Errorf("write: %w", err))
 				logger.Error("socket", "write failed", logger.F{"worker_id": session.WorkerID, "error": err})
 				return
 			}
@@ -193,6 +214,7 @@ func (h *WorkerHandler) writePump(ctx context.Context, session *WorkerSession) {
 		case <-ticker.C:
 			_ = session.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := session.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				session.setCloseCause(fmt.Errorf("ping: %w", err))
 				logger.Warn("socket", "ping failed", logger.F{"worker_id": session.WorkerID, "error": err})
 				return
 			}
@@ -201,6 +223,7 @@ func (h *WorkerHandler) writePump(ctx context.Context, session *WorkerSession) {
 }
 
 func (h *WorkerHandler) readPump(ctx context.Context, session *WorkerSession) {
+	defer logger.Recover("socket.worker.read_pump", logger.F{"worker_id": session.WorkerID})
 	defer session.Close()
 
 	for {
@@ -212,6 +235,7 @@ func (h *WorkerHandler) readPump(ctx context.Context, session *WorkerSession) {
 
 		messageType, payload, err := session.Conn.ReadMessage()
 		if err != nil {
+			session.setCloseCause(fmt.Errorf("read: %w", err))
 			if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				logger.Warn("socket", "read error", logger.F{"worker_id": session.WorkerID, "error": err})
 			}
@@ -233,7 +257,7 @@ func (h *WorkerHandler) readPump(ctx context.Context, session *WorkerSession) {
 		}
 
 		if h.OnMessage != nil {
-			h.OnMessage(session, msg)
+			h.dispatch(session, msg)
 		}
 	}
 }

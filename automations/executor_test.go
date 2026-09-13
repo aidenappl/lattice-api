@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/structs"
@@ -1128,6 +1129,33 @@ func TestValidate(t *testing.T) {
 			t.Fatalf("Validate = %v, want the SSRF guard's refusal", err)
 		}
 	})
+}
+
+// Trigger details and skip reasons land in utf8mb4 VARCHAR columns; a cut
+// through the middle of a rune would be rejected on insert.
+func TestTruncateKeepsRunesWhole(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		n    int
+		want string
+	}{
+		{"short strings pass through", "abc", 10, "abc"},
+		{"ascii is cut at n", "abcdef", 3, "abc…"},
+		{"a cut inside a 3-byte rune backs off to its start", "ab€cd", 3, "ab…"},
+		{"a cut after a whole rune keeps it", "ab€cd", 5, "ab€…"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncate(tt.in, tt.n)
+			if got != tt.want {
+				t.Errorf("truncate(%q, %d) = %q, want %q", tt.in, tt.n, got, tt.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("truncate(%q, %d) produced invalid UTF-8", tt.in, tt.n)
+			}
+		})
+	}
 }
 
 // Non-admins see the shape of an http_request, never its header values or body.

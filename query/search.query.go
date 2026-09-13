@@ -8,6 +8,7 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/logger"
 )
 
 type SearchResults struct {
@@ -107,6 +108,7 @@ func Search(engine db.Queryable, q string, limit int) (*SearchResults, error) {
 	// Workers — match on name, hostname, or IP
 	go func() {
 		defer wg.Done()
+		defer logger.Recover("search")
 		query, args, err := sq.Select("id", "name", "hostname", "status").
 			From("workers").
 			Where(sq.Eq{"active": true}).
@@ -159,6 +161,7 @@ func Search(engine db.Queryable, q string, limit int) (*SearchResults, error) {
 	// Stacks — match on name or description
 	go func() {
 		defer wg.Done()
+		defer logger.Recover("search")
 		query, args, err := sq.Select("id", "name", "description", "status").
 			From("stacks").
 			Where(sq.Eq{"active": true}).
@@ -217,6 +220,7 @@ func Search(engine db.Queryable, q string, limit int) (*SearchResults, error) {
 	// Containers — match on name, image, or tag
 	go func() {
 		defer wg.Done()
+		defer logger.Recover("search")
 		query, args, err := sq.Select("id", "stack_id", "name", "image", "tag", "status").
 			From("containers").
 			Where(sq.Eq{"active": true}).

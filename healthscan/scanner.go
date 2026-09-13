@@ -2,7 +2,6 @@ package healthscan
 
 import (
 	"database/sql"
-	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -102,11 +101,7 @@ func (s *Scanner) Start() {
 // (e.g. a send to a shutting-down worker session) can never kill the
 // long-lived scanner goroutine.
 func (s *Scanner) safeScan() {
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Error("healthscan", "recovered from panic in scan cycle", logger.F{"panic": fmt.Sprintf("%v", r)})
-		}
-	}()
+	defer logger.Recover("healthscan.scan")
 	s.scan()
 }
 

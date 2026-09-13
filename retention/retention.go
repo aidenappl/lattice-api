@@ -20,14 +20,21 @@ func Start(db *sql.DB) {
 	go func() {
 		// Run initial cleanup after 1 minute (let the app fully start)
 		time.Sleep(1 * time.Minute)
-		run(db)
+		safeRun(db)
 
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			run(db)
+			safeRun(db)
 		}
 	}()
+}
+
+// safeRun is one purge pass that cannot end the loop: a panic costs that pass,
+// and the next hour tries again.
+func safeRun(db *sql.DB) {
+	defer logger.Recover("retention")
+	run(db)
 }
 
 func run(db *sql.DB) {

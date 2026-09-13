@@ -42,11 +42,7 @@ func Start() {
 // safePoll runs one poll cycle with panic recovery so a single bad cycle can
 // never kill the long-lived watcher goroutine.
 func safePoll() {
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Error("watcher", "recovered from panic in poll cycle", logger.F{"panic": fmt.Sprintf("%v", r)})
-		}
-	}()
+	defer logger.Recover("watcher.poll")
 	poll()
 }
 

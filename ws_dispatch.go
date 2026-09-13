@@ -29,13 +29,18 @@ func safeGo(name string, fn func()) {
 	msgSem <- struct{}{} // acquire semaphore
 	go func() {
 		defer func() { <-msgSem }() // release semaphore
-		defer func() {
-			if r := recover(); r != nil {
-				logger.Error("panic", fmt.Sprintf("%v", r), logger.F{"goroutine": name})
-			}
-		}()
+		defer logger.Recover(name)
 		fn()
 	}()
+}
+
+// logWorkerWriteErr records a failed write of worker state. These writes used
+// to discard their error, so a worker whose status stopped updating left no
+// trace of why.
+func logWorkerWriteErr(op string, workerID int, err error) {
+	if err != nil {
+		logger.Error("worker", op+" failed", logger.F{"worker_id": workerID, "error": err})
+	}
 }
 
 // configureWorkerHandler sets up OnConnect, OnDisconnect, and OnMessage
@@ -43,7 +48,7 @@ func safeGo(name string, fn func()) {
 func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub, scanner *healthscan.Scanner) {
 	wh.OnConnect = func(session *socket.WorkerSession) {
 		logger.Info("worker", "connected", logger.F{"worker_id": session.WorkerID})
-		_ = query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "online")
+		logWorkerWriteErr("heartbeat update", session.WorkerID, query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "online"))
 		mailer.CancelDisconnectAlert(session.WorkerID)
 		adminHub.BroadcastJSON(map[string]any{
 			"type":      "worker_connected",
@@ -65,8 +70,15 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 	}
 
 	wh.OnDisconnect = func(session *socket.WorkerSession, err error) {
-		logger.Info("worker", "disconnected", logger.F{"worker_id": session.WorkerID})
-		_ = query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "offline")
+		fields := logger.F{
+			"worker_id":     session.WorkerID,
+			"connected_for": time.Since(session.ConnectedAt).Round(time.Second).String(),
+		}
+		if err != nil {
+			fields["cause"] = err.Error()
+		}
+		logger.Warn("worker", "disconnected", fields)
+		logWorkerWriteErr("offline status update", session.WorkerID, query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "offline"))
 		adminHub.BroadcastJSON(map[string]any{
 			"type":      "worker_disconnected",
 			"worker_id": session.WorkerID,
@@ -90,9 +102,9 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 	wh.OnMessage = func(session *socket.WorkerSession, msg socket.IncomingMessage) {
 		switch msg.Type {
 		case socket.MsgHeartbeat:
-			_ = query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "online")
+			logWorkerWriteErr("heartbeat update", session.WorkerID, query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "online"))
 			if rv, ok := msg.Payload["runner_version"].(string); ok && rv != "" {
-				_ = query.UpdateWorkerRunnerVersion(db.DB, session.WorkerID, rv)
+				logWorkerWriteErr("runner version update", session.WorkerID, query.UpdateWorkerRunnerVersion(db.DB, session.WorkerID, rv))
 			}
 			handleHeartbeatMetrics(session.WorkerID, msg.Payload)
 			if names := healthscan.ParseContainerNames(msg.Payload); len(names) > 0 {
@@ -120,7 +132,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 						if worker.RunnerVersion != nil {
 							oldVersion = *worker.RunnerVersion
 						}
-						_ = query.SetWorkerPendingAction(db.DB, session.WorkerID, nil)
+						logWorkerWriteErr("pending action clear", session.WorkerID, query.SetWorkerPendingAction(db.DB, session.WorkerID, nil))
 						status := "success"
 						message := fmt.Sprintf("upgraded to %s", runnerVersion)
 						if runnerVersion == oldVersion {
@@ -140,7 +152,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				}
 			}
 
-			_ = query.UpdateWorkerInfo(db.DB, session.WorkerID, osStr, arch, dockerVersion, ipAddress, runnerVersion)
+			logWorkerWriteErr("worker info update", session.WorkerID, query.UpdateWorkerInfo(db.DB, session.WorkerID, osStr, arch, dockerVersion, ipAddress, runnerVersion))
 
 		case socket.MsgDeploymentProgress:
 			adminHub.BroadcastJSON(map[string]any{
@@ -176,12 +188,14 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				message, _ := msg.Payload["message"].(string)
 				if message != "" {
 					stage := "status_check"
-					_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+					if err := query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
 						DeploymentID: int(depID),
 						Level:        "info",
 						Stage:        &stage,
 						Message:      fmt.Sprintf("Runner status check: %s", message),
-					})
+					}); err != nil {
+						logger.Error("deploy", "deployment log write failed", logger.F{"deployment_id": int(depID), "error": err})
+					}
 				}
 			}
 
@@ -268,7 +282,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 			actionMessage, _ := msg.Payload["message"].(string)
 			if actionName == "upgrade_runner" || actionName == "reboot_os" {
 				if actionStatus == "success" || actionStatus == "failed" || actionStatus == "error" {
-					_ = query.SetWorkerPendingAction(db.DB, session.WorkerID, nil)
+					logWorkerWriteErr("pending action clear", session.WorkerID, query.SetWorkerPendingAction(db.DB, session.WorkerID, nil))
 				} else {
 					actionData := map[string]string{
 						"action":     actionName,
@@ -278,7 +292,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 					}
 					actionBytes, _ := json.Marshal(actionData)
 					actionJSON := string(actionBytes)
-					_ = query.SetWorkerPendingAction(db.DB, session.WorkerID, &actionJSON)
+					logWorkerWriteErr("pending action update", session.WorkerID, query.SetWorkerPendingAction(db.DB, session.WorkerID, &actionJSON))
 				}
 			}
 
@@ -597,11 +611,13 @@ func configureAdminHandler(ah *socket.AdminHandler, workerHub *socket.WorkerHub)
 			if workerID == 0 {
 				return
 			}
-			_ = workerHub.SendJSONToWorker(workerID, socket.Envelope{
+			if err := workerHub.SendJSONToWorker(workerID, socket.Envelope{
 				Type:      msg.Type,
 				CommandID: msg.CommandID,
 				Payload:   msg.Payload,
-			})
+			}); err != nil {
+				logger.Warn("socket", "exec relay to worker failed", logger.F{"worker_id": workerID, "type": msg.Type, "error": err})
+			}
 		}
 	}
 }

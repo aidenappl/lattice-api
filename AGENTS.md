@@ -32,7 +32,8 @@ rows in this database.
 - The **data model** — `workers`, `stacks`, `containers`, `deployments`, `deployment_containers`,
   `registries`, `database_instances`, `database_instance_events`, `database_snapshots`, `backup_destinations`, `networks`,
   `volumes`, `global_env_vars`, `templates`, `webhook_configs`, `deploy_tokens`, `api_tokens`,
-  `worker_tokens`, `users`, `sso_sessions`, `audit_log`, `settings`, and the log/metric tables.
+  `worker_tokens`, `users`, `sso_sessions`, `audit_log`, `settings`, `automations`,
+  `automation_runs` (both from `db/migrations/017_automations.sql`), and the log/metric tables.
 
   ⚠️ **`sso_sessions` was listed here for a long time before any migration created it.** That
   line is why nobody checked: the docs asserted the table existed, `query/sso_sessions.query.go`
@@ -48,6 +49,9 @@ rows in this database.
   client; RBAC (`admin` / `editor` / `viewer` / `pending`); CSRF; per-IP rate limiting.
 - **Fleet observability plumbing** — health scanning, worker/container metrics ingestion,
   anomaly detection, retention purging, outbound webhooks, and SMTP alerting.
+- **Automations** — named rules pairing one trigger (webhook or schedule) with an ordered list
+  of actions (`redeploy_container` across any stacks, `http_request`), each firing recorded as a
+  run. See *Domain & architecture → Automations*.
 
 **What it does NOT own:**
 
@@ -75,10 +79,14 @@ rows in this database.
 - **Crypto:** `golang.org/x/crypto` v0.50.0 — bcrypt for passwords.
 - **YAML:** `gopkg.in/yaml.v3` v3.0.1 — compose import/parsing.
 
+- **Telemetry:** `github.com/aidenappl/go-monitor` (pseudo-version of commit `17017e5` until it
+  is tagged) — Monitor events, redaction, and the durable on-disk spool that keeps Monitor off
+  the boot path. Used only through `telemetry/` and the logger sinks.
 - **SSO:** `github.com/aidenappl/go-forta/sso` **v1.6.0** — the shared relying-party SSO
   implementation. Brings `coreos/go-oidc/v3` and `golang.org/x/oauth2` transitively.
 
-**Internal SDKs:** `go-forta/sso` only, and ⚠️ **that is NOT the same as importing `go-forta`
+**Internal SDKs:** `go-monitor` (telemetry, above) and `go-forta/sso` — and ⚠️ importing
+`go-forta/sso` is **NOT the same as importing `go-forta`
 itself.** The root `forta` package validates Forta's own tokens for a service that has delegated
 identity to Forta; this repo has its own users and its own JWTs, and imports only the `sso`
 subpackage, which runs a login flow against *any* OIDC provider. Forta OAuth-as-identity was
@@ -91,7 +99,8 @@ only at **CI** time via the `aidenappl/keyring-actions` GitHub Action to inject 
 credentials for the image build; the running binary reads plain env vars.
 
 There is **no third-party logging, metrics, or DI framework** — `logger/` is hand-rolled
-structured logging, and dependencies are wired manually in `init.go`.
+structured logging (teed into Monitor by `telemetry/`), and dependencies are wired manually in
+`init.go`.
 
 ---
 
@@ -105,14 +114,15 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 |------|------|
 | `main.go` | Entry point. Builds the `mux.Router`, registers **every** route (this is the authoritative route table), mounts middleware, wires WebSocket endpoints, calls `startServer`. |
 | `init.go` | `initApp()` — bootstraps logger, env validation, DB, crypto, retention, watcher, versions, admin bootstrap, network backfill, SSO check, and constructs the two hubs + all struct-receiver handlers into an `appContext`. |
-| `server.go` | `startServer` — CORS config, `http.Server` with timeouts, TLS toggle, graceful shutdown on SIGINT/SIGTERM (10s drain). |
+| `server.go` | `startServer` — CORS config, `http.Server` with timeouts, TLS toggle, graceful shutdown on SIGINT/SIGTERM (7s drain, then `telemetry.Shutdown` delivers or spools buffered events inside Docker's 10s stop window). |
 | `message_handlers.go` | `configureWorkerHandler` / `configureAdminHandler` — the OnConnect/OnDisconnect/OnMessage callbacks. This is where inbound worker messages are routed by `msg.Type` and fanned out to the admin hub, DB, webhooks, and mailer. `safeGo` bounds handler goroutines (semaphore of 100). |
 | `ws_dispatch.go` | Helper dispatch logic for worker→API messages (heartbeat metrics, container status/sync/logs, lifecycle logs, deployment progress). Referenced by `message_handlers.go`. |
 | `container_cache.go` | 60s in-memory `name → *structs.Container` cache to kill the N+1 lookup on every heartbeat/log/status message. Status/health writes call `Invalidate(name)` so the next read is fresh, and a background `StartEviction` goroutine prunes expired entries to bound memory. |
 | `env/env.go` | All env vars via `getEnv`/`getEnvOrPanic`. `ValidateSecurityDefaults()` panics in production on weak `JWT_SIGNING_KEY` / admin password. |
 | `db/db.go` | MariaDB pool (IIFE-free lazy `Init()`), `Queryable` interface, `DEFAULT_LIMIT`/`MAX_LIMIT`, `BeginTx`, and **all schema migrations run in-code** via the idempotent `migrate()` helper. |
-| `logger/logger.go` | Structured leveled logger (text/ANSI or JSON). `logger.F` = `map[string]any`. `Request()` picks level by HTTP status. |
-| `middleware/` | `middleware.go` (RequestID, Logging, MuxHeader, SecurityHeaders, MaxBodySize, `statusResponseWriter` with Hijack), `auth.go` (DualAuth, RejectPending, RequireAdmin, RequireEditor, WorkerTokenAuth, SSO checkpoint), `csrf.go` (double-submit), `ratelimit.go` (per-IP token bucket). |
+| `logger/logger.go` | Structured leveled logger (text/ANSI or JSON). `logger.F` = `map[string]any`. `Request()` picks level by HTTP status. `SetSink`/`SetPanicSink` tee every Debug/Info/Warn/Error call and every reported panic out of the process (telemetry installs both; `Request` lines are not teed — the middleware reports requests itself). `Recover(name, fields)`, deferred directly, is the panic guard for every goroutine; `Panic`/`PanicContext` report a value already recovered. |
+| `telemetry/telemetry.go` | Monitor wiring: `Init(version)` (never fails or blocks — Monitor is a Lattice stack), `InstallSinks` (logger → `<component>.log.<level>` and `panic.recovered` events), `Shutdown`, `Fatal`/`ReportFatal` for boot failures, `CrashGuard` (deferred first in `main`). See *Operations → Monitor telemetry*. |
+| `middleware/` | `middleware.go` (RequestID, Logging + the per-request `http.request.end` Monitor event, Recover, `SetUser`, MuxHeader, SecurityHeaders, MaxBodySize, `statusResponseWriter` with Hijack/Unwrap/`RecordFailure`), `auth.go` (DualAuth, RejectPending, RequireAdmin, RequireEditor, WorkerTokenAuth, SSO checkpoint), `csrf.go` (double-submit), `ratelimit.go` (per-IP token bucket). |
 | `jwt/jwt.go` | HS512 local tokens. 15-min access / 7-day refresh. `Claims{UserID, Type}`. Validation pins the alg to HS512 (`WithValidMethods`), requires an expiry (`WithExpirationRequired`) and the issuer, and rejects a token with no `iat` (so it can't bypass `tokens_revoked_at`). Revocation compare is `!IssuedAt.After(revokedAt)` (a token minted in the same second as revocation is rejected). |
 | `crypto/crypto.go` | AES-256-GCM encrypt/decrypt for secrets at rest. Passthrough (no-op) when `ENCRYPTION_KEY` unset **only in non-production** — `Init()` **panics at boot** if the key is empty and `ENVIRONMENT=production`. `Decrypt` returns a real error on bad base64 / short input / auth failure (no silent plaintext fallthrough); callers propagate it. |
 | `migrate/encrypt.go` | One-off `migrate-encrypt` subcommand logic: encrypts existing plaintext secret values in-place (idempotent, transactional) so the DB can be moved from passthrough to an active `ENCRYPTION_KEY`. Target list must track every encrypted column/setting. |
@@ -126,7 +136,10 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `healthscan/scanner.go` | Periodic worker-vs-DB reconciliation; emits `health_anomalies` to the admin hub. |
 | `watcher/watcher.go` | Polls registries for mutable-tag re-pushes (digest change) → fires `image.updated` / auto-deploy webhooks. |
 | `retention/retention.go` | Hourly batch purge of old log/metric rows per retention window. Also `database_instance_events` (180d) and soft-deleted `database_snapshots` (90d, gated on `active = 0` via `purgeWhere` — a live snapshot row is the only record of where its remote file lives, so purging by age alone would orphan objects on the destination). |
-| `webhooks/dispatcher.go` | `Fire(event, data)` — async outbound webhooks, optional HMAC-SHA256 signing. |
+| `webhooks/dispatcher.go` | `Fire(event, data)` — async outbound webhooks, optional HMAC-SHA256 signing. `Deliver(ctx, Request)` is the one outbound HTTP path for user/admin-configured URLs (SSRF-safe client, returns status + a 512-byte body snippet); event webhooks and automation `http_request` steps both use it. |
+| `automations/` | The automation executor — the repo's one service layer (see *How code is written here*). `executor.go` (the single run loop, `Fire`/`FireWebhook`/`FireScheduled`/`FailStuckRuns`, run records, budgets), `actions.go` (`kindFor` — THE switch over action types — plus `redeploy_container` and `http_request`), `authorize.go` (the authorisation model, with its reasoning), `store.go` (`Store` interface + `DBStore`, a thin pass-through to `query`). |
+| `cron/cron.go` | The control plane's one 5-field cron evaluator: `Matches`, `PreviousFires`, and `Validate` (same term parser; additionally rejects out-of-range values that would parse and never fire). Moved out of package `main` so automations can validate with it; `cron.go` at the root keeps `cronPreviousFires`/`cronMatches` as wrappers for the existing call sites. |
+| `automation_scheduler.go` | `databaseScheduler.StartAutomations` — schedule-triggered automations on the snapshot scheduler's loop (one scheduler, not two). |
 | `versions/versions.go` | Polls GitHub `releases/latest` for api/web/runner every 30 min; in-memory cache. |
 | `mailer/` | `mailer.go` (SMTP send + HTML template, config from `settings`), `prefs.go` (notification prefs, cooldowns, grace timers, unhealthy thresholds). |
 | `bootstrap/admin.go` | First-run: creates the local admin user from `LATTICE_ADMIN_EMAIL`/`_PASSWORD` if no users exist. |
@@ -199,6 +212,10 @@ This repo follows the global Go standards. Specifics and deviations:
   `query.*` function directly, and hand the result to `responder`. There is **no service
   layer** — the only orchestration objects are the six hub-holding handler structs below, and
   those still call queries directly; they hold a WebSocket hub, not business logic.
+  **The one exception is `automations/`**, because a run is orchestration by definition —
+  several queries, worker dispatch, outbound HTTP, the audit log and a concurrency guard in one
+  unit. Automation CRUD handlers still call `query` directly; only *firing* goes through the
+  executor. Do not treat it as precedent for a service layer elsewhere.
 - **`Queryable` interface.** Identical to every other repo: `Exec`, `Prepare`, `Query`,
   `QueryRow`. Every query function takes `db.Queryable` first, so `*sql.DB` and `*sql.Tx` are
   interchangeable (deploy/rollback wrap record creation in a `db.BeginTx()` transaction).
@@ -246,8 +263,12 @@ This repo follows the global Go standards. Specifics and deviations:
 - **Audit logging.** State-changing handlers call `logAudit(r, action, entity, id, details)`
   (in `routers/audit.go`). Add an audit call to any new mutating route.
 - **Tests.** Standard `testing`, table-driven, no testify. Present for `crypto`, `jwt`,
-  `healthscan`, `middleware` (auth/csrf), `responder`, `socket/protocol`, `tools`. There is no
-  DB integration suite; query packages are exercised indirectly.
+  `healthscan`, `middleware` (auth/csrf), `responder`, `socket/protocol`, `tools`, `cron`, and
+  `automations` (executor guarantees against an in-memory `Store` whose claim and slot-uniqueness
+  reproduce the SQL predicates), plus `routers/HandleAutomations_test.go` for the webhook's
+  status-code contract. There is no DB integration suite; query packages are exercised
+  indirectly — so the automation SQL (`query/automations.query.go`,
+  `query/automation_runs.query.go`) is unverified against a real MariaDB.
 
 ### Handler types (struct receivers)
 
@@ -262,6 +283,12 @@ Six handlers need a WebSocket hub reference and are therefore methods on structs
 | `VolumeHandler` | WorkerHub | list/create/delete worker volumes |
 | `NetworkHandler` | WorkerHub | list/create/delete worker networks |
 | `DatabaseHandler` | WorkerHub, AdminHub | DB instance create/update/delete, start/stop/restart/remove action, credentials, snapshot create/restore, backup-destination test |
+| `AutomationHandler` | `*automations.Executor` (not a hub) | automation CRUD, enable/disable, run now, rotate token, run history, and the public `/api/automations/{token}` webhook |
+
+`ContainerActionHandler` also exposes `RecreateContainer(container, workerID)` — the executor's
+`ContainerRedeployer` — and `recreateContainerPayload` is the ONE builder of a single-container
+recreate payload (Recreate button, deploy token `?container=`, automations). Those were two
+identical inline copies before automations.
 
 Everything else is a package-level `routers.Handle*` function.
 
@@ -275,6 +302,7 @@ Everything else is a package-level `routers.Handle*` function.
 lattice-web (browser) ──REST/HTTPS──▶ /admin/*  ─┐
 lattice-mcp (Claude)  ──REST + Bearer─▶ /admin/*  ─┼─▶ DualAuthMiddleware ─▶ RejectPending ─▶ [RequireEditor|RequireAdmin] ─▶ handler ─▶ query ─▶ MariaDB
 CI/CD (deploy token)  ──POST──────────▶ /api/deploy/{token}                                                                        │
+CI/CD (automation)    ──POST──────────▶ /api/automations/{token} ─▶ automations.Executor ─▶ one recreate per step, to each container's own worker ─┤
                                                                                                                                    ▼
 lattice-web (browser) ──WS───────────▶ /ws/admin  ◀── AdminHub broadcast ◀───────────────────────────── command dispatch ─▶ WorkerHub.SendJSONToWorker
 lattice-runner (host) ──WS (outbound)─▶ /ws/worker ◀──────────────────────────────────────────────────────────────────────────────┘
@@ -395,7 +423,8 @@ it, and looks it up in `worker_tokens` to resolve a `worker_id`.
 safe methods, an `Authorization: Bearer` request **that carries no session cookie** (API-token/JWT
 header clients don't need it; but a Bearer header no longer waives CSRF for a request that also
 sends the `lattice-access-token` cookie — a cookie-authed browser request still gets checked),
-`/auth/login`, `/auth/refresh`, `/ws/worker`, `/api/deploy/*`, `/auth/sso/callback`.
+`/auth/login`, `/auth/refresh`, `/ws/worker`, `/api/deploy/*`, `/api/automations/*`,
+`/auth/sso/callback`, `/auth/sso/backchannel-logout`.
 
 **SSO login CSRF:** the `state` parameter is bound to the browser and is single-use.
 `/auth/sso/login` sets an HttpOnly, `SameSite=Lax`, `Path=/auth/sso` cookie (`lattice-sso-state`)
@@ -410,7 +439,8 @@ validation — deferred because correctness depends on the IDP's support and the
 three fallback request shapes (JSON / basic-auth / body-auth) plus a Forta-envelope response, so
 it must be validated against the live IDP before shipping.
 
-**Rate limiting:** per-IP token bucket. Auth/deploy endpoints 1 rps burst 5; general `/admin`
+**Rate limiting:** per-IP token bucket. Auth, deploy-token and automation-webhook
+(`/api/automations/*`) endpoints 1 rps burst 5; general `/admin`
 & `/auth` 30 rps burst 60. `/healthcheck`, `/ws/*`, `/version`, `/install/runner`, and the SSO
 config/login/callback routes are exempt. The client IP is taken from the **TCP peer
 (`RemoteAddr`) by default** — `X-Forwarded-For` / `X-Real-IP` are only honored when the peer is
@@ -435,13 +465,18 @@ Two independent hubs, both created in `initApp()`:
 `socket/handler.go` runs the worker read/write pumps: `writeWait 10s`, `pongWait 90s`,
 `pingPeriod ~72s`, `maxMessageSize 64KB`, send buffer 128. Origin is checked by
 `CheckAllowedOrigin` (matches scheme+host against `ALLOWED_ORIGINS`; empty Origin — non-browser
-runner — is allowed). The connect/disconnect/message callbacks are set in `message_handlers.go`:
+runner — is allowed). Every callback runs with its panic contained (`logger.Recover`): on a pump's
+goroutine nothing else could recover it, and an uncontained panic would take the process and every
+worker connection down. A panicking `OnMessage` costs only that message. `OnDisconnect` receives
+the connection's close cause — the first read/write/ping error, or a replacement by the same
+worker's new connection. The connect/disconnect/message callbacks are set in `message_handlers.go`:
 
 - **OnConnect:** mark worker online, cancel any pending disconnect alert, broadcast
   `worker_connected`, re-push DB snapshot schedules to the runner (`distributeDbSchedules`), and
   request a full database-container report (`dbReconciler.RequestSync`) so anything that changed
   while the worker was unreachable is corrected immediately.
-- **OnDisconnect:** mark offline, broadcast `worker_disconnected`, fire the
+- **OnDisconnect:** log a warning with the `cause` and `connected_for`, mark offline, broadcast
+  `worker_disconnected`, fire the
   `worker.disconnected` webhook, and schedule a grace-delayed email alert.
 - **OnMessage:** switch on `msg.Type` — heartbeat (metrics + container-name reconciliation),
   registration (OS/arch/docker/runner version; resolves pending upgrade actions),
@@ -766,6 +801,144 @@ state. **Rollback** (`HandleRollbackDeployment`) rebuilds specs from the previou
 deployment's recorded image/tag (everything else from the live container rows) and dispatches a
 `deploy` with `rollback: true`.
 
+### Automations
+
+An **automation** is a named rule: exactly one **trigger** and an **ordered list of actions**.
+Firing goes through `automations.Executor`; CRUD is ordinary handler → query.
+
+**Why it exists.** A deploy token is bound to one stack: `HandlePublicDeploy` resolves
+`/api/deploy/{token}` to `dt.StackID`, and `?container=` only narrows *within* that stack.
+monitor-core's CI posted to one deploy URL with `?container=monitor-core`, so its second zone was
+never redeployed and drifted a release and eight migrations behind — code and schema — under a
+green CI history. One automation webhook redeploys N containers wherever they live, and records
+what happened to each.
+
+| | Persisted shape (JSON, `type` discriminator) | Notes |
+|---|---|---|
+| trigger `webhook` | `{"type":"webhook"}` | `POST /api/automations/{token}`. Mirrors deploy tokens: `tools.GenerateToken`, only the SHA-256 stored (`automations.webhook_token_hash` — a column, because it is an indexed lookup key), plaintext shown once (create, rotate, or a trigger changed to webhook). `webhook_last_used_at` is touched only by a token that resolves. |
+| trigger `schedule` | `{"type":"schedule","cron":"0 3 * * *"}` | UTC. Validated by `cron.Validate`. |
+| action `redeploy_container` | `{"stack_id":2,"container_name":"monitor-core"}` | Sends the same `recreate` the Recreate button sends. Each step resolves its own stack and worker at run time. |
+| action `http_request` | `{"method","url","headers","body","timeout_seconds"}` | Through `webhooks.Deliver` (SSRF-safe); only a 2xx succeeds. URL must pass `ValidateExternalURL` at save. |
+
+Every action also carries `continue_on_error`.
+
+**Containers are named by `(stack_id, container_name)`, never by id.** `HandleUpdateCompose`
+soft-deletes and re-inserts every container row in a stack on each compose edit, so an id goes stale
+at the first edit; and names are only unique within a stack (compose-created containers are never
+checked against other stacks), so a name alone is ambiguous across zones.
+
+**Persist the shape, not a script.** `trigger_config` and `actions` are JSON. A new action type is:
+a new case in `kindFor` (`automations/actions.go`), a config struct in
+`structs/Automation.struct.go`, and a type implementing `actionKind` (required role, save-time
+validate, timeout, execute, redact). No migration, no handler change. An unknown type is an error
+**naming the type** — a 400 at save, and at run time the run is refused before its first side
+effect — never a skip. `AutomationActionType` deliberately has no `IsValid`: `kindFor` is the one
+list. Configs decode with `DisallowUnknownFields`, so a typo fails at save.
+
+**The run** (`Executor.execute`): insert the run row → take the concurrency guard → authorise →
+steps in order, each under its own timeout inside the run budget → record. A failed step stops the
+run unless it has `continue_on_error`; **any** failed step fails the run, and `failed_step` names the
+first — `continue_on_error` controls flow, not the verdict. Steps: `pending → succeeded | failed |
+skipped` (skipped = never attempted, with the reason in its summary). Runs: `in_progress →
+succeeded | failed | skipped`. Step progress is written after every step, so a crash still shows how
+far it got.
+
+⚠️ **Authorisation — the decision, and why** (the full argument is the header of
+`automations/authorize.go`):
+
+- **Every run is authorised against `run_as_user_id` at run time, before its first side effect.**
+  Deactivating, deleting or demoting that user stops their automations on the next firing, with the
+  reason in the run history. A check made once at creation is a check that never happens again —
+  and a webhook able to redeploy anything would be worse than the per-stack token it replaces.
+- **The run-as identity is re-bound to whoever last defines what the automation does** — create, an
+  edit of its trigger or actions, or enable — and that person must be able to run every step at that
+  moment (`403` otherwise). Otherwise an editor could add an admin-only step to an admin's
+  automation and borrow the admin's authority. Rename, disable and delete do not re-bind.
+  "Run now" is checked against both the person pressing it and the run-as user. `created_by` is kept
+  for history only.
+- **Required roles mirror the routes a person would otherwise use**, so an automation grants nothing
+  a click could not: `redeploy_container` editor (recreate is `RequireEditor`), `http_request` admin
+  (webhooks are `RequireAdmin`), `webhook` trigger admin (it holds a bearer credential; creating a
+  deploy token is `RequireAdmin`), `schedule` trigger editor. The routes are `RequireEditor`; the
+  per-definition check is `automations.Authorise`, the same function at save time and at run time.
+- ⚠️ **Known gap.** An SSO user revoked at the identity provider gets `tokens_revoked_at` stamped but
+  stays `active`, and `tokens_revoked_at` cannot be consulted here because an ordinary logout
+  (`HandleLogout`) stamps it too — logging out must not disable anyone's automations. That user's
+  automations keep running until an admin deactivates them in Lattice.
+
+**Audit.** Every attempted action writes an `audit_log` row: `user_id` = the run-as user,
+**`automation_run_id`** = the run (column added by migration 017), `ip_address` = the caller, and
+details `via automation #N "name", run #R step s/n (source, acting as user #U (email)): … —
+succeeded|failed: …`. The actor is the pair; `user_id` alone would read exactly like that person
+clicking Recreate. HTTP targets appear as scheme + host only — chat webhooks carry their secret in
+the path. The admin routes themselves use `logAudit` as usual (create, update, delete, enable,
+disable, run, rotate_token).
+
+**Concurrency.** One automation never runs twice at once. `query.ClaimAutomationRun` is a
+conditional UPDATE on `automations.running_run_id / running_since` — the `ClaimStackForDeploy`
+shape, deliberately not a row lock, which would hold a pooled connection open across outbound HTTP.
+An overlapping firing is recorded as a **skipped** run naming the run in progress and is **never
+queued**: a queue is how a retried webhook becomes a redeploy storm. `ReleaseAutomationRun` only
+releases a guard its run still holds. A guard older than `CLAIM_STALE_AFTER` (budget + 1 min) is
+breakable, and `FailStuckRuns` (1-minute sweeper) fails runs a dead control plane left
+`in_progress` and releases their guards. Runner slots: `MAX_CONCURRENT_RUNS = 10`, taken without
+blocking — no free slot is a skipped run. `/api/automations/*` also shares the deploy endpoint's
+1 rps limiter. Claim/release/touch pin `updated_at = updated_at` so "last edited" keeps meaning a
+person changed the definition.
+
+**Timeouts.** `redeploy_container` 10s; `http_request` 10s default, 30s max; the whole run
+`RUN_BUDGET = 50s` — kept under the server's 60s `WriteTimeout` so a webhook caller hears the
+verdict. An exhausted budget halts the run regardless of `continue_on_error`. A run executes on its
+own context, never the request's: a CI client that disconnects must not leave a half-applied
+automation.
+
+**Webhook responses** (`HandleAutomationWebhook`) are chosen so CI turns red when — and only when —
+it should, without inviting an automatic retry (`curl --retry` and most CI clients retry 5xx and
+429, and a retried failure is the storm the guard exists to absorb):
+
+| Status | Meaning |
+|---|---|
+| `200`, `data.result: "succeeded"` | every step succeeded |
+| `200`, `data.result: "disabled"` | switched off: nothing ran, recorded as a skipped run. Says so explicitly — not a 404, not a silent no-op |
+| `401` | the token resolves to no live automation (unknown, rotated, deleted). **Nothing** is written — no touch, no run, no claim |
+| `409`, `error_code 4091` | skipped: already running, or no runner slot |
+| `424`, `error_code 4240` | failed: the message names the run and the first failed step |
+
+`?commit=` is recorded in the run's `trigger_detail`. CI recipe:
+`curl --fail-with-body -sS -X POST "$AUTOMATION_URL?commit=$GITHUB_SHA"`.
+
+**Schedules — one scheduler, not two.** `automation_scheduler.go` runs on `databaseScheduler`'s
+`runLoop`, with the same tick, the same deterministic jitter (`jitterForKey("automation:<id>")`;
+`jitterFor` now delegates to it with its old key, so snapshot offsets are unchanged), the same
+catch-up window, and the same claim-by-unique-insert: `automation_runs` is
+`UNIQUE(automation_id, scheduled_at)` on the nominal, un-jittered slot — NULL for webhook and manual
+runs, which a MariaDB unique key ignores. A slot older than the catch-up window becomes a skipped
+run. A slot earlier than the automation's `updated_at` (created, edited or enabled after it) was
+never owed and is ignored, so creating a daily automation does not immediately record a skip.
+
+**Redaction.** `http_request` header values and bodies are returned only to admins
+(`automations.RedactActions`; a type this build does not know is redacted whole). ⚠️ They are
+stored in **plaintext** in `automations.actions` — they are not in `migrate/encrypt.go`'s target
+list, which has no JSON-path support — so long-lived credentials do not belong there.
+
+**Seams — deliberately not built in v1** (tight means one loop and one switch, not a workflow engine):
+
+- *Conditionals / branching* — a per-action `when` evaluated in `execute` before `runStep`.
+- *Parallel steps / fan-out* — an action kind whose config holds child actions; the outer loop stays sequential.
+- *Retries with backoff* — a per-action `retry` field in the action envelope, looped inside `runStep` within the step timeout.
+- *Templating between steps* — `stepEffect` is where a step's outputs would be captured; nothing reads them yet.
+- *Multiple triggers* — move `trigger_config` + `webhook_token_hash` to an `automation_triggers` child table; `GetAutomationByWebhookHash` and `ListScheduledAutomations` are the only readers.
+- *A DSL* — none; config is typed JSON validated strictly.
+- *Wait for healthy* — `redeploy_container` succeeds when the worker **accepts** the recreate ("dispatched"), not when the new container is healthy. A new image that crash-loops shows in the container view, not in the run. Waiting on `container_status` inside the step is the first thing to add.
+- *lattice-mcp* mirrors every automation route as of its 1.6.0 (see *Ecosystem & related repos*).
+
+**Verified against a real MariaDB 11** (not just the in-memory `Store`): the schema was rebuilt
+the way production got it — the deleted `001`–`009` migrations from git history, then the legacy
+`db.Init` block, then the runner — and `017` applied, re-applied cleanly by hand, and every query in
+`query/automations.query.go` / `query/automation_runs.query.go`, the executor through `DBStore`, and
+the real handlers behaved as documented. That check is not in CI (there is no DB harness here), so
+re-run something equivalent if you change the SQL.
+
 ### External systems
 
 - **Every worker VM** runs `lattice-runner`, which dials `/ws/worker` outbound (so no inbound
@@ -794,6 +967,7 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 | GET | `/version` | inline — `{"version": Version}` |
 | GET | `/install/runner` | `HandleInstallRunner` (embedded script) |
 | POST | `/api/deploy/{token}` | `DeployHandler.HandlePublicDeploy` (deploy-token auth; `?container=` for single-container, `?commit=` for audit) |
+| POST | `/api/automations/{token}` | `AutomationHandler.HandleAutomationWebhook` (automation-token auth; synchronous; `200` succeeded/disabled · `401` · `409` skipped · `424` failed; `?commit=` recorded on the run) |
 
 **Auth**
 
@@ -875,6 +1049,17 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 | POST | `/deployments/{id}/approve` | `HandleApproveDeployment` `[E]` |
 | POST | `/deployments/{id}/rollback` | `DeployHandler.HandleRollbackDeployment` `[E]` |
 
+**Automations** (all `AutomationHandler`; `[E]` routes additionally run `automations.Authorise` against the definition)
+
+| Method | Path | Handler |
+|--------|------|---------|
+| GET / POST | `/automations` | `HandleListAutomations` (each with `last_run` and `run_as`; `http_request` headers/body redacted for non-admins) / `HandleCreateAutomation` `[E]` (webhook token in the response, once) |
+| GET / PUT / DELETE | `/automations/{id}` | `HandleGetAutomation` / `HandleUpdateAutomation` `[E]` (changing trigger/actions re-binds run-as) / `HandleDeleteAutomation` `[E]` (soft delete; nulls the token hash) |
+| POST | `/automations/{id}/enable` / `/disable` | `HandleEnableAutomation` `[E]` (re-validates, re-binds run-as) / `HandleDisableAutomation` `[E]` |
+| POST | `/automations/{id}/run` | `HandleRunAutomation` `[E]` (synchronous; returns `{result, run}`) |
+| POST | `/automations/{id}/rotate-token` | `HandleRotateAutomationToken` `[E]` (webhook only; old token dies immediately) |
+| GET | `/automations/{id}/runs` | `HandleListAutomationRuns` (`?limit=&offset=`, newest first, skipped runs included) |
+
 **Registries**
 
 | Method | Path | Handler |
@@ -949,7 +1134,7 @@ Owner is **`aidenappl`** for the appleby.cloud repos.
 |------|--------------|
 | [`lattice-web`](https://github.com/aidenappl/lattice-web) | Next.js dashboard. Consumes `/admin/*` REST + `/ws/admin`. Field names in this API's JSON are its contract. |
 | [`lattice-runner`](https://github.com/aidenappl/lattice-runner) | The agent on each worker VM. Dials `/ws/worker` **outbound**, executes Docker ops, and implements the deploy strategies. The worker protocol in `socket/protocol.go` is the shared contract — change both together. |
-| [`lattice-mcp`](https://github.com/aidenappl/lattice-mcp) | MCP server exposing `/admin` as 125 Claude tools. **When you add/change/remove an `/admin` route, add or consciously skip the matching MCP tool in the same change** — lattice-mcp previously drifted ~2 months behind this API. |
+| [`lattice-mcp`](https://github.com/aidenappl/lattice-mcp) | MCP server exposing `/admin` as 125 Claude tools. **When you add/change/remove an `/admin` route, add or consciously skip the matching MCP tool in the same change** — lattice-mcp previously drifted ~2 months behind this API. `/admin/automations*` is mirrored by lattice-mcp **1.6.0** (10 tools) — ⚠️ publish it only after these routes are deployed, or every one of those tools 404s. That release also masks `webhook_token`/`webhook_path` and `http_request` step configs, which this API returns in full to an admin. |
 | [`forta-api`](https://github.com/aidenappl/forta-api) / [`forta-web`](https://github.com/aidenappl/forta-web) | The appleby.cloud SSO/identity provider. Lattice's SSO client can point at Forta (hence the "Forta envelope" handling in `sso/`), but Lattice no longer depends on `go-forta` — it uses a generic OAuth2/OIDC client and can run standalone on local auth. |
 | [`keyring-api`](https://github.com/aidenappl/keyring-api) / [`keyring-actions`](https://github.com/aidenappl/keyring-actions) | Secrets platform. Used only in **CI** (`keyring-actions`) to inject registry credentials for the image build; the running binary reads plain env vars. |
 | [`monitor-core`](https://github.com/aidenappl/monitor-core) | Observability. Runtime errors/latency for `lattice-api` surface in Monitor (service name `lattice-api`). |
@@ -1008,15 +1193,24 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
   `db.Init()` (no external migration runner). Pool: 25 open / 10 idle / 5-min lifetime.
 - **Background jobs** (all started in `initApp`): `versions` (GitHub poll, 30m), `retention`
   (log/metric purge, hourly; windows: container_logs 7d, lifecycle 14d, worker_metrics 30d,
-  container_metrics 7d, deployment_logs 90d, audit_log 180d), `watcher` (registry digest poll,
-  5m), `healthscan` (worker-vs-DB reconcile, 5m). Plus per-connection ping/pong and
+  container_metrics 7d, deployment_logs 90d, audit_log 180d, database_instance_events 180d,
+  automation_runs 90d), `watcher` (registry digest poll, 5m), `healthscan` (worker-vs-DB
+  reconcile, 5m), the snapshot scheduler, and on the same loop the `automation-scheduler` (30s
+  tick) and `automation-run-timeout` sweeper (1m). Plus per-connection ping/pong and
   per-deployment watchdog goroutines.
+- *An automation "stopped firing"* — read its run history (`GET /admin/automations/{id}/runs`)
+  before anything else: every firing is a row, including the ones that did not run and why.
+  "refused before any step ran" means the run-as user lost access; "already running" means an
+  overlap; a `424` in CI names the failed step.
 - **Logs/metrics:** structured logs to stdout (`LOG_FORMAT=text|json`), scraped by the platform
-  log pipeline; app errors go to **Monitor** (service `lattice-api`); alert emails via SMTP.
+  log pipeline; every log line, request, recovered panic and boot failure also goes to **Monitor**
+  (service `lattice-api`, appleby zone) — see *Monitor telemetry* below; alert emails via SMTP.
 - **Common failure modes:**
   - *Boot panic* — `ValidateSecurityDefaults` panics in production on a short/known-weak
     `JWT_SIGNING_KEY` or weak `LATTICE_ADMIN_PASSWORD`; `db.Init` panics if `DATABASE_DSN` is
-    missing/unreachable. Check the container's first log lines.
+    missing/unreachable. Check the container's first log lines. With telemetry configured these
+    also arrive in Monitor as `service.crashed` (with the panic) — except a missing required env
+    var, which panics during package init, before `main` and before telemetry exists.
   - *All `/admin` calls 401* — expired/revoked JWT, or an SSO user whose IDP grant was revoked
     (the 5-min checkpoint killed the session).
   - *Deploy returns 400 "worker is not connected"* — the runner's WebSocket dropped; check
@@ -1025,6 +1219,45 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
     `deploy_claimed_at` (>30 min) is auto-breakable.
   - *"fetch failed" on every Monitor/Lattice MCP call* — the shared TLS proxy cert expired
     (a platform-wide symptom, not a `lattice-api` bug).
+- *A worker shows as disconnected* — `worker.log.warn` "disconnected" carries `cause` (the read,
+  write or ping error that ended the connection, or "replaced by a new connection from the same
+  worker") and `connected_for`.
+
+### Monitor telemetry
+
+`lattice-api` reports to the **appleby** Monitor zone through `go-monitor` (`telemetry/`).
+**Monitor is never a boot requirement.** Monitor runs as a stack on this control plane, so
+`telemetry.Init` never touches the network and never fails, and with `MONITOR_SPOOL_DIR` set every
+event is written to disk first and shipped whenever ingest answers — through a Monitor outage and
+across restarts of this process. Without a spool, events survive only a short outage (~7s of
+retries) before they are counted as dropped.
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `MONITOR_INGEST_URL` | *(unset — nothing ships)* | `https://appleby-monitor-api.appleby.cloud/v1/events` |
+| `MONITOR_API_KEY` | — | An **ingest-scoped** key minted on the appleby zone. The key decides the project; events carry no project field. |
+| `MONITOR_ZONE` | `appleby` | Asserted against the zone's `/health` at boot, in the background; never transmitted |
+| `MONITOR_ENV` | `production` | The events' `env` |
+| `MONITOR_SPOOL_DIR` | *(unset — memory only)* | Durable spool. Must be a host path or named volume: the container's writable layer is destroyed by the self-update recreate it would need to survive |
+| `MONITOR_DEBUG` | `false` | Also ship `logger.Debug` lines |
+| `MONITOR_STDOUT` | `false` | Also print every event to stdout. The logger already writes each line once, and the orchestrator's disk has filled from an unrotated container log before |
+
+| Event | Level | What |
+|-------|-------|------|
+| `http.request.end` | info / warn (4xx) / error (5xx) | Every request except `/healthcheck`: route template as `path` (so `/api/deploy/{token}` never puts a token in the grouping key), status, duration, bytes, client IP (trusted-proxy aware), user agent, `user_id` once `DualAuthMiddleware` has verified a credential, and the responder's `error_message` / `error` / `error_code` — including the internal error a 5xx hides from the client. WebSocket upgrades report `101` with `websocket: true`. |
+| `<component>.log.<level>` | as logged | Every `logger.Info/Warn/Error` call (`Debug` too with `MONITOR_DEBUG`), whatever `LOG_LEVEL` is. `caller` is the logging line; `message`, `component` and the call's fields ride along. |
+| `panic.recovered` | error | Every recovered panic, with the stack where it happened: HTTP handlers (`RecoverMiddleware`), worker/admin WebSocket callbacks and pumps, `safeGo`, every background loop and goroutine. |
+| `<resource_type>.<action>.success` | info | A mirror of every `logAudit` call, on the request's ids. Details are left out — they are free text. |
+| `service.startup` / `service.shutdown` | info | Boot (version, spool on/off) and the signal that stopped it. |
+| `service.startup.db_unreachable` · `service.startup.bootstrap_failed` · `service.listen_failed` | fatal | Boot failures, flushed before exit. |
+| `service.crashed` | fatal | A panic escaping `main` — the boot's own panics (weak `JWT_SIGNING_KEY`, missing `ENCRYPTION_KEY` in production). |
+
+CORS exposes `X-Request-ID`, so lattice-web's `api.request.*` events carry the same id as the
+request's `http.request.end` event. `/healthcheck` includes `telemetry` — go-monitor's `Stats()` (sent, dropped, spooled, pending). A
+rising `dropped` or `pending` means events are not arriving, which the service cannot tell you
+through Monitor itself. Redaction happens in the SDK before anything is written or sent
+(credential-shaped keys and values, plus `email`); query strings are never logged; webhook URLs
+are logged as scheme + host only, because a chat webhook's path is its credential.
 
 ---
 
@@ -1044,10 +1277,24 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
 - **Keep schema changes in `db.Init()`** as idempotent `migrate()` calls — there is no separate
   migration runner and no fixtures harness. Test that a fresh MariaDB and an existing one both
   come up clean.
+- **Every goroutine defers `logger.Recover`** — directly (`defer logger.Recover("name", fields)`),
+  never from inside another closure, where `recover` is a no-op — or runs through `safeGo` / a
+  `runLoop`. A panic on an unrecovered goroutine kills the control plane and every worker
+  connection with it. Long-lived loops recover per iteration, so one bad pass does not end them.
+- **Log through `logger`, not the stdlib `log`.** `logger` calls reach Monitor; `log` lines reach
+  only the container log. Never discard the error of a worker-state write (`_ = query.…`) — log it.
+- **Never make Monitor a boot requirement,** and never put a raw path, query string, token or
+  webhook URL path in a log field or event.
 - **Respect goroutine bounds** — `safeGo` (100) for message handling, `maxConcurrentDeploys`
   (10) for monitors. No unbounded per-message goroutines.
 - **Add an audit call** (`logAudit`) to every new mutating handler, and **add/skip the matching
   `lattice-mcp` tool** in the same change as any route change.
+- **Automations:** a new action type is a case in `kindFor` plus an `actionKind` — never a
+  column, never a second list of types, and an unknown type must keep failing loudly. Never
+  authorise an automation only at save time, never let an edit keep someone else's run-as
+  identity, and never queue an overlapping firing. `/api/automations/{token}` stays public,
+  CSRF-exempt and rate-limited beside `/api/deploy/{token}`, and must never move behind
+  `DualAuthMiddleware`. Keep `RUN_BUDGET` under the server `WriteTimeout`.
 - **Follow the global git/deploy guardrails:** never push (except when explicitly authorized —
   as for this doc task), never amend/rebase/force, never trigger a remote deploy or touch
   production infra, never create/modify `.env`, never commit secrets or the `certs/*.pem` files.
@@ -1060,7 +1307,7 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
 gofmt -l .        # must print nothing (CI rejects unformatted code); `gofmt -w -s .` to fix
 go build ./...    # must succeed
 go vet ./...      # must be clean
-go test ./...     # must pass (crypto, jwt, healthscan, middleware, responder, socket, structs, tools)
+go test ./...     # must pass (automations, cron, crypto, db, jwt, healthscan, middleware, responder, routers, socket, structs, tools)
 ```
 
 **`go test ./...` needs `DATABASE_DSN` and `JWT_SIGNING_KEY` set to *anything*.** `env/env.go`
@@ -1103,6 +1350,9 @@ Update this AGENTS.md **in the same change** when you:
 - **Alter the schema** (a new `migrate()` call in `db/db.go`) → update *Project structure* /
   *Operations* and the affected struct/query notes.
 - **Add/change a background job or its interval** → update *Operations*.
+- **Add an automation action or trigger type, or change the authorisation model, the webhook
+  status codes or a run budget** → update *Domain & architecture → Automations* (and its seams
+  list, if you built one of them).
 - **Change env vars, commands, Docker/CI, or the repo's role** → update this file **and**
   `README.md` (its env-var table and route list are the fastest-drifting parts, and both are
   currently stale on the removed Forta auth — fix them when you touch that area).

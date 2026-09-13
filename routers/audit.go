@@ -6,7 +6,9 @@ import (
 	"strings"
 	"time"
 
+	monitor "github.com/aidenappl/go-monitor"
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/query"
 )
@@ -22,7 +24,17 @@ func logAudit(r *http.Request, action, resourceType string, resourceID *int, det
 	}
 	ip := r.RemoteAddr
 
+	// Every audited mutation also reaches Monitor, on the request's own ids,
+	// so the trail survives the audit table's 180-day retention and can be read
+	// beside the failures around it. Details are left out: they are free text.
+	fields := map[string]any{"resource_type": resourceType, "action": action}
+	if resourceID != nil {
+		fields["resource_id"] = *resourceID
+	}
+	monitor.Info(r.Context(), resourceType+"."+strings.ReplaceAll(action, " ", "_")+".success", fields)
+
 	go func() {
+		defer logger.Recover("audit", logger.F{"action": action, "resource_type": resourceType})
 		req := query.CreateAuditLogRequest{
 			UserID:       userID,
 			Action:       action,
@@ -40,7 +52,11 @@ func logAudit(r *http.Request, action, resourceType string, resourceID *int, det
 			log.Printf("audit log error (attempt %d/3): %v", attempt+1, err)
 			time.Sleep(500 * time.Millisecond)
 		}
-		log.Printf("audit log failed after 3 attempts: %v", err)
+		failed := logger.F{"action": action, "resource_type": resourceType, "error": err}
+		if resourceID != nil {
+			failed["resource_id"] = *resourceID
+		}
+		logger.Error("audit", "audit log write failed after 3 attempts", failed)
 	}()
 }
 

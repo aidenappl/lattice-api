@@ -1,11 +1,11 @@
 package routers
 
 import (
-	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/socket"
@@ -29,7 +29,7 @@ func (h *ContainerActionHandler) HandleDeleteStack(w http.ResponseWriter, r *htt
 	// Fetch all containers on the stack and remove them from the worker
 	containers, err := query.ListContainersByStack(db.DB, id)
 	if err != nil {
-		log.Printf("delete stack %d: failed to list containers: %v", id, err)
+		logger.Error("stack", "delete: failed to list containers", logger.F{"stack_id": id, "error": err})
 	} else if containers != nil && stack.WorkerID != nil && h.WorkerHub.IsConnected(*stack.WorkerID) {
 		for _, c := range *containers {
 			if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.Envelope{
@@ -39,9 +39,9 @@ func (h *ContainerActionHandler) HandleDeleteStack(w http.ResponseWriter, r *htt
 					"container_id":   c.ID,
 				},
 			}); err != nil {
-				log.Printf("delete stack %d: failed to send remove for container %s: %v", id, c.Name, err)
+				logger.Warn("stack", "delete: failed to send remove for container", logger.F{"stack_id": id, "container": c.Name, "error": err})
 			} else {
-				log.Printf("delete stack %d: sent remove for container %s to worker %d", id, c.Name, *stack.WorkerID)
+				logger.Info("stack", "delete: sent remove for container", logger.F{"stack_id": id, "container": c.Name, "worker_id": *stack.WorkerID})
 			}
 		}
 	}

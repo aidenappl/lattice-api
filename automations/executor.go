@@ -326,7 +326,7 @@ func (e *Executor) execute(a *structs.Automation, run *structs.AutomationRun, f 
 	defer func() {
 		if r := recover(); r != nil {
 			msg := fmt.Sprintf("internal error: %v", r)
-			logger.Error("panic", msg, logger.F{"goroutine": "automation-run", "run_id": run.ID})
+			logger.Panic("automation-run", r, logger.F{"run_id": run.ID, "automation_id": a.ID})
 			out = e.finish(run, finishPending(run.Steps, 0, "not run: the run crashed"), nil, &msg)
 		}
 	}()

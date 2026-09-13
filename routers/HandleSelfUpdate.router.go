@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aidenappl/lattice-api/env"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/responder"
 )
 
@@ -405,6 +405,7 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 	// is attached, but the process inside the helper container continues even if
 	// this container dies before the command finishes.
 	go func() {
+		defer logger.Recover("self-update.exec")
 		time.Sleep(2 * time.Second)
 		args := append([]string{"exec", env.DockerHelperContainer, "docker"},
 			composeArgs("up", "-d", "--force-recreate", "--no-deps", "--pull", "never", service)...)
@@ -415,9 +416,9 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 			// Anything else is a genuine failure, but the response has already
 			// gone out, so the audit entry above is the durable record that an
 			// attempt was made.
-			log.Printf("API self-update exec returned (may be benign disconnect): %v — %s", err, string(out))
+			logger.Warn("self-update", "API self-update exec returned an error (expected when this container is replaced before exec returns)", logger.F{"error": err, "output": string(out)})
 		} else {
-			log.Printf("API self-update exec completed: %s", string(out))
+			logger.Info("self-update", "API self-update exec completed", logger.F{"output": string(out)})
 		}
 	}()
 }

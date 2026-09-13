@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aidenappl/lattice-api/structs"
 	"github.com/aidenappl/lattice-api/webhooks"
@@ -290,9 +291,16 @@ func describeURL(raw string) string {
 	return u.Scheme + "://" + u.Host
 }
 
+// truncate shortens s to at most n bytes plus an ellipsis, backing off to a rune
+// boundary. Cutting mid-rune would produce invalid UTF-8, which MariaDB's
+// utf8mb4 columns reject on insert — a long ?commit= with a multi-byte character
+// would otherwise turn a webhook call into a 500.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "…"
 }
