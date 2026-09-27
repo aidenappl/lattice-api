@@ -1,12 +1,14 @@
 package healthscan
 
 import (
+	"context"
 	"database/sql"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	monitor "github.com/aidenappl/go-monitor"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/socket"
@@ -38,11 +40,11 @@ type Anomaly struct {
 
 // managedDatabaseNames returns the container names of managed database instances
 // on a worker. They live outside the containers table by design.
-func (s *Scanner) managedDatabaseNames(workerID int) map[string]bool {
+func (s *Scanner) managedDatabaseNames(ctx context.Context, workerID int) map[string]bool {
 	out := map[string]bool{}
 	instances, err := query.ListDatabaseInstancesByWorker(s.db, workerID)
 	if err != nil {
-		logger.Error("healthscan", "failed to list database instances for worker", logger.F{
+		logger.ErrorCtx(ctx, "healthscan", "failed to list database instances for worker", logger.F{
 			"worker_id": workerID, "error": err,
 		})
 		return out
@@ -102,7 +104,7 @@ func (s *Scanner) Start() {
 // long-lived scanner goroutine.
 func (s *Scanner) safeScan() {
 	defer logger.Recover("healthscan.scan")
-	s.scan()
+	s.scan(monitor.WithJobID(context.Background(), monitor.NewJobID()))
 }
 
 // UpdateWorkerContainers is called from the heartbeat handler to keep the scanner
@@ -141,15 +143,15 @@ func (s *Scanner) GetAnomalies() []Anomaly {
 	return result
 }
 
-func (s *Scanner) scan() {
-	logger.Debug("healthscan", "starting worker health scan")
+func (s *Scanner) scan(ctx context.Context) {
+	logger.DebugCtx(ctx, "healthscan", "starting worker health scan")
 
 	var anomalies []Anomaly
 
 	// Get all workers
 	workers, err := query.ListWorkers(s.db, query.ListWorkersRequest{})
 	if err != nil {
-		logger.Error("healthscan", "failed to list workers", logger.F{"error": err})
+		logger.ErrorCtx(ctx, "healthscan", "failed to list workers", logger.F{"error": err})
 		return
 	}
 	if workers == nil {
@@ -181,7 +183,7 @@ func (s *Scanner) scan() {
 			WorkerID: &w.ID,
 		})
 		if err != nil {
-			logger.Error("healthscan", "failed to list containers for worker", logger.F{"worker_id": w.ID, "error": err})
+			logger.ErrorCtx(ctx, "healthscan", "failed to list containers for worker", logger.F{"worker_id": w.ID, "error": err})
 			continue
 		}
 
@@ -202,7 +204,7 @@ func (s *Scanner) scan() {
 		// another. Left unhandled they are reported as unmanaged forever — one
 		// permanent, unfixable anomaly per database, which is exactly the noise
 		// that teaches an operator to stop reading this list.
-		managedDatabases := s.managedDatabaseNames(w.ID)
+		managedDatabases := s.managedDatabaseNames(ctx, w.ID)
 
 		workerNames := make(map[string]bool)
 		for _, name := range state.Containers {
@@ -278,13 +280,13 @@ func (s *Scanner) scan() {
 	// Every five minutes, forever: only a change in what the scan found is news.
 	switch {
 	case changed && len(anomalies) > 0:
-		logger.Warn("healthscan", "scan found anomalies", logger.F{"anomalies": len(anomalies)})
+		logger.WarnCtx(ctx, "healthscan", "scan found anomalies", logger.F{"anomalies": len(anomalies)})
 	case changed:
-		logger.Info("healthscan", "scan complete, anomalies resolved")
+		logger.InfoCtx(ctx, "healthscan", "scan complete, anomalies resolved")
 	case len(anomalies) > 0:
-		logger.Debug("healthscan", "scan complete, anomalies unchanged", logger.F{"anomalies": len(anomalies)})
+		logger.DebugCtx(ctx, "healthscan", "scan complete, anomalies unchanged", logger.F{"anomalies": len(anomalies)})
 	default:
-		logger.Debug("healthscan", "scan complete, all workers healthy")
+		logger.DebugCtx(ctx, "healthscan", "scan complete, all workers healthy")
 	}
 }
 

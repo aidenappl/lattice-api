@@ -64,7 +64,7 @@ func DualAuthMiddleware(next http.Handler) http.Handler {
 
 		// Try Lattice JWT from Authorization header
 		if bearerToken != "" {
-			if user := validateLatticeToken(bearerToken); user != nil {
+			if user := validateLatticeToken(r.Context(), bearerToken); user != nil {
 				next.ServeHTTP(w, withUser(w, r, user))
 				return
 			}
@@ -72,7 +72,7 @@ func DualAuthMiddleware(next http.Handler) http.Handler {
 
 		// Try Lattice JWT from cookie
 		if cookie, err := r.Cookie(latticeTokenName); err == nil && cookie.Value != "" {
-			if user := validateLatticeToken(cookie.Value); user != nil {
+			if user := validateLatticeToken(r.Context(), cookie.Value); user != nil {
 				next.ServeHTTP(w, withUser(w, r, user))
 				return
 			}
@@ -265,7 +265,7 @@ func validateApiToken(tokenStr string) (*structs.User, *structs.ApiToken) {
 	return user, apiToken
 }
 
-func validateLatticeToken(tokenStr string) *structs.User {
+func validateLatticeToken(ctx context.Context, tokenStr string) *structs.User {
 	claims, err := jwt.ValidateToken(tokenStr)
 	if err != nil || claims.Type != "access" {
 		return nil
@@ -286,7 +286,7 @@ func validateLatticeToken(tokenStr string) *structs.User {
 		}
 	}
 
-	if user.AuthType == "sso" && !checkpointSSOGrant(int64(user.ID)) {
+	if user.AuthType == "sso" && !checkpointSSOGrant(ctx, int64(user.ID)) {
 		return nil
 	}
 
@@ -316,7 +316,8 @@ var ssoCheckpointer = &ssolib.Checkpointer{
 	Interval: ssoCheckpointTTL,
 	Grace:    ssoCheckpointGrace,
 	Logf: func(format string, args ...any) {
-		logger.Warn("auth", fmt.Sprintf(format, args...))
+		// The library's text varies per call, so it is data, not the message.
+		logger.WarnCtx(context.Background(), "auth", "sso checkpoint warning", logger.F{"detail": fmt.Sprintf(format, args...)})
 	},
 }
 
@@ -340,13 +341,13 @@ var ssoCheckpointer = &ssolib.Checkpointer{
 // would restore the unbounded fail-open this change exists to remove. Widening
 // this hook to carry a status is the fix; until then this comment is the record of
 // what is lost.
-func checkpointSSOGrant(userID int64) bool {
+func checkpointSSOGrant(ctx context.Context, userID int64) bool {
 	switch ssoCheckpointer.Check(context.Background(), userID) {
 	case ssolib.CheckpointRevoked:
-		logger.Info("auth", "checkpoint: upstream grant revoked, session terminated", logger.F{"user_id": userID})
+		logger.InfoCtx(ctx, "auth", "checkpoint: upstream grant revoked, session terminated", logger.F{"user_id": userID})
 		return false
 	case ssolib.CheckpointUnavailable:
-		logger.Warn("auth", "checkpoint: unverifiable past grace window, denying (should be 503)", logger.F{"user_id": userID})
+		logger.WarnCtx(ctx, "auth", "checkpoint: unverifiable past grace window, denying (should be 503)", logger.F{"user_id": userID})
 		return false
 	default:
 		return true

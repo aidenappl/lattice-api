@@ -17,6 +17,8 @@ import (
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/tools"
 	"net/url"
+
+	monitor "github.com/aidenappl/go-monitor"
 )
 
 const (
@@ -55,10 +57,11 @@ type Response struct {
 // Fire sends a webhook notification to all configured endpoints that subscribe to the given event.
 func Fire(event string, data any) {
 	go func() {
-		defer logger.Recover("webhooks.fire", logger.F{"event": event})
+		defer logger.Recover("webhooks.fire", logger.F{"webhook_event": event})
+		ctx := monitor.WithJobID(context.Background(), monitor.NewJobID())
 		configs, err := query.ListWebhookConfigs(db.DB)
 		if err != nil {
-			logger.Error("webhook", "could not load webhook configs", logger.F{"event": event, "error": err})
+			logger.ErrorCtx(ctx, "webhook", "could not load webhook configs", logger.F{"webhook_event": event, "error": err})
 			return
 		}
 		if configs == nil {
@@ -72,7 +75,7 @@ func Fire(event string, data any) {
 		}
 		body, err := json.Marshal(payload)
 		if err != nil {
-			logger.Error("webhook", "could not encode payload", logger.F{"event": event, "error": err})
+			logger.ErrorCtx(ctx, "webhook", "could not encode payload", logger.F{"webhook_event": event, "error": err})
 			return
 		}
 
@@ -96,7 +99,7 @@ func Fire(event string, data any) {
 				continue
 			}
 
-			go sendWebhook(cfg.URL, cfg.Secret, body)
+			go sendWebhook(monitor.WithJobID(ctx, monitor.NewJobID()), cfg.ID, event, cfg.URL, cfg.Secret, body)
 		}
 	}()
 }
@@ -163,9 +166,10 @@ func redactedURL(raw string) string {
 	return u.Scheme + "://" + u.Host
 }
 
-func sendWebhook(url string, secret *string, body []byte) {
+// sendWebhook makes one delivery. ctx carries that delivery's own job_id.
+func sendWebhook(ctx context.Context, webhookID int, event, url string, secret *string, body []byte) {
 	defer logger.Recover("webhooks.send", logger.F{"url": redactedURL(url)})
-	resp, err := Deliver(context.Background(), Request{
+	resp, err := Deliver(ctx, Request{
 		Method:  http.MethodPost,
 		URL:     url,
 		Headers: map[string]string{"Content-Type": "application/json"},
@@ -173,11 +177,13 @@ func sendWebhook(url string, secret *string, body []byte) {
 		Secret:  secret,
 	})
 	if err != nil {
-		logger.Error("webhook", "delivery failed", logger.F{"url": redactedURL(url), "error": err})
+		// The endpoint is the user's: it being down or unreachable is theirs to
+		// fix, not a fault in Lattice, so it is a warning.
+		logger.WarnCtx(ctx, "webhook", "delivery failed", logger.F{"webhook_id": webhookID, "webhook_event": event, "url": redactedURL(url), "error": err})
 		return
 	}
 
 	if resp.StatusCode >= 400 {
-		logger.Warn("webhook", "delivery returned error status", logger.F{"url": redactedURL(url), "status": resp.StatusCode})
+		logger.WarnCtx(ctx, "webhook", "delivery returned error status", logger.F{"webhook_id": webhookID, "webhook_event": event, "url": redactedURL(url), "status": resp.StatusCode})
 	}
 }

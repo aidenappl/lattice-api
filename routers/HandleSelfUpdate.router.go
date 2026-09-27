@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -420,6 +421,7 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 	// container's lifecycle. `docker exec` without -d means the exec session
 	// is attached, but the process inside the helper container continues even if
 	// this container dies before the command finishes.
+	ctx := context.WithoutCancel(r.Context())
 	go func() {
 		defer logger.Recover("self-update.exec")
 		time.Sleep(2 * time.Second)
@@ -432,9 +434,9 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 			// Anything else is a genuine failure, but the response has already
 			// gone out, so the audit entry above is the durable record that an
 			// attempt was made.
-			logger.Warn("self-update", "API self-update exec returned an error (expected when this container is replaced before exec returns)", logger.F{"error": err, "output": string(out)})
+			logger.WarnCtx(ctx, "self-update", "API self-update exec returned an error (expected when this container is replaced before exec returns)", logger.F{"error": err, "output": string(out)})
 		} else {
-			logger.Info("self-update", "API self-update exec completed", logger.F{"output": string(out)})
+			logger.InfoCtx(ctx, "self-update", "API self-update exec completed", logger.F{"output": string(out)})
 		}
 	}()
 }

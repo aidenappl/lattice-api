@@ -149,7 +149,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		if c.PortMappings != nil {
 			var pm []any
 			if err := json.Unmarshal([]byte(*c.PortMappings), &pm); err != nil {
-				logger.Error("deploy", "invalid port_mappings JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid port_mappings JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				resolved := resolveVarsInValue(pm, mergedEnvVars)
 				spec["port_mappings"] = resolved
@@ -158,7 +158,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		if c.EnvVars != nil {
 			var ev map[string]any
 			if err := json.Unmarshal([]byte(*c.EnvVars), &ev); err != nil {
-				logger.Error("deploy", "invalid env_vars JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid env_vars JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				merged := make(map[string]any, len(ev))
 				for k, v := range ev {
@@ -176,7 +176,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		if c.Volumes != nil {
 			var vol map[string]any
 			if err := json.Unmarshal([]byte(*c.Volumes), &vol); err != nil {
-				logger.Error("deploy", "invalid volumes JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid volumes JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				resolved := resolveVarsInValue(vol, mergedEnvVars)
 				spec["volumes"] = resolved
@@ -191,7 +191,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		if c.Command != nil {
 			var cmd []string
 			if err := json.Unmarshal([]byte(*c.Command), &cmd); err != nil {
-				logger.Error("deploy", "invalid command JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid command JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				spec["command"] = cmd
 			}
@@ -199,7 +199,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		if c.Entrypoint != nil {
 			var ep []string
 			if err := json.Unmarshal([]byte(*c.Entrypoint), &ep); err != nil {
-				logger.Error("deploy", "invalid entrypoint JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid entrypoint JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				spec["entrypoint"] = ep
 			}
@@ -207,7 +207,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		if c.HealthCheck != nil {
 			var hc map[string]any
 			if err := json.Unmarshal([]byte(*c.HealthCheck), &hc); err != nil {
-				logger.Error("deploy", "invalid health_check JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid health_check JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				allEnvVars := make(map[string]any, len(mergedEnvVars))
 				for k, v := range mergedEnvVars {
@@ -252,7 +252,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 					}
 					if len(auth) > 0 {
 						spec["registry_auth"] = auth
-						logger.Info("deploy", "auto-matched registry", logger.F{"registry": reg.Name, "image": c.Image})
+						logger.InfoCtx(r.Context(), "deploy", "auto-matched registry", logger.F{"registry": reg.Name, "image": c.Image})
 					}
 					break
 				}
@@ -282,7 +282,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 			Tag:          c.Tag,
 		})
 		if err != nil {
-			logger.Error("deploy", "failed to record deployment container", logger.F{"container": c.Name, "error": err})
+			logger.ErrorCtx(r.Context(), "deploy", "failed to record deployment container", logger.F{"container": c.Name, "error": err})
 		}
 	}
 
@@ -333,7 +333,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		Type:    socket.MsgDeploy,
 		Payload: payload,
 	}); err != nil {
-		logger.Error("deploy", "failed to send deploy command to worker", logger.F{"worker_id": *stack.WorkerID, "error": err})
+		logger.ErrorCtx(r.Context(), "deploy", "failed to send deploy command to worker", logger.F{"worker_id": *stack.WorkerID, "error": err})
 		_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
 			DeploymentID: deployment.ID,
 			Level:        "error",
@@ -357,7 +357,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		Message:      fmt.Sprintf("Deploy command sent to worker %d via WebSocket", *stack.WorkerID),
 	})
 
-	h.startDeploymentMonitor(deployment.ID, stack.ID, *stack.WorkerID, payload)
+	h.startDeploymentMonitor(r.Context(), deployment.ID, stack.ID, *stack.WorkerID, payload)
 
 	mailer.Notify("deployment.triggered", "Deployment Triggered",
 		fmt.Sprintf("Stack <strong>%s</strong> deployment triggered via deploy token <strong>%s</strong>.\n\nStrategy: %s\nContainers: %d",
@@ -403,7 +403,7 @@ func (h *DeployHandler) handleSingleContainerDeploy(w http.ResponseWriter, r *ht
 		return
 	}
 
-	logger.Info("deploy", "single container deploy triggered via token", logger.F{
+	logger.InfoCtx(r.Context(), "deploy", "single container deploy triggered via token", logger.F{
 		"stack":     stack.Name,
 		"container": containerName,
 		"token":     dt.Name,

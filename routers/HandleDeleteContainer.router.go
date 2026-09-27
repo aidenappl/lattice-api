@@ -35,7 +35,7 @@ func (h *ContainerActionHandler) HandleDeleteContainer(w http.ResponseWriter, r 
 				"container_id":   container.ID,
 			},
 		}); err != nil {
-			logger.Warn("container", "delete: failed to send remove to worker", logger.F{"container_id": id, "worker_id": *stack.WorkerID, "error": err})
+			logger.ErrorCtx(r.Context(), "container", "delete: failed to send remove to worker", logger.F{"container_id": id, "worker_id": *stack.WorkerID, "error": err})
 		}
 	}
 

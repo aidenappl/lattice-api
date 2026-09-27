@@ -61,12 +61,12 @@ func startServer(r *mux.Router) {
 
 	go func() {
 		if env.TLSCert != "" && env.TLSKey != "" {
-			logger.Info("server", "listening", logger.F{"port": env.Port, "tls": true})
+			logger.InfoCtx(context.Background(), "server", "listening", logger.F{"port": env.Port, "tls": true})
 			if err := server.ListenAndServeTLS(env.TLSCert, env.TLSKey); err != nil && err != http.ErrServerClosed {
 				telemetry.Fatal("service.listen_failed", "server error: ", err)
 			}
 		} else {
-			logger.Info("server", "listening", logger.F{"port": env.Port, "tls": false})
+			logger.InfoCtx(context.Background(), "server", "listening", logger.F{"port": env.Port, "tls": false})
 			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				telemetry.Fatal("service.listen_failed", "server error: ", err)
 			}
@@ -77,15 +77,15 @@ func startServer(r *mux.Router) {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
 
-	logger.Info("server", "shutting down...", logger.F{"signal": sig.String()})
+	logger.InfoCtx(context.Background(), "server", "shutting down...", logger.F{"signal": sig.String()})
 	// 7s rather than 10: Docker's default stop timeout is 10s, and the telemetry
 	// flush below needs what is left of it. WebSockets are hijacked and are not
 	// waited on either way.
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
-		logger.Error("server", "graceful shutdown incomplete", logger.F{"error": err})
+		logger.ErrorCtx(context.Background(), "server", "graceful shutdown incomplete", logger.F{"error": err})
 	}
-	logger.Info("server", "stopped")
+	logger.InfoCtx(context.Background(), "server", "stopped")
 	telemetry.Shutdown(sig.String())
 }

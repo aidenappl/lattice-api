@@ -241,11 +241,11 @@ func NewStateStore() *StateStore { return &StateStore{} }
 const statePrefix = "sso_state:"
 
 // SaveState persists an in-flight login record and best-effort sweeps dead ones.
-func (s *StateStore) SaveState(_ context.Context, state string, data []byte, _ time.Time) error {
+func (s *StateStore) SaveState(ctx context.Context, state string, data []byte, _ time.Time) error {
 	if err := query.SetSetting(db.DB, statePrefix+state, string(data)); err != nil {
 		return fmt.Errorf("sso: persist state: %w", err)
 	}
-	go sweepExpiredStates()
+	go sweepExpiredStates(context.WithoutCancel(ctx))
 	return nil
 }
 
@@ -283,11 +283,11 @@ func (s *StateStore) ConsumeState(_ context.Context, state string) ([]byte, erro
 }
 
 // sweepExpiredStates prunes expired or unparseable records.
-func sweepExpiredStates() {
+func sweepExpiredStates(ctx context.Context) {
 	defer logger.Recover("sso.sweep-states")
 	states, err := query.GetSettingsByPrefix(db.DB, statePrefix)
 	if err != nil {
-		logger.Warn("sso", "could not sweep expired login states", logger.F{"error": err})
+		logger.WarnCtx(ctx, "sso", "could not sweep expired login states", logger.F{"error": err})
 		return
 	}
 	for k, v := range states {
@@ -321,21 +321,21 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	provider := cfg.Provider()
 	adapter, err := ssolib.NewAdapter(r.Context(), provider)
 	if err != nil {
-		logger.Error("sso", "adapter build failed", logger.F{"error": err})
+		logger.ErrorCtx(r.Context(), "sso", "adapter build failed", logger.F{"error": err})
 		http.Error(w, "SSO misconfigured", http.StatusInternalServerError)
 		return
 	}
 
 	state, nonce, verifier, err := ssolib.GenerateState(r.Context(), NewStateStore(), provider.Slug, "")
 	if err != nil {
-		logger.Error("sso", "state generation failed", logger.F{"error": err})
+		logger.ErrorCtx(r.Context(), "sso", "state generation failed", logger.F{"error": err})
 		http.Error(w, "failed to initialize login", http.StatusInternalServerError)
 		return
 	}
 
 	authURL, err := adapter.AuthCodeURL(state, nonce, verifier)
 	if err != nil {
-		logger.Error("sso", "authorize url build failed", logger.F{"error": err})
+		logger.ErrorCtx(r.Context(), "sso", "authorize url build failed", logger.F{"error": err})
 		http.Error(w, "failed to initialize login", http.StatusInternalServerError)
 		return
 	}

@@ -4,6 +4,7 @@ package main
 // They are called from the OnMessage dispatch in main().
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -136,7 +137,7 @@ func handleHeartbeatMetrics(workerID int, payload map[string]any) {
 	}
 
 	if err := query.CreateMetrics(db.DB, req); err != nil {
-		logger.Error("worker", "failed to store heartbeat metrics", logger.F{"worker_id": workerID, "error": err})
+		logger.ErrorCtx(context.Background(), "worker", "failed to store heartbeat metrics", logger.F{"worker_id": workerID, "error": err})
 	}
 
 	// Persist per-container resource stats if present
@@ -202,7 +203,7 @@ func handleContainerMetrics(workerID int, payload map[string]any) {
 
 	if len(reqs) > 0 {
 		if err := query.CreateContainerMetricsBatch(db.DB, reqs); err != nil {
-			logger.Error("worker", "failed to store container metrics", logger.F{"worker_id": workerID, "count": len(reqs), "error": err})
+			logger.ErrorCtx(context.Background(), "worker", "failed to store container metrics", logger.F{"worker_id": workerID, "count": len(reqs), "error": err})
 		}
 	}
 }
@@ -259,7 +260,8 @@ func handleDeploymentProgress(payload map[string]any) {
 		logMsg = fmt.Sprintf("status=%s", status)
 	}
 
-	logger.Info("deploy", logMsg, logger.F{"deployment_id": int(deploymentID), "level": level, "stage": stage})
+	progressFields := logger.F{"deployment_id": int(deploymentID), "progress_level": level, "stage": stage, "status": status, "detail": logMsg}
+	logDeploymentProgress(status, progressFields)
 
 	// Store deployment log
 	if err := query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
@@ -268,7 +270,7 @@ func handleDeploymentProgress(payload map[string]any) {
 		Stage:        stage,
 		Message:      logMsg,
 	}); err != nil {
-		logger.Error("deploy", "failed to store deployment log", logger.F{"error": err})
+		logger.ErrorCtx(context.Background(), "deploy", "failed to store deployment log", logger.F{"deployment_id": int(deploymentID), "error": err})
 	}
 
 	// Fire webhooks and email notifications on deployment terminal states
@@ -307,7 +309,7 @@ func handleDeploymentProgress(payload map[string]any) {
 		if status == "deployed" || status == "failed" || status == "rolled_back" {
 			dep, err := query.GetDeploymentByID(db.DB, int(deploymentID))
 			if err != nil {
-				logger.Error("deploy", "failed to get deployment for status update", logger.F{"deployment_id": int(deploymentID), "error": err})
+				logger.ErrorCtx(context.Background(), "deploy", "failed to get deployment for status update", logger.F{"deployment_id": int(deploymentID), "error": err})
 				return
 			}
 
@@ -318,13 +320,13 @@ func handleDeploymentProgress(payload map[string]any) {
 
 			tx, txErr := db.BeginTx()
 			if txErr != nil {
-				logger.Error("deploy", "failed to start transaction for deployment completion", logger.F{"deployment_id": int(deploymentID), "error": txErr})
+				logger.ErrorCtx(context.Background(), "deploy", "failed to start transaction for deployment completion", logger.F{"deployment_id": int(deploymentID), "error": txErr})
 				return
 			}
 
 			if err := query.UpdateDeploymentAndStackStatus(tx, int(deploymentID), status, dep.StackID, stackStatus); err != nil {
 				tx.Rollback()
-				logger.Error("deploy", "failed to update deployment/stack status", logger.F{"deployment_id": int(deploymentID), "error": err})
+				logger.ErrorCtx(context.Background(), "deploy", "failed to update deployment/stack status", logger.F{"deployment_id": int(deploymentID), "error": err})
 				return
 			}
 
@@ -336,7 +338,7 @@ func handleDeploymentProgress(payload map[string]any) {
 				}
 				dcs, err := query.ListDeploymentContainers(tx, int(deploymentID))
 				if err != nil {
-					logger.Error("deploy", "failed to list deployment containers for status update", logger.F{"deployment_id": int(deploymentID), "error": err})
+					logger.ErrorCtx(context.Background(), "deploy", "failed to list deployment containers for status update", logger.F{"deployment_id": int(deploymentID), "error": err})
 				} else if dcs != nil {
 					for _, dc := range *dcs {
 						s := containerStatus
@@ -346,17 +348,47 @@ func handleDeploymentProgress(payload map[string]any) {
 			}
 
 			if err := tx.Commit(); err != nil {
-				logger.Error("deploy", "failed to commit deployment completion", logger.F{"deployment_id": int(deploymentID), "error": err})
+				logger.ErrorCtx(context.Background(), "deploy", "failed to commit deployment completion", logger.F{"deployment_id": int(deploymentID), "error": err})
 				return
 			}
-			logger.Info("deploy", "updated deployment/stack status", logger.F{"deployment_id": int(deploymentID), "status": status, "stack_id": dep.StackID})
+			logger.InfoCtx(context.Background(), "deploy", "updated deployment/stack status", logger.F{"deployment_id": int(deploymentID), "status": status, "stack_id": dep.StackID})
+			if status == "failed" {
+				logDeploymentFailed(dep.Status, logger.F{"deployment_id": int(deploymentID), "stack_id": dep.StackID, "stage": stage, "detail": logMsg})
+			}
 		} else {
 			// Non-terminal state (deploying/validating) — simple update
 			if err := query.UpdateDeploymentStatus(db.DB, int(deploymentID), status); err != nil {
-				logger.Error("deploy", "failed to update deployment status", logger.F{"deployment_id": int(deploymentID), "error": err})
+				logger.ErrorCtx(context.Background(), "deploy", "failed to update deployment status", logger.F{"deployment_id": int(deploymentID), "error": err})
 			}
 		}
 	}
+}
+
+// logDeploymentProgress logs one progress message from the runner. The
+// runner's text is variable, so it goes in a field and the message stays fixed.
+// A terminal result (deployed, rolled back) is info; everything else is debug —
+// each deploy sends dozens of steps, and deployment_logs keeps them all
+// regardless. That includes "failed": the runner sends it more than once per
+// deploy (a rollback notice or a health-check failure, then the final failure),
+// so the one error event comes from logDeploymentFailed instead.
+func logDeploymentProgress(status string, fields logger.F) {
+	switch status {
+	case "deployed", "rolled_back":
+		logger.InfoCtx(context.Background(), "deploy", "deployment progress", fields)
+	default:
+		logger.DebugCtx(context.Background(), "deploy", "deployment progress", fields)
+	}
+}
+
+// logDeploymentFailed reports a deployment's transition to failed: an error the
+// first time, when previous (the status before this message's update) is not
+// already failed, and debug for every repeat.
+func logDeploymentFailed(previous string, fields logger.F) {
+	if previous == "failed" {
+		logger.DebugCtx(context.Background(), "deploy", "deployment failed (already failed)", fields)
+		return
+	}
+	logger.ErrorCtx(context.Background(), "deploy", "deployment failed", fields)
 }
 
 func handleContainerStatus(workerID int, payload map[string]any) map[string]any {
@@ -394,7 +426,7 @@ func handleContainerStatus(workerID int, payload map[string]any) map[string]any 
 	}
 	c, err := containerNameCache.GetContainerByName(lookupName)
 	if err != nil {
-		logger.Error("container", "could not find container", logger.F{"container_name": containerName, "error": err})
+		logger.ErrorCtx(context.Background(), "container", "could not find container", logger.F{"container_name": containerName, "error": err})
 		return enriched
 	}
 
@@ -416,7 +448,7 @@ func handleContainerStatus(workerID int, payload map[string]any) map[string]any 
 	}
 
 	if _, err := query.UpdateContainer(db.DB, c.ID, req); err != nil {
-		logger.Error("container", "failed to update status", logger.F{"container_name": containerName, "status": dbStatus, "error": err})
+		logger.ErrorCtx(context.Background(), "container", "failed to update status", logger.F{"container_name": containerName, "status": dbStatus, "error": err})
 	} else {
 		// Invalidate the cache so the next sync/status read sees fresh Status/HealthCheck
 		// rather than the stale copy this write just superseded (up to a 60s TTL).
@@ -445,7 +477,7 @@ func handleContainerStatus(workerID int, payload map[string]any) map[string]any 
 				Message:       msg,
 			}
 			if err := query.CreateLifecycleLog(db.DB, logReq); err != nil {
-				logger.Error("container", "failed to write lifecycle log", logger.F{"container_name": containerName, "error": err})
+				logger.ErrorCtx(context.Background(), "container", "failed to write lifecycle log", logger.F{"container_name": containerName, "error": err})
 			}
 		}
 	}
@@ -483,7 +515,7 @@ func handleLifecycleLog(workerID int, payload map[string]any) {
 	}
 
 	if err := query.CreateLifecycleLog(db.DB, logReq); err != nil {
-		logger.Error("container", "failed to write lifecycle log", logger.F{"container_name": containerName, "event": event, "error": err})
+		logger.ErrorCtx(context.Background(), "container", "failed to write lifecycle log", logger.F{"container_name": containerName, "lifecycle_event": event, "error": err})
 	}
 }
 
@@ -501,11 +533,11 @@ func logContainerTransition(field, containerName, previous, current string) {
 	}
 	switch {
 	case previous == current:
-		logger.Debug("container", msg+" (unchanged)", fields)
+		logger.DebugCtx(context.Background(), "container", msg+" (unchanged)", fields)
 	case field == "health_status" && current == "unhealthy":
-		logger.Warn("container", msg, fields)
+		logger.WarnCtx(context.Background(), "container", msg, fields)
 	default:
-		logger.Info("container", msg, fields)
+		logger.InfoCtx(context.Background(), "container", msg, fields)
 	}
 }
 
@@ -525,11 +557,11 @@ func handleContainerHealthStatus(payload map[string]any) {
 		// Not a Lattice-managed container — e.g. a database instance's
 		// lattice-db-* container, whose health arrives separately as
 		// db_health_status. Same as handleContainerSync: ignore it.
-		logger.Debug("container", "ignoring health update for unmanaged container", logger.F{"container_name": containerName})
+		logger.DebugCtx(context.Background(), "container", "ignoring health update for unmanaged container", logger.F{"container_name": containerName})
 		return
 	}
 	if err != nil {
-		logger.Error("container", "could not find container for health update", logger.F{"container_name": containerName, "error": err})
+		logger.ErrorCtx(context.Background(), "container", "could not find container for health update", logger.F{"container_name": containerName, "error": err})
 		return
 	}
 
@@ -540,7 +572,7 @@ func handleContainerHealthStatus(payload map[string]any) {
 	}
 
 	if _, err := query.UpdateContainer(db.DB, c.ID, query.UpdateContainerRequest{HealthStatus: &healthStatus}); err != nil {
-		logger.Error("container", "failed to update health status", logger.F{"container_name": containerName, "health_status": healthStatus, "error": err})
+		logger.ErrorCtx(context.Background(), "container", "failed to update health status", logger.F{"container_name": containerName, "health_status": healthStatus, "error": err})
 	} else {
 		containerNameCache.Invalidate(c.Name)
 		logContainerTransition("health_status", containerName, c.HealthStatus, healthStatus)
@@ -602,10 +634,10 @@ func handleContainerSync(payload map[string]any) {
 	}
 
 	if _, err := query.UpdateContainer(db.DB, c.ID, req); err != nil {
-		logger.Error("container", "sync failed to update", logger.F{"container_name": containerName, "status": latticeStatus, "error": err})
+		logger.ErrorCtx(context.Background(), "container", "sync failed to update", logger.F{"container_name": containerName, "status": latticeStatus, "error": err})
 	} else {
 		containerNameCache.Invalidate(c.Name)
-		logger.Debug("container", "sync updated", logger.F{"container_name": containerName, "status": latticeStatus, "previous_status": c.Status})
+		logger.DebugCtx(context.Background(), "container", "sync updated", logger.F{"container_name": containerName, "status": latticeStatus, "previous_status": c.Status})
 	}
 }
 
@@ -631,7 +663,7 @@ func handleContainerLog(workerID int, payload map[string]any) {
 		if c, err := containerNameCache.GetContainerByName(name); err == nil {
 			req.ContainerID = &c.ID
 		} else {
-			logger.Warn("container", "could not resolve container name to ID", logger.F{"container_name": name, "error": err})
+			logger.WarnCtx(context.Background(), "container", "could not resolve container name to ID", logger.F{"container_name": name, "error": err})
 		}
 	}
 
@@ -645,7 +677,7 @@ func handleContainerLog(workerID int, payload map[string]any) {
 	}
 
 	if err := query.CreateContainerLog(db.DB, req); err != nil {
-		logger.Error("container", "failed to store container log", logger.F{"worker_id": workerID, "error": err})
+		logger.ErrorCtx(context.Background(), "container", "failed to store container log", logger.F{"worker_id": workerID, "error": err})
 	}
 }
 
@@ -656,7 +688,7 @@ func writeWorkerLifecycleLogs(workerID int, event string, message string) {
 	containers, err := query.ListAllContainers(db.DB, query.ListAllContainersRequest{WorkerID: &workerID})
 	if err != nil || containers == nil {
 		if err != nil {
-			logger.Error("worker", "failed to list containers for lifecycle log", logger.F{"worker_id": workerID, "error": err})
+			logger.ErrorCtx(context.Background(), "worker", "failed to list containers for lifecycle log", logger.F{"worker_id": workerID, "error": err})
 		}
 		return
 	}
@@ -671,7 +703,7 @@ func writeWorkerLifecycleLogs(workerID int, event string, message string) {
 			Message:       message,
 		}
 		if err := query.CreateLifecycleLog(db.DB, logReq); err != nil {
-			logger.Error("worker", "failed to write lifecycle log for container", logger.F{"container_name": cName, "worker_id": workerID, "error": err})
+			logger.ErrorCtx(context.Background(), "worker", "failed to write lifecycle log for container", logger.F{"container_name": cName, "worker_id": workerID, "error": err})
 		}
 	}
 }

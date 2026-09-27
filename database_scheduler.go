@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"hash/fnv"
 	"time"
@@ -10,6 +11,7 @@ import (
 	// while being an hour wrong for half the year, for some tenants only.
 	_ "time/tzdata"
 
+	monitor "github.com/aidenappl/go-monitor"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
@@ -91,7 +93,7 @@ func deploymentJitterSeed() uint64 {
 func (s *databaseScheduler) Start() {
 	go s.runLoop("db-scheduler", schedulerTick, s.dispatchDue)
 	go s.runLoop("db-run-timeout", time.Minute, s.failStuckRuns)
-	logger.Info("database", "snapshot scheduler started", logger.F{
+	logger.InfoCtx(context.Background(), "database", "snapshot scheduler started", logger.F{
 		"tick":            schedulerTick.String(),
 		"catch_up_window": schedulerCatchUpWindow.String(),
 		"max_jitter":      schedulerMaxJitter.String(),
@@ -100,7 +102,9 @@ func (s *databaseScheduler) Start() {
 
 func (s *databaseScheduler) Stop() { close(s.stop) }
 
-func (s *databaseScheduler) runLoop(name string, interval time.Duration, fn func()) {
+// runLoop runs fn every interval until Stop. Each tick is one job: its ctx
+// carries a fresh job_id, so everything one pass logs can be found together.
+func (s *databaseScheduler) runLoop(name string, interval time.Duration, fn func(ctx context.Context)) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -110,7 +114,7 @@ func (s *databaseScheduler) runLoop(name string, interval time.Duration, fn func
 		case <-ticker.C:
 			func() {
 				defer logger.Recover(name)
-				fn()
+				fn(monitor.WithJobID(context.Background(), monitor.NewJobID()))
 			}()
 		}
 	}
@@ -141,7 +145,7 @@ func (s *databaseScheduler) jitterForKey(key string, period time.Duration) time.
 }
 
 // dispatchDue claims and dispatches every slot that is due.
-func (s *databaseScheduler) dispatchDue() {
+func (s *databaseScheduler) dispatchDue(ctx context.Context) {
 	instances, _, err := query.ListDatabaseInstances(db.DB, query.ListDatabaseInstancesRequest{
 		Limit: db.MAX_LIMIT,
 	})
@@ -177,14 +181,14 @@ func (s *databaseScheduler) dispatchDue() {
 			continue
 		}
 
-		s.dispatchSlot(instance, slot, now)
+		s.dispatchSlot(ctx, instance, slot, now)
 	}
 }
 
-func (s *databaseScheduler) dispatchSlot(instance structs.DatabaseInstance, slot, now time.Time) {
+func (s *databaseScheduler) dispatchSlot(ctx context.Context, instance structs.DatabaseInstance, slot, now time.Time) {
 	run, won, err := query.ClaimSnapshotRun(db.DB, instance.ID, slot)
 	if err != nil {
-		logger.Error("database", "failed to claim snapshot slot", logger.F{
+		logger.ErrorCtx(ctx, "database", "failed to claim snapshot slot", logger.F{
 			"database_instance_id": instance.ID, "scheduled_at": slot, "error": err,
 		})
 		return
@@ -193,12 +197,16 @@ func (s *databaseScheduler) dispatchSlot(instance structs.DatabaseInstance, slot
 		return // already claimed — the unique index did its job
 	}
 
+	// This snapshot run is its own unit of work: one job_id from claim to
+	// dispatch, separate from the other instances this tick handles.
+	ctx = monitor.WithJobID(ctx, monitor.NewJobID())
+
 	skip := func(reason string) {
 		status := string(structs.SnapshotRunSkipped)
 		_ = query.UpdateSnapshotRun(db.DB, run.ID, query.UpdateSnapshotRunRequest{
 			Status: &status, SkipReason: &reason, Finished: true,
 		})
-		logger.Warn("database", "scheduled snapshot skipped", logger.F{
+		logger.WarnCtx(ctx, "database", "scheduled snapshot skipped", logger.F{
 			"database_instance_id": instance.ID,
 			"scheduled_at":         slot,
 			"reason":               reason,
@@ -240,7 +248,7 @@ func (s *databaseScheduler) dispatchSlot(instance structs.DatabaseInstance, slot
 		_ = query.UpdateSnapshotRun(db.DB, run.ID, query.UpdateSnapshotRunRequest{
 			Status: &status, SkipReason: &reason, Finished: true,
 		})
-		logger.Error("database", "failed to dispatch scheduled snapshot", logger.F{
+		logger.ErrorCtx(ctx, "database", "failed to dispatch scheduled snapshot", logger.F{
 			"database_instance_id": instance.ID, "error": err,
 		})
 		return
@@ -252,7 +260,7 @@ func (s *databaseScheduler) dispatchSlot(instance structs.DatabaseInstance, slot
 		Status: &status, SnapshotID: &snapshot.ID, DispatchedAt: &dispatched,
 	})
 
-	logger.Info("database", "scheduled snapshot dispatched", logger.F{
+	logger.InfoCtx(ctx, "database", "scheduled snapshot dispatched", logger.F{
 		"database_instance_id": instance.ID,
 		"scheduled_at":         slot,
 		"snapshot_id":          snapshot.ID,
@@ -263,7 +271,7 @@ func (s *databaseScheduler) dispatchSlot(instance structs.DatabaseInstance, slot
 //
 // Without this, skip-on-overrun becomes an indefinite outage dressed as working
 // config: one run that never finishes blocks every subsequent slot forever.
-func (s *databaseScheduler) failStuckRuns() {
+func (s *databaseScheduler) failStuckRuns(ctx context.Context) {
 	cutoff := time.Now().UTC().Add(-snapshotRunTimeout)
 	runs, err := query.ListStuckSnapshotRuns(db.DB, cutoff)
 	if err != nil {
@@ -275,9 +283,10 @@ func (s *databaseScheduler) failStuckRuns() {
 		_ = query.UpdateSnapshotRun(db.DB, run.ID, query.UpdateSnapshotRunRequest{
 			Status: &status, SkipReason: &reason, Finished: true,
 		})
-		logger.Warn("database", "scheduled snapshot run timed out", logger.F{
+		logger.ErrorCtx(ctx, "database", "scheduled snapshot run timed out", logger.F{
 			"database_instance_id": run.DatabaseInstanceID,
 			"scheduled_at":         run.ScheduledAt,
+			"run_id":               run.ID,
 		})
 	}
 }

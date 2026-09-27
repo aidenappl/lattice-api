@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -243,6 +244,12 @@ func (h *DatabaseHandler) HandleRestoreSnapshot(w http.ResponseWriter, r *http.R
 // worse than a file that outlives its row (the first is invisible, the second is
 // findable). `instance` may be nil when it can no longer be resolved.
 func DeleteSnapshotArtifact(hub *socket.WorkerHub, snapshot *structs.DatabaseSnapshot, instance *structs.DatabaseInstance) error {
+	return DeleteSnapshotArtifactCtx(context.Background(), hub, snapshot, instance)
+}
+
+// DeleteSnapshotArtifactCtx is DeleteSnapshotArtifact for a caller with a
+// context: its request ids travel with any log lines.
+func DeleteSnapshotArtifactCtx(ctx context.Context, hub *socket.WorkerHub, snapshot *structs.DatabaseSnapshot, instance *structs.DatabaseInstance) error {
 	if snapshot == nil {
 		return nil
 	}
@@ -251,9 +258,9 @@ func DeleteSnapshotArtifact(hub *socket.WorkerHub, snapshot *structs.DatabaseSna
 		destination, destErr := query.GetBackupDestinationByID(db.DB, *snapshot.BackupDestinationID)
 		switch {
 		case destErr != nil:
-			logger.Warn("database", "snapshot delete: destination unresolvable, remote file left in place", logger.F{"snapshot_id": snapshot.ID, "filename": snapshot.Filename})
+			logger.WarnCtx(ctx, "database", "snapshot delete: destination unresolvable, remote file left in place", logger.F{"snapshot_id": snapshot.ID, "filename": snapshot.Filename})
 		case !hub.IsConnected(instance.WorkerID):
-			logger.Warn("database", "snapshot delete: worker offline, remote file left in place", logger.F{"snapshot_id": snapshot.ID, "worker_id": instance.WorkerID, "filename": snapshot.Filename})
+			logger.WarnCtx(ctx, "database", "snapshot delete: worker offline, remote file left in place", logger.F{"snapshot_id": snapshot.ID, "worker_id": instance.WorkerID, "filename": snapshot.Filename})
 		default:
 			payload := dbCommandPayload(instance.ID, socket.MsgDbDeleteSnapshot)
 			payload[socket.PayloadSnapshotID] = snapshot.ID
@@ -271,7 +278,7 @@ func DeleteSnapshotArtifact(hub *socket.WorkerHub, snapshot *structs.DatabaseSna
 				Type:    socket.MsgDbDeleteSnapshot,
 				Payload: payload,
 			}); sendErr != nil {
-				logger.Error("database", "snapshot delete: failed to send remote delete to worker", logger.F{"snapshot_id": snapshot.ID, "worker_id": instance.WorkerID, "error": sendErr})
+				logger.ErrorCtx(ctx, "database", "snapshot delete: failed to send remote delete to worker", logger.F{"snapshot_id": snapshot.ID, "worker_id": instance.WorkerID, "error": sendErr})
 			}
 		}
 	}
@@ -300,11 +307,11 @@ func (h *DatabaseHandler) HandleDeleteSnapshot(w http.ResponseWriter, r *http.Re
 
 	instance, instErr := query.GetDatabaseInstanceByID(db.DB, snapshot.DatabaseInstanceID)
 	if instErr != nil {
-		logger.Warn("database", "snapshot delete: instance unresolvable, remote file left in place", logger.F{"snapshot_id": id, "filename": snapshot.Filename})
+		logger.WarnCtx(r.Context(), "database", "snapshot delete: instance unresolvable, remote file left in place", logger.F{"snapshot_id": id, "filename": snapshot.Filename})
 		instance = nil
 	}
 
-	if err := DeleteSnapshotArtifact(h.WorkerHub, snapshot, instance); err != nil {
+	if err := DeleteSnapshotArtifactCtx(r.Context(), h.WorkerHub, snapshot, instance); err != nil {
 		responder.QueryError(w, err, "failed to delete snapshot")
 		return
 	}

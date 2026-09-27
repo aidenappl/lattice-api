@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/aidenappl/lattice-api/db"
@@ -86,7 +87,7 @@ func BuildDbSchedulePayload(instance *structs.DatabaseInstance) map[string]any {
 // BuildDbSchedulePayload is retained: it is the one place that knows how to
 // express a schedule, and it will be needed again if the runner ever regains a
 // scheduling role.
-func PushDbSchedule(hub *socket.WorkerHub, instance *structs.DatabaseInstance) {
+func PushDbSchedule(ctx context.Context, hub *socket.WorkerHub, instance *structs.DatabaseInstance) {
 	if hub == nil || instance == nil {
 		return
 	}
@@ -103,7 +104,7 @@ func PushDbSchedule(hub *socket.WorkerHub, instance *structs.DatabaseInstance) {
 			socket.PayloadRetentionCount: 0,
 		},
 	}); err != nil {
-		logger.Warn("database", "schedule: failed to clear worker-side schedule", logger.F{"instance_id": instance.ID, "worker_id": instance.WorkerID, "error": err})
+		logger.WarnCtx(ctx, "database", "schedule: failed to clear worker-side schedule", logger.F{"instance_id": instance.ID, "worker_id": instance.WorkerID, "error": err})
 	}
 }
 
@@ -125,6 +126,6 @@ func DistributeDbSchedules(workerID int, hub *socket.WorkerHub) {
 
 	for i := range *instances {
 		inst := (*instances)[i]
-		PushDbSchedule(hub, &inst)
+		PushDbSchedule(context.Background(), hub, &inst)
 	}
 }

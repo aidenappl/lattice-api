@@ -109,7 +109,7 @@ func (h *AdminHub) Register(session *AdminSession) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if len(h.sessions) >= MaxAdminSessions {
-		logger.Warn("socket", "admin connection rejected, max sessions reached", logger.F{"max": MaxAdminSessions})
+		logger.WarnCtx(context.Background(), "socket", "admin connection rejected, max sessions reached", logger.F{"max": MaxAdminSessions})
 		return fmt.Errorf("maximum admin connections reached (%d)", MaxAdminSessions)
 	}
 	h.sessions[session.ID] = session
@@ -144,7 +144,7 @@ func (h *AdminHub) Broadcast(payload []byte) {
 		case <-session.done:
 			// session is shutting down — skip it
 		default:
-			logger.Warn("socket", "admin broadcast queue full", logger.F{"session_id": session.ID})
+			logger.WarnCtx(context.Background(), "socket", "admin broadcast queue full", logger.F{"session_id": session.ID})
 		}
 	}
 }
@@ -153,7 +153,7 @@ func (h *AdminHub) Broadcast(payload []byte) {
 func (h *AdminHub) BroadcastJSON(v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		logger.Error("socket", "failed to marshal admin broadcast", logger.F{"error": err})
+		logger.ErrorCtx(context.Background(), "socket", "failed to marshal admin broadcast", logger.F{"error": err})
 		return
 	}
 	h.Broadcast(b)
@@ -174,7 +174,7 @@ func (h *AdminHub) BroadcastFiltered(payload []byte, topics []string) {
 		case <-session.done:
 			// session is shutting down — skip it
 		default:
-			logger.Warn("socket", "admin broadcast queue full", logger.F{"session_id": session.ID})
+			logger.WarnCtx(context.Background(), "socket", "admin broadcast queue full", logger.F{"session_id": session.ID})
 		}
 	}
 }
@@ -183,7 +183,7 @@ func (h *AdminHub) BroadcastFiltered(payload []byte, topics []string) {
 func (h *AdminHub) BroadcastFilteredJSON(v any, topics []string) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		logger.Error("socket", "failed to marshal admin broadcast", logger.F{"error": err})
+		logger.ErrorCtx(context.Background(), "socket", "failed to marshal admin broadcast", logger.F{"error": err})
 		return
 	}
 	h.BroadcastFiltered(b, topics)
@@ -229,7 +229,7 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := h.Upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		logger.Error("socket", "admin upgrade failed", logger.F{"error": err})
+		logger.ErrorCtx(r.Context(), "socket", "admin upgrade failed", logger.F{"error": err})
 		return
 	}
 
@@ -251,7 +251,7 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Hub.Register(session); err != nil {
-		logger.Warn("socket", "admin connection rejected", logger.F{"session_id": id, "error": err})
+		logger.WarnCtx(r.Context(), "socket", "admin connection rejected", logger.F{"session_id": id, "error": err})
 		_ = conn.WriteControl(
 			websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "max connections reached"),

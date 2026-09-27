@@ -1,12 +1,14 @@
 package watcher
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	monitor "github.com/aidenappl/go-monitor"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/mailer"
@@ -36,17 +38,17 @@ func Start() {
 			safePoll()
 		}
 	}()
-	logger.Info("watcher", "image version watcher started (first poll in 2 minutes)")
+	logger.InfoCtx(context.Background(), "watcher", "image version watcher started (first poll in 2 minutes)")
 }
 
 // safePoll runs one poll cycle with panic recovery so a single bad cycle can
 // never kill the long-lived watcher goroutine.
 func safePoll() {
 	defer logger.Recover("watcher.poll")
-	poll()
+	poll(monitor.WithJobID(context.Background(), monitor.NewJobID()))
 }
 
-func poll() {
+func poll(ctx context.Context) {
 	// Get all active stacks
 	stacks, err := query.ListStacks(db.DB, query.ListStacksRequest{Limit: 500})
 	if err != nil || stacks == nil {
@@ -122,7 +124,7 @@ func poll() {
 			prev, exists := lastKnownDigests[cacheKey]
 			if exists && prev != digest {
 				// Image changed
-				logger.Info("watcher", "image change detected", logger.F{"image": cacheKey, "stack": stack.Name})
+				logger.InfoCtx(ctx, "watcher", "image change detected", logger.F{"image": cacheKey, "stack": stack.Name, "stack_id": stack.ID, "container": c.Name})
 
 				webhooks.Fire("image.updated", map[string]any{
 					"stack_id":   stack.ID,
@@ -133,7 +135,7 @@ func poll() {
 				})
 
 				if stack.AutoDeploy {
-					logger.Info("watcher", "auto-deploy requested", logger.F{"stack": stack.Name})
+					logger.InfoCtx(ctx, "watcher", "auto-deploy requested", logger.F{"stack": stack.Name, "stack_id": stack.ID})
 					webhooks.Fire("image.auto_deploy_requested", map[string]any{
 						"stack_id":   stack.ID,
 						"stack_name": stack.Name,

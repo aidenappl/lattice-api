@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -58,8 +59,10 @@ func dbActor(r *http.Request) string {
 // dbEvent appends an entry to an instance's history. Failures are logged, never
 // surfaced — losing an audit line must not fail the operation that produced it.
 func dbEvent(instanceID int, kind, message string, r *http.Request) {
+	ctx := context.Background()
 	var actor *string
 	if r != nil {
+		ctx = r.Context()
 		if user, _ := middleware.GetUserFromContext(r.Context()); user != nil {
 			name := user.Email
 			actor = &name
@@ -71,7 +74,7 @@ func dbEvent(instanceID int, kind, message string, r *http.Request) {
 		Message:            message,
 		Actor:              actor,
 	}); err != nil {
-		logger.Error("database", "failed to record instance event", logger.F{"instance_id": instanceID, "kind": kind, "error": err})
+		logger.ErrorCtx(ctx, "database", "failed to record instance event", logger.F{"instance_id": instanceID, "kind": kind, "error": err})
 	}
 }
 
@@ -441,7 +444,7 @@ func (h *DatabaseHandler) HandleCreateDatabaseInstance(w http.ResponseWriter, r 
 
 	// Register the snapshot schedule with the worker immediately. Without this,
 	// a schedule set at create time waited for the next worker reconnect.
-	PushDbSchedule(h.WorkerHub, instance)
+	PushDbSchedule(r.Context(), h.WorkerHub, instance)
 
 	logAudit(r, "create", "database_instance", intPtr(instance.ID), strPtr(instance.Name))
 	responder.NewCreated(w, instance, "database instance created")
@@ -669,7 +672,7 @@ func (h *DatabaseHandler) HandleUpdateDatabaseInstance(w http.ResponseWriter, r 
 	// A schedule change has to reach the runner now. The only sender used to be
 	// the worker-reconnect sync, so editing a schedule updated a row and changed
 	// nothing until the worker happened to reconnect.
-	PushDbSchedule(h.WorkerHub, instance)
+	PushDbSchedule(r.Context(), h.WorkerHub, instance)
 
 	logAudit(r, "update", "database_instance", intPtr(id), nil)
 	responder.New(w, instance, "database instance updated")
@@ -725,7 +728,7 @@ func (h *DatabaseHandler) HandleDeleteDatabaseInstance(w http.ResponseWriter, r 
 			return
 		}
 
-		logger.Warn("database", "instance delete forced while worker offline; container and volume left in place", logger.F{"instance_id": id, "worker_id": instance.WorkerID, "container": instance.ContainerName, "volume": instance.VolumeName})
+		logger.WarnCtx(r.Context(), "database", "instance delete forced while worker offline; container and volume left in place", logger.F{"instance_id": id, "worker_id": instance.WorkerID, "container": instance.ContainerName, "volume": instance.VolumeName})
 		dbEvent(id, structs.DBEventRequested, fmt.Sprintf(
 			"delete forced while worker %d was offline — container %s and data volume %s abandoned on the worker",
 			instance.WorkerID, instance.ContainerName, instance.VolumeName), r)

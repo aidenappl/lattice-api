@@ -244,7 +244,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		if c.PortMappings != nil {
 			var pm []any
 			if err := json.Unmarshal([]byte(*c.PortMappings), &pm); err != nil {
-				logger.Error("deploy", "invalid port_mappings JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid port_mappings JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				// Resolve environment variable references in port mappings
 				resolved := resolveVarsInValue(pm, mergedEnvVars)
@@ -254,7 +254,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		if c.EnvVars != nil {
 			var ev map[string]any
 			if err := json.Unmarshal([]byte(*c.EnvVars), &ev); err != nil {
-				logger.Error("deploy", "invalid env_vars JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid env_vars JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				// Preserve compose semantics: only include env keys explicitly defined
 				// for the service, but resolve ${VAR} references from stack-level env.
@@ -274,7 +274,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		if c.Volumes != nil {
 			var vol map[string]any
 			if err := json.Unmarshal([]byte(*c.Volumes), &vol); err != nil {
-				logger.Error("deploy", "invalid volumes JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid volumes JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				// Resolve environment variable references in volumes
 				resolved := resolveVarsInValue(vol, mergedEnvVars)
@@ -290,7 +290,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		if c.Command != nil {
 			var cmd []string
 			if err := json.Unmarshal([]byte(*c.Command), &cmd); err != nil {
-				logger.Error("deploy", "invalid command JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid command JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				spec["command"] = cmd
 			}
@@ -298,7 +298,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		if c.Entrypoint != nil {
 			var ep []string
 			if err := json.Unmarshal([]byte(*c.Entrypoint), &ep); err != nil {
-				logger.Error("deploy", "invalid entrypoint JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid entrypoint JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				spec["entrypoint"] = ep
 			}
@@ -306,7 +306,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		if c.HealthCheck != nil {
 			var hc map[string]any
 			if err := json.Unmarshal([]byte(*c.HealthCheck), &hc); err != nil {
-				logger.Error("deploy", "invalid health_check JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid health_check JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				// Resolve env var references in health check against both stack-level
 				// and container-level env vars (container vars take precedence).
@@ -355,7 +355,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 					}
 					if len(auth) > 0 {
 						spec["registry_auth"] = auth
-						logger.Info("deploy", "auto-matched registry", logger.F{"registry": reg.Name, "image": c.Image})
+						logger.InfoCtx(r.Context(), "deploy", "auto-matched registry", logger.F{"registry": reg.Name, "image": c.Image})
 					}
 					break
 				}
@@ -449,7 +449,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		Type:    socket.MsgDeploy,
 		Payload: payload,
 	}); err != nil {
-		logger.Error("deploy", "failed to send deploy command to worker", logger.F{"worker_id": *stack.WorkerID, "error": err})
+		logger.ErrorCtx(r.Context(), "deploy", "failed to send deploy command to worker", logger.F{"worker_id": *stack.WorkerID, "error": err})
 		_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
 			DeploymentID: deployment.ID,
 			Level:        "error",
@@ -475,7 +475,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		Message:      fmt.Sprintf("Deploy command sent to worker %d via WebSocket", *stack.WorkerID),
 	})
 
-	h.startDeploymentMonitor(deployment.ID, stack.ID, *stack.WorkerID, payload)
+	h.startDeploymentMonitor(r.Context(), deployment.ID, stack.ID, *stack.WorkerID, payload)
 
 	triggeredBy := user.Email
 	if user.Name != nil {

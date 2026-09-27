@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aidenappl/lattice-api/logger"
@@ -28,6 +29,10 @@ type WorkerSession struct {
 	LastSeenAt  time.Time
 	ConnectedAt time.Time
 	Send        chan []byte
+
+	// GracefulShutdown is set when the worker announced worker_shutdown before
+	// its connection ended, so the disconnect that follows is a planned stop.
+	GracefulShutdown atomic.Bool
 
 	cancel context.CancelFunc
 	once   sync.Once
@@ -92,7 +97,7 @@ func (h *WorkerHub) Register(session *WorkerSession) error {
 		old.setCloseCause(errors.New("replaced by a new connection from the same worker"))
 		old.Close()
 	} else if len(h.sessions) >= MaxWorkerSessions {
-		logger.Warn("socket", "worker rejected, max connections reached", logger.F{"worker_id": session.WorkerID, "max": MaxWorkerSessions})
+		logger.WarnCtx(context.Background(), "socket", "worker rejected, max connections reached", logger.F{"worker_id": session.WorkerID, "max": MaxWorkerSessions})
 		return ErrMaxConnections
 	}
 
@@ -201,7 +206,7 @@ func (h *WorkerHub) BroadcastAll(payload []byte) {
 		case <-session.done:
 			// session is shutting down — skip it
 		default:
-			logger.Warn("socket", "broadcast queue full, message dropped", logger.F{"worker_id": session.WorkerID})
+			logger.WarnCtx(context.Background(), "socket", "broadcast queue full, message dropped", logger.F{"worker_id": session.WorkerID})
 		}
 	}
 }

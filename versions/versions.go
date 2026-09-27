@@ -1,6 +1,7 @@
 package versions
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/aidenappl/lattice-api/logger"
@@ -8,6 +9,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	monitor "github.com/aidenappl/go-monitor"
 )
 
 const (
@@ -58,10 +61,11 @@ func safeRefresh() {
 
 // Refresh fetches the latest release for all repos and updates the cache.
 func Refresh() {
+	ctx := monitor.WithJobID(context.Background(), monitor.NewJobID())
 	for _, repo := range repos {
 		tag, err := fetchLatestRelease(repo)
 		if err != nil {
-			logger.Warn("versions", "failed to fetch latest release", logger.F{"repo": repo, "error": err})
+			logger.WarnCtx(ctx, "versions", "failed to fetch latest release", logger.F{"repo": repo, "error": err})
 			continue
 		}
 		cache.mu.Lock()
