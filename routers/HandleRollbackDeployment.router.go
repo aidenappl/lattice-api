@@ -330,10 +330,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		payload["volumes"] = volSpecs
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.Envelope{
-		Type:    socket.MsgDeploy,
-		Payload: payload,
-	}); err != nil {
+	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.NewCommand(r.Context(), socket.MsgDeploy, payload)); err != nil {
 		logger.ErrorCtx(r.Context(), "deploy", "rollback: failed to send to worker", logger.F{"worker_id": *stack.WorkerID, "deployment_id": rollbackDeployment.ID, "error": err})
 		_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
 			DeploymentID: rollbackDeployment.ID,

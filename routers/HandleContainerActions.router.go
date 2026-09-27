@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -75,7 +76,7 @@ func (h *ContainerActionHandler) HandleRecreateContainer(w http.ResponseWriter, 
 		return
 	}
 
-	if err := h.RecreateContainer(container, *stack.WorkerID); err != nil {
+	if err := h.RecreateContainer(r.Context(), container, *stack.WorkerID); err != nil {
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send recreate command: %v", err))
 		return
 	}
@@ -113,13 +114,10 @@ func (h *ContainerActionHandler) sendContainerAction(w http.ResponseWriter, r *h
 		return
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.Envelope{
-		Type: action,
-		Payload: map[string]any{
-			"container_name": container.Name,
-			"container_id":   container.ID,
-		},
-	}); err != nil {
+	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.NewCommand(r.Context(), action, map[string]any{
+		"container_name": container.Name,
+		"container_id":   container.ID,
+	})); err != nil {
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send %s command: %v", action, err))
 		return
 	}
@@ -134,11 +132,8 @@ func (h *ContainerActionHandler) sendContainerAction(w http.ResponseWriter, r *h
 //
 // It satisfies automations.ContainerRedeployer, so an automation's
 // redeploy_container step sends exactly the command the Recreate button sends.
-func (h *ContainerActionHandler) RecreateContainer(container *structs.Container, workerID int) error {
-	return h.WorkerHub.SendJSONToWorker(workerID, socket.Envelope{
-		Type:    socket.MsgRecreate,
-		Payload: recreateContainerPayload(container),
-	})
+func (h *ContainerActionHandler) RecreateContainer(ctx context.Context, container *structs.Container, workerID int) error {
+	return h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(ctx, socket.MsgRecreate, recreateContainerPayload(container)))
 }
 
 // recreateContainerPayload builds the recreate payload for one container, with

@@ -69,10 +69,7 @@ func (h *WorkerActionHandler) sendWorkerAction(w http.ResponseWriter, r *http.Re
 		payload["expected_hash"] = hex.EncodeToString(hash[:])
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.Envelope{
-		Type:    action,
-		Payload: payload,
-	}); err != nil {
+	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(r.Context(), action, payload)); err != nil {
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send %s command: %v", label, err))
 		return
 	}

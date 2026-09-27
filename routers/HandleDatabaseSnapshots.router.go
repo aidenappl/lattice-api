@@ -70,7 +70,7 @@ func (h *DatabaseHandler) HandleCreateSnapshot(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	snapshot, err := h.StartSnapshot(instance, "manual")
+	snapshot, err := h.StartSnapshot(r.Context(), instance, "manual")
 	if err != nil {
 		responder.QueryError(w, err, "failed to create snapshot")
 		return
@@ -85,7 +85,7 @@ func (h *DatabaseHandler) HandleCreateSnapshot(w http.ResponseWriter, r *http.Re
 // Declared here so package main can depend on an interface rather than the
 // concrete handler.
 type SnapshotStarter interface {
-	StartSnapshot(instance *structs.DatabaseInstance, trigger string) (*structs.DatabaseSnapshot, error)
+	StartSnapshot(ctx context.Context, instance *structs.DatabaseInstance, trigger string) (*structs.DatabaseSnapshot, error)
 }
 
 // StartSnapshot creates the snapshot row and dispatches the dump to the worker.
@@ -94,7 +94,7 @@ type SnapshotStarter interface {
 // so both produce an identical artifact and an identical row — the only
 // difference is trigger_type, which is what later tells an operator why a
 // snapshot exists.
-func (h *DatabaseHandler) StartSnapshot(instance *structs.DatabaseInstance, trigger string) (*structs.DatabaseSnapshot, error) {
+func (h *DatabaseHandler) StartSnapshot(ctx context.Context, instance *structs.DatabaseInstance, trigger string) (*structs.DatabaseSnapshot, error) {
 	destination, err := query.GetBackupDestinationByID(db.DB, *instance.BackupDestinationID)
 	if err != nil {
 		return nil, err
@@ -136,10 +136,7 @@ func (h *DatabaseHandler) StartSnapshot(instance *structs.DatabaseInstance, trig
 	}
 	payload[socket.PayloadBackupDestination] = destPayload
 
-	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
-		Type:    socket.MsgDbSnapshot,
-		Payload: payload,
-	}); err != nil {
+	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.NewCommand(ctx, socket.MsgDbSnapshot, payload)); err != nil {
 		return nil, fmt.Errorf("failed to send snapshot command: %w", err)
 	}
 
@@ -221,10 +218,7 @@ func (h *DatabaseHandler) HandleRestoreSnapshot(w http.ResponseWriter, r *http.R
 		payload["backup_destination"].(map[string]any)["config"] = configMap
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
-		Type:    socket.MsgDbRestore,
-		Payload: payload,
-	}); err != nil {
+	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.NewCommand(r.Context(), socket.MsgDbRestore, payload)); err != nil {
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send restore command: %v", err))
 		return
 	}
@@ -274,10 +268,7 @@ func DeleteSnapshotArtifactCtx(ctx context.Context, hub *socket.WorkerHub, snaps
 			}
 			payload[socket.PayloadBackupDestination] = destPayload
 
-			if sendErr := hub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
-				Type:    socket.MsgDbDeleteSnapshot,
-				Payload: payload,
-			}); sendErr != nil {
+			if sendErr := hub.SendJSONToWorker(instance.WorkerID, socket.NewCommand(ctx, socket.MsgDbDeleteSnapshot, payload)); sendErr != nil {
 				logger.ErrorCtx(ctx, "database", "snapshot delete: failed to send remote delete to worker", logger.F{"snapshot_id": snapshot.ID, "worker_id": instance.WorkerID, "error": sendErr})
 			}
 		}

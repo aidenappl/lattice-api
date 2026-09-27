@@ -209,10 +209,7 @@ func (h *DatabaseHandler) HandleTestBackupDestination(w http.ResponseWriter, r *
 		payload["config"] = configMap
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.Envelope{
-		Type:    socket.MsgBackupDestTest,
-		Payload: payload,
-	}); err != nil {
+	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(r.Context(), socket.MsgBackupDestTest, payload)); err != nil {
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send test command: %v", err))
 		return
 	}

@@ -95,15 +95,12 @@ func PushDbSchedule(ctx context.Context, hub *socket.WorkerHub, instance *struct
 		return
 	}
 
-	if err := hub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
-		Type: socket.MsgDbUpdateSchedule,
-		Payload: map[string]any{
-			socket.PayloadDbInstanceID:   instance.ID,
-			socket.PayloadContainerName:  instance.ContainerName,
-			socket.PayloadCron:           "",
-			socket.PayloadRetentionCount: 0,
-		},
-	}); err != nil {
+	if err := hub.SendJSONToWorker(instance.WorkerID, socket.NewCommand(ctx, socket.MsgDbUpdateSchedule, map[string]any{
+		socket.PayloadDbInstanceID:   instance.ID,
+		socket.PayloadContainerName:  instance.ContainerName,
+		socket.PayloadCron:           "",
+		socket.PayloadRetentionCount: 0,
+	})); err != nil {
 		logger.WarnCtx(ctx, "database", "schedule: failed to clear worker-side schedule", logger.F{"instance_id": instance.ID, "worker_id": instance.WorkerID, "error": err})
 	}
 }

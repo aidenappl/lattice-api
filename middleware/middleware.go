@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -29,16 +30,58 @@ func GetRequestID(ctx context.Context) string {
 	return "unknown"
 }
 
+// RequestIDMiddleware gives every request a request_id and a trace_id, puts
+// both on the context (so every Monitor event and ctx log line carries them)
+// and echoes them as X-Request-ID / X-Trace-ID response headers.
+//
+// Inbound ids are caller-controlled, so they are honored only when Monitor
+// would accept them; anything else is replaced with a fresh id rather than
+// propagated, since it would be cleared from every event anyway.
 func RequestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestID := uuid.New().String()
+		requestID := inboundRequestID(r)
+		traceID := inboundTraceID(r)
+
 		ctx := context.WithValue(r.Context(), RequestIDKey, requestID)
 		// The same id goes on every Monitor event the request produces, so an
 		// event and this service's own log lines are joined by one value.
 		ctx = monitor.WithRequestID(ctx, requestID)
+		ctx = monitor.WithTraceID(ctx, traceID)
 		w.Header().Set("X-Request-ID", requestID)
+		w.Header().Set("X-Trace-ID", traceID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// inboundRequestID is the caller's X-Request-ID when Monitor accepts it,
+// otherwise a new UUID.
+func inboundRequestID(r *http.Request) string {
+	if id := strings.TrimSpace(r.Header.Get("X-Request-ID")); id != "" && monitor.ValidCorrelationID(id) {
+		return id
+	}
+	return uuid.New().String()
+}
+
+// traceparentRegex is a W3C Trace Context traceparent header:
+// version-traceid-parentid-flags, all lowercase hex.
+var traceparentRegex = regexp.MustCompile(`^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$`)
+
+// inboundTraceID takes the trace-id from a valid W3C traceparent, then a valid
+// X-Trace-ID, and otherwise mints one.
+func inboundTraceID(r *http.Request) string {
+	if tp := strings.TrimSpace(r.Header.Get("traceparent")); tp != "" {
+		if m := traceparentRegex.FindStringSubmatch(tp); m != nil && m[1] != "ff" && !allZero(m[2]) && !allZero(m[3]) {
+			return m[2]
+		}
+	}
+	if id := strings.TrimSpace(r.Header.Get("X-Trace-ID")); id != "" && monitor.ValidCorrelationID(id) {
+		return id
+	}
+	return monitor.NewTraceID()
+}
+
+func allZero(s string) bool {
+	return strings.Trim(s, "0") == ""
 }
 
 // failure is why a request failed, as reported by responder.SendError.

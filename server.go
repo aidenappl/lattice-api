@@ -44,11 +44,14 @@ func startServer(r *mux.Router) {
 			"Accept",
 			"Cookie",
 			"X-CSRF-Token",
+			"X-Request-ID",
+			"X-Trace-ID",
+			"traceparent",
 		},
 		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		// Readable by lattice-web, which puts it on its own Monitor events so a
 		// browser failure and the API request behind it share one id.
-		ExposedHeaders: []string{"X-Request-ID"},
+		ExposedHeaders: []string{"X-Request-ID", "X-Trace-ID"},
 	})
 
 	server := &http.Server{

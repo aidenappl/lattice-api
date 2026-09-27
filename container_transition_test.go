@@ -40,7 +40,7 @@ func TestLogContainerTransition(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got = nil
-			logContainerTransition(tt.field, "web", tt.previous, tt.current)
+			logContainerTransition(context.Background(), tt.field, "web", tt.previous, tt.current)
 			if len(got) != 1 {
 				t.Fatalf("logged %d records, want 1", len(got))
 			}

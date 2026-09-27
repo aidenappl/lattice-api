@@ -154,12 +154,9 @@ func (h *DeployHandler) monitorDeployment(ctx context.Context, deploymentID, sta
 			return
 		}
 
-		_ = h.WorkerHub.SendJSONToWorker(workerID, socket.Envelope{
-			Type: socket.MsgDeploymentPing,
-			Payload: map[string]any{
-				"deployment_id": deploymentID,
-			},
-		})
+		_ = h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(ctx, socket.MsgDeploymentPing, map[string]any{
+			"deployment_id": deploymentID,
+		}))
 
 		latest, err := query.GetLatestDeploymentLog(db.DB, deploymentID)
 		if err == nil && latest != nil && !isMonitorGeneratedLog(latest.Message) && latest.RecordedAt.After(lastProgressAt) {
@@ -177,10 +174,7 @@ func (h *DeployHandler) monitorDeployment(ctx context.Context, deploymentID, sta
 			retryPayload["max_retries"] = deployMaxRetryCount
 			retryPayload["retry"] = true
 
-			err := h.WorkerHub.SendJSONToWorker(workerID, socket.Envelope{
-				Type:    socket.MsgDeploy,
-				Payload: retryPayload,
-			})
+			err := h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(ctx, socket.MsgDeploy, retryPayload))
 			if err != nil {
 				_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
 					DeploymentID: deploymentID,

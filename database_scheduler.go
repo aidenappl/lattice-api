@@ -241,7 +241,7 @@ func (s *databaseScheduler) dispatchSlot(ctx context.Context, instance structs.D
 		return
 	}
 
-	snapshot, err := s.snapshots.StartSnapshot(&instance, "scheduled")
+	snapshot, err := s.snapshots.StartSnapshot(ctx, &instance, "scheduled")
 	if err != nil {
 		status := string(structs.SnapshotRunFailed)
 		reason := err.Error()

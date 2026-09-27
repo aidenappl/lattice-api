@@ -126,10 +126,7 @@ func (rc *databaseReconciler) RequestSync(ctx context.Context, workerID int) {
 	if !rc.workerHub.IsConnected(workerID) {
 		return
 	}
-	if err := rc.workerHub.SendJSONToWorker(workerID, socket.Envelope{
-		Type:    socket.MsgDbSyncRequest,
-		Payload: map[string]any{},
-	}); err != nil {
+	if err := rc.workerHub.SendJSONToWorker(workerID, socket.NewCommand(ctx, socket.MsgDbSyncRequest, map[string]any{})); err != nil {
 		logger.WarnCtx(ctx, "database", "failed to request database sync", logger.F{
 			"worker_id": workerID, "error": err,
 		})

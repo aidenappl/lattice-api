@@ -28,13 +28,10 @@ func (h *ContainerActionHandler) HandleDeleteContainer(w http.ResponseWriter, r 
 	// Best-effort: send remove command to the worker
 	stack, err := query.GetStackByID(db.DB, container.StackID)
 	if err == nil && stack.WorkerID != nil && h.WorkerHub.IsConnected(*stack.WorkerID) {
-		if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.Envelope{
-			Type: socket.MsgRemove,
-			Payload: map[string]any{
-				"container_name": container.Name,
-				"container_id":   container.ID,
-			},
-		}); err != nil {
+		if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.NewCommand(r.Context(), socket.MsgRemove, map[string]any{
+			"container_name": container.Name,
+			"container_id":   container.ID,
+		})); err != nil {
 			logger.ErrorCtx(r.Context(), "container", "delete: failed to send remove to worker", logger.F{"container_id": id, "worker_id": *stack.WorkerID, "error": err})
 		}
 	}

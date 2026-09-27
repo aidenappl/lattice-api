@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -103,7 +104,9 @@ func (s *webhookStore) CreateAuditLog(query.CreateAuditLogRequest) error { s.wri
 
 type acceptingRedeployer struct{}
 
-func (acceptingRedeployer) RecreateContainer(*structs.Container, int) error { return nil }
+func (acceptingRedeployer) RecreateContainer(context.Context, *structs.Container, int) error {
+	return nil
+}
 
 // The webhook's status codes are its contract with CI: a failure must turn a
 // pipeline red without inviting an automatic retry, and a disabled automation

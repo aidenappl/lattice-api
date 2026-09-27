@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 
@@ -60,9 +61,9 @@ func TestFailedDeployLogsOneError(t *testing.T) {
 			got = nil
 			for _, s := range tt.steps {
 				f := logger.F{"deployment_id": 7, "status": s.status, "progress_level": "error"}
-				logDeploymentProgress(s.status, f)
+				logDeploymentProgress(context.Background(), s.status, f)
 				if s.status == "failed" {
-					logDeploymentFailed(s.previous, logger.F{"deployment_id": 7})
+					logDeploymentFailed(context.Background(), s.previous, logger.F{"deployment_id": 7})
 				}
 			}
 			errs := 0

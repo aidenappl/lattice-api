@@ -421,10 +421,7 @@ func (h *DatabaseHandler) HandleCreateDatabaseInstance(w http.ResponseWriter, r 
 		payload["memory_limit"] = int64(*body.MemoryLimit) * 1024 * 1024
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(body.WorkerID, socket.Envelope{
-		Type:    socket.MsgDbCreate,
-		Payload: payload,
-	}); err != nil {
+	if err := h.WorkerHub.SendJSONToWorker(body.WorkerID, socket.NewCommand(r.Context(), socket.MsgDbCreate, payload)); err != nil {
 		// The row exists but the worker never heard about it. Record that
 		// plainly instead of leaving it to sit in pending forever.
 		msg := fmt.Sprintf("failed to send create command to worker: %v", err)
@@ -477,7 +474,7 @@ func (h *DatabaseHandler) beginDeleteWithFinalSnapshot(w http.ResponseWriter, r 
 		return
 	}
 
-	snapshot, err := h.StartSnapshot(instance, "final")
+	snapshot, err := h.StartSnapshot(r.Context(), instance, "final")
 	if err != nil {
 		responder.QueryError(w, err, "failed to start the final snapshot")
 		return
@@ -750,10 +747,7 @@ func (h *DatabaseHandler) HandleDeleteDatabaseInstance(w http.ResponseWriter, r 
 	// it. The worker retires the row for us when it confirms.
 	payload["remove_volume"] = true
 
-	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
-		Type:    socket.MsgDbRemove,
-		Payload: payload,
-	}); err != nil {
+	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.NewCommand(r.Context(), socket.MsgDbRemove, payload)); err != nil {
 		responder.SendError(w, http.StatusInternalServerError,
 			fmt.Sprintf("failed to send delete command to worker %d: %v", instance.WorkerID, err))
 		return
@@ -813,10 +807,7 @@ func (h *DatabaseHandler) HandleDatabaseAction(w http.ResponseWriter, r *http.Re
 		payload["volume_name"] = instance.VolumeName
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
-		Type:    msgType,
-		Payload: payload,
-	}); err != nil {
+	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.NewCommand(r.Context(), msgType, payload)); err != nil {
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send %s command: %v", action, err))
 		return
 	}

@@ -66,12 +66,9 @@ func (h *ContainerActionHandler) stackBulkAction(
 		if !filter(c) {
 			continue
 		}
-		_ = h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.Envelope{
-			Type: action,
-			Payload: map[string]any{
-				"container_name": c.Name,
-			},
-		})
+		_ = h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.NewCommand(r.Context(), action, map[string]any{
+			"container_name": c.Name,
+		}))
 		count++
 	}
 

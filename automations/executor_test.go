@@ -274,7 +274,7 @@ type fakeRedeployer struct {
 	release chan struct{}
 }
 
-func (f *fakeRedeployer) RecreateContainer(c *structs.Container, workerID int) error {
+func (f *fakeRedeployer) RecreateContainer(_ context.Context, c *structs.Container, workerID int) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, redeployCall{containerID: c.ID, workerID: workerID, name: c.Name})
 	err := f.failFor[c.Name]

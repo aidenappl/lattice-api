@@ -329,10 +329,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		payload["volumes"] = volSpecs
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.Envelope{
-		Type:    socket.MsgDeploy,
-		Payload: payload,
-	}); err != nil {
+	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.NewCommand(r.Context(), socket.MsgDeploy, payload)); err != nil {
 		logger.ErrorCtx(r.Context(), "deploy", "failed to send deploy command to worker", logger.F{"worker_id": *stack.WorkerID, "error": err})
 		_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
 			DeploymentID: deployment.ID,
@@ -395,10 +392,7 @@ func (h *DeployHandler) handleSingleContainerDeploy(w http.ResponseWriter, r *ht
 	}
 
 	// Same payload as HandleRecreateContainer and automations — one builder.
-	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.Envelope{
-		Type:    socket.MsgRecreate,
-		Payload: recreateContainerPayload(target),
-	}); err != nil {
+	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.NewCommand(r.Context(), socket.MsgRecreate, recreateContainerPayload(target))); err != nil {
 		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send recreate command: %v", err))
 		return
 	}

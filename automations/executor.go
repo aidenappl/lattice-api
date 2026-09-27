@@ -67,7 +67,7 @@ var ErrSlotClaimed = errors.New("schedule slot already claimed")
 // routers.ContainerActionHandler implements it, so an automation sends exactly
 // the command the dashboard's Recreate button sends.
 type ContainerRedeployer interface {
-	RecreateContainer(container *structs.Container, workerID int) error
+	RecreateContainer(ctx context.Context, container *structs.Container, workerID int) error
 }
 
 // Executor fires automations and records every firing as a run.

@@ -39,6 +39,9 @@ type transitionOpts struct {
 	Actor string
 	// StartedAt stamps the instance's start time (set when entering running).
 	StartedAt *time.Time
+	// Ctx carries the correlation ids of whatever caused the transition (the
+	// worker reply, the reconciler tick) onto its log events. Nil means none.
+	Ctx context.Context
 }
 
 // Transition moves an instance to a new status, recording an event and
@@ -46,8 +49,12 @@ type transitionOpts struct {
 // instance already holds writes nothing and emits no event, so the reconciler
 // can call it every tick without flooding the audit trail.
 func (l *databaseLifecycle) Transition(instanceID int, to structs.DatabaseStatus, opts transitionOpts) {
+	ctx := opts.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if !to.IsValid() {
-		logger.ErrorCtx(context.Background(), "database", "refusing to write invalid status", logger.F{
+		logger.ErrorCtx(ctx, "database", "refusing to write invalid status", logger.F{
 			"database_instance_id": instanceID, "status": string(to),
 		})
 		return
@@ -55,7 +62,7 @@ func (l *databaseLifecycle) Transition(instanceID int, to structs.DatabaseStatus
 
 	current, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
 	if err != nil {
-		logger.ErrorCtx(context.Background(), "database", "transition failed to load instance", logger.F{
+		logger.ErrorCtx(ctx, "database", "transition failed to load instance", logger.F{
 			"database_instance_id": instanceID, "error": err,
 		})
 		return
@@ -86,7 +93,7 @@ func (l *databaseLifecycle) Transition(instanceID int, to structs.DatabaseStatus
 	}
 
 	if _, err := query.UpdateDatabaseInstance(db.DB, instanceID, req); err != nil {
-		logger.ErrorCtx(context.Background(), "database", "transition failed to write status", logger.F{
+		logger.ErrorCtx(ctx, "database", "transition failed to write status", logger.F{
 			"database_instance_id": instanceID, "status": statusStr, "error": err,
 		})
 		return
@@ -124,7 +131,7 @@ func (l *databaseLifecycle) Transition(instanceID int, to structs.DatabaseStatus
 		"last_error":           opts.Err,
 	})
 
-	logger.InfoCtx(context.Background(), "database", "instance status changed", logger.F{
+	logger.InfoCtx(ctx, "database", "instance status changed", logger.F{
 		"database_instance_id": instanceID,
 		"name":                 current.Name,
 		"from":                 current.Status,

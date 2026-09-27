@@ -132,7 +132,7 @@ func ensureScheduledSnapshotRow(instanceID int, filename string) (*structs.Datab
 // correct outcome, since the operator asked not to lose it without a copy.
 //
 // Returns true when it took ownership of the instance.
-func finaliseDeleteAfterSnapshot(instanceID int, hub *socket.WorkerHub) bool {
+func finaliseDeleteAfterSnapshot(ctx context.Context, instanceID int, hub *socket.WorkerHub) bool {
 	instance, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
 	if err != nil || !instance.PendingFinalSnapshot {
 		return false
@@ -142,7 +142,7 @@ func finaliseDeleteAfterSnapshot(instanceID int, hub *socket.WorkerHub) bool {
 	if _, err := query.UpdateDatabaseInstance(db.DB, instanceID, query.UpdateDatabaseInstanceRequest{
 		PendingFinalSnapshot: &pending,
 	}); err != nil {
-		logger.ErrorCtx(context.Background(), "database", "failed to clear pending final snapshot", logger.F{
+		logger.ErrorCtx(ctx, "database", "failed to clear pending final snapshot", logger.F{
 			"database_instance_id": instanceID, "error": err,
 		})
 		return false
@@ -160,18 +160,15 @@ func finaliseDeleteAfterSnapshot(instanceID int, hub *socket.WorkerHub) bool {
 		socket.PayloadVolumeName:    instance.VolumeName,
 		socket.PayloadRemoveVolume:  true,
 	}
-	if err := hub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
-		Type:    socket.MsgDbRemove,
-		Payload: payload,
-	}); err != nil {
-		logger.ErrorCtx(context.Background(), "database", "failed to send delete after final snapshot", logger.F{
+	if err := hub.SendJSONToWorker(instance.WorkerID, socket.NewCommand(ctx, socket.MsgDbRemove, payload)); err != nil {
+		logger.ErrorCtx(ctx, "database", "failed to send delete after final snapshot", logger.F{
 			"database_instance_id": instanceID, "error": err,
 		})
 		return true
 	}
 
 	dbLifecycle.BeginDeleting(instanceID, "control-plane")
-	logger.InfoCtx(context.Background(), "database", "final snapshot complete, destroying database", logger.F{
+	logger.InfoCtx(ctx, "database", "final snapshot complete, destroying database", logger.F{
 		"database_instance_id": instanceID,
 		"name":                 instance.Name,
 	})
@@ -193,7 +190,7 @@ func finaliseDeleteAfterSnapshot(instanceID int, hub *socket.WorkerHub) bool {
 //     minSnapshotRedundancy successful copies, whatever retention_count says.
 //     "Keep 1" plus a silently-failing backup is how a single corrupt artifact
 //     becomes the only artifact.
-func applySnapshotRetention(instanceID int, hub *socket.WorkerHub) {
+func applySnapshotRetention(ctx context.Context, instanceID int, hub *socket.WorkerHub) {
 	const minSnapshotRedundancy = 2
 
 	instance, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
@@ -203,7 +200,7 @@ func applySnapshotRetention(instanceID int, hub *socket.WorkerHub) {
 
 	keep := *instance.RetentionCount
 	if keep < minSnapshotRedundancy {
-		logger.InfoCtx(context.Background(), "database", "retention floor raised the configured count", logger.F{
+		logger.InfoCtx(ctx, "database", "retention floor raised the configured count", logger.F{
 			"database_instance_id": instanceID,
 			"configured":           keep,
 			"effective":            minSnapshotRedundancy,
@@ -231,13 +228,13 @@ func applySnapshotRetention(instanceID int, hub *socket.WorkerHub) {
 	}
 
 	for _, stale := range successful[keep:] {
-		if err := routers.DeleteSnapshotArtifact(hub, &stale, instance); err != nil {
-			logger.WarnCtx(context.Background(), "database", "retention could not remove an old snapshot", logger.F{
+		if err := routers.DeleteSnapshotArtifactCtx(ctx, hub, &stale, instance); err != nil {
+			logger.WarnCtx(ctx, "database", "retention could not remove an old snapshot", logger.F{
 				"database_instance_id": instanceID, "snapshot_id": stale.ID, "error": err,
 			})
 			continue
 		}
-		logger.InfoCtx(context.Background(), "database", "retention removed an old snapshot", logger.F{
+		logger.InfoCtx(ctx, "database", "retention removed an old snapshot", logger.F{
 			"database_instance_id": instanceID,
 			"snapshot_id":          stale.ID,
 			"filename":             stale.Filename,
@@ -272,10 +269,10 @@ func dbInstanceStatus(instanceID int) string {
 // up, and a terminal "completed"/"failed" carrying the outcome. Older runners
 // send neither phase nor an instance ID — those are logged and dropped rather
 // than guessed at, and the reconciler corrects the instance on its next pass.
-func handleDbStatus(workerID int, payload map[string]any) {
+func handleDbStatus(ctx context.Context, workerID int, payload map[string]any) {
 	instanceID := payloadInt(payload, socket.PayloadDbInstanceID)
 	if instanceID == 0 {
-		logger.WarnCtx(context.Background(), "database", "db_status without a database_instance_id — dropping", logger.F{
+		logger.WarnCtx(ctx, "database", "db_status without a database_instance_id — dropping", logger.F{
 			"worker_id": workerID,
 			"action":    payload["action"],
 			"hint":      "runner predates correlated db replies; the reconciler will correct this instance",
@@ -306,6 +303,7 @@ func handleDbStatus(workerID int, payload map[string]any) {
 		// tell "nobody picked this up" from "this is taking a while".
 		if action == socket.MsgDbCreate {
 			dbLifecycle.Transition(instanceID, structs.DBStatusProvisioning, transitionOpts{
+				Ctx:     ctx,
 				Message: "worker accepted create command",
 				Actor:   "worker",
 			})
@@ -330,6 +328,7 @@ func handleDbStatus(workerID int, payload map[string]any) {
 			return
 		}
 		opts := transitionOpts{
+			Ctx:     ctx,
 			Message: fmt.Sprintf("%s completed", action),
 			Actor:   "worker",
 		}
@@ -353,12 +352,14 @@ func handleDbStatus(workerID int, payload map[string]any) {
 		if action == socket.MsgDbRemove && isAbsentContainerMessage(message) &&
 			dbInstanceStatus(instanceID) != string(structs.DBStatusDeleting) {
 			dbLifecycle.Transition(instanceID, structs.DBStatusStopped, transitionOpts{
+				Ctx:     ctx,
 				Message: "container was already absent; nothing to remove",
 				Actor:   "worker",
 			})
 			return
 		}
 		dbLifecycle.Transition(instanceID, structs.DBStatusError, transitionOpts{
+			Ctx:     ctx,
 			Message: message,
 			Err:     newDatabaseError(dbActionFailureCode(action), message, true),
 			Actor:   "worker",
@@ -388,7 +389,7 @@ type observedDbContainer struct {
 // This is the level-triggered half of the design: it does not care which
 // command produced the current state, only whether observed matches desired. A
 // dropped db_status is therefore self-correcting.
-func handleDbSync(workerID int, payload map[string]any) {
+func handleDbSync(ctx context.Context, workerID int, payload map[string]any) {
 	rawList, ok := payload["containers"].([]any)
 	if !ok {
 		return
@@ -419,19 +420,19 @@ func handleDbSync(workerID int, payload map[string]any) {
 
 	instances, err := query.ListDatabaseInstancesByWorker(db.DB, workerID)
 	if err != nil {
-		logger.ErrorCtx(context.Background(), "database", "db_sync failed to list instances", logger.F{
+		logger.ErrorCtx(ctx, "database", "db_sync failed to list instances", logger.F{
 			"worker_id": workerID, "error": err,
 		})
 		return
 	}
 
 	for _, instance := range instances {
-		reconcileDatabaseInstance(instance, observed[instance.ContainerName], observed)
+		reconcileDatabaseInstance(ctx, instance, observed[instance.ContainerName], observed)
 	}
 }
 
 // reconcileDatabaseInstance drives one instance toward its observed state.
-func reconcileDatabaseInstance(instance structs.DatabaseInstance, obs observedDbContainer, observed map[string]observedDbContainer) {
+func reconcileDatabaseInstance(ctx context.Context, instance structs.DatabaseInstance, obs observedDbContainer, observed map[string]observedDbContainer) {
 	_, present := observed[instance.ContainerName]
 	current := structs.DatabaseStatus(instance.Status)
 
@@ -444,7 +445,7 @@ func reconcileDatabaseInstance(instance structs.DatabaseInstance, obs observedDb
 		if _, err := query.UpdateDatabaseInstance(db.DB, instance.ID, query.UpdateDatabaseInstanceRequest{
 			VolumeSizeBytes: &size,
 		}); err != nil {
-			logger.WarnCtx(context.Background(), "database", "failed to record volume size", logger.F{
+			logger.WarnCtx(ctx, "database", "failed to record volume size", logger.F{
 				"database_instance_id": instance.ID, "error": err,
 			})
 		}
@@ -472,6 +473,7 @@ func reconcileDatabaseInstance(instance structs.DatabaseInstance, obs observedDb
 			return
 		}
 		dbLifecycle.Transition(instance.ID, structs.DBStatusError, transitionOpts{
+			Ctx:     ctx,
 			Message: "container is no longer present on the worker",
 			Err: newDatabaseError(structs.DBErrCodeContainerMissing,
 				fmt.Sprintf("container %s was not found on worker %d", instance.ContainerName, instance.WorkerID), true),
@@ -492,6 +494,7 @@ func reconcileDatabaseInstance(instance structs.DatabaseInstance, obs observedDb
 			detail = obs.FatalHint
 		}
 		dbLifecycle.Transition(instance.ID, structs.DBStatusDegraded, transitionOpts{
+			Ctx:     ctx,
 			Message: fmt.Sprintf("container is restarting repeatedly (%d restarts)", obs.RestartCount),
 			Err:     newDatabaseError(code, detail, false),
 			Actor:   "reconciler",
@@ -503,6 +506,7 @@ func reconcileDatabaseInstance(instance structs.DatabaseInstance, obs observedDb
 	case "running":
 		if current != structs.DBStatusRunning {
 			opts := transitionOpts{
+				Ctx:     ctx,
 				Message: "container observed running on the worker",
 				Actor:   "reconciler",
 			}
@@ -519,6 +523,7 @@ func reconcileDatabaseInstance(instance structs.DatabaseInstance, obs observedDb
 		}
 		if current != structs.DBStatusStopped && current != structs.DBStatusError {
 			dbLifecycle.Transition(instance.ID, structs.DBStatusStopped, transitionOpts{
+				Ctx:     ctx,
 				Message: fmt.Sprintf("container observed %s on the worker", obs.State),
 				Actor:   "reconciler",
 			})
@@ -552,7 +557,7 @@ func reconcileDatabaseInstance(instance structs.DatabaseInstance, obs observedDb
 // dangerous — and a partial failure would leave an artifact whose state is
 // ambiguous. Sequential with per-replica status keeps the primary's success
 // independent of the mirror's.
-func recordPrimaryReplicaAndMirror(snapshotID int, sizeBytes *int64, hub *socket.WorkerHub) {
+func recordPrimaryReplicaAndMirror(ctx context.Context, snapshotID int, sizeBytes *int64, hub *socket.WorkerHub) {
 	snapshot, err := query.GetSnapshotByID(db.DB, snapshotID)
 	if err != nil || snapshot.BackupDestinationID == nil {
 		return
@@ -565,7 +570,7 @@ func recordPrimaryReplicaAndMirror(snapshotID int, sizeBytes *int64, hub *socket
 		Status:              structs.ReplicaCompleted,
 		SizeBytes:           sizeBytes,
 	}); err != nil {
-		logger.ErrorCtx(context.Background(), "database", "failed to record primary replica", logger.F{
+		logger.ErrorCtx(ctx, "database", "failed to record primary replica", logger.F{
 			"snapshot_id": snapshot.ID, "error": err,
 		})
 	}
@@ -611,10 +616,7 @@ func recordPrimaryReplicaAndMirror(snapshotID int, sizeBytes *int64, hub *socket
 		socket.PayloadTargetDestination: destinationPayload(target),
 	}
 
-	if err := hub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
-		Type:    socket.MsgDbMirrorSnapshot,
-		Payload: payload,
-	}); err != nil {
+	if err := hub.SendJSONToWorker(instance.WorkerID, socket.NewCommand(ctx, socket.MsgDbMirrorSnapshot, payload)); err != nil {
 		reason := err.Error()
 		_ = query.UpsertSnapshotReplica(db.DB, query.UpsertReplicaRequest{
 			SnapshotID: snapshot.ID, BackupDestinationID: target.ID,
@@ -640,7 +642,7 @@ func destinationPayload(dest *structs.BackupDestination) map[string]any {
 // the backup failed would push an operator toward re-running a dump that already
 // succeeded. It degrades backup posture instead, which is exactly the signal
 // that should move.
-func handleMirrorStatus(payload map[string]any) {
+func handleMirrorStatus(ctx context.Context, payload map[string]any) {
 	snapshotID := payloadInt(payload, socket.PayloadSnapshotID)
 	status, _ := payload[socket.PayloadStatus].(string)
 	if snapshotID == 0 || status == "" {
@@ -673,7 +675,7 @@ func handleMirrorStatus(payload map[string]any) {
 	}
 
 	if err := query.UpsertSnapshotReplica(db.DB, req); err != nil {
-		logger.ErrorCtx(context.Background(), "database", "failed to record mirror replica", logger.F{
+		logger.ErrorCtx(ctx, "database", "failed to record mirror replica", logger.F{
 			"snapshot_id": snapshotID, "error": err,
 		})
 		return
@@ -685,7 +687,7 @@ func handleMirrorStatus(payload map[string]any) {
 		"status":               req.Status,
 	}
 	if req.Status == structs.ReplicaCompleted {
-		logger.InfoCtx(context.Background(), "database", "snapshot mirror finished", mirrorFields)
+		logger.InfoCtx(ctx, "database", "snapshot mirror finished", mirrorFields)
 		return
 	}
 	if req.ErrorMessage != nil {
@@ -693,5 +695,5 @@ func handleMirrorStatus(payload map[string]any) {
 		// "error" first, so it goes in detail: every mirror failure groups as one.
 		mirrorFields["detail"] = *req.ErrorMessage
 	}
-	logger.WarnCtx(context.Background(), "database", "snapshot mirror finished", mirrorFields)
+	logger.WarnCtx(ctx, "database", "snapshot mirror finished", mirrorFields)
 }
