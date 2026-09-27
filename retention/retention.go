@@ -61,7 +61,7 @@ func run(db *sql.DB) {
 	// Database instance lifecycle events: keep 180 days. This table had no
 	// retention at all and grows with every status change, health observation,
 	// reconcile and credential reveal.
-	purge(db, "database_instance_events", "inserted_at", "180 DAY")
+	purge(db, "database_instance_events", "recorded_at", "180 DAY")
 
 	// Automation runs: keep 90 days, matching deployment logs. A "* * * * *"
 	// schedule writes 1,440 rows a day, and every skipped firing is a row too.

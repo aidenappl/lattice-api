@@ -4,7 +4,9 @@ package main
 // They are called from the OnMessage dispatch in main().
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -519,6 +521,13 @@ func handleContainerHealthStatus(payload map[string]any) {
 		lookupName = canonical
 	}
 	c, err := containerNameCache.GetContainerByName(lookupName)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Not a Lattice-managed container — e.g. a database instance's
+		// lattice-db-* container, whose health arrives separately as
+		// db_health_status. Same as handleContainerSync: ignore it.
+		logger.Debug("container", "ignoring health update for unmanaged container", logger.F{"container_name": containerName})
+		return
+	}
 	if err != nil {
 		logger.Error("container", "could not find container for health update", logger.F{"container_name": containerName, "error": err})
 		return
