@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/aidenappl/lattice-api/env"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/go-sql-driver/mysql"
 )
 
@@ -104,7 +106,7 @@ func RunMigrations() error {
 	}
 	defer func() {
 		if cerr := conn.Close(); cerr != nil {
-			fmt.Printf("warning: failed to close migrations connection: %v\n", cerr)
+			logger.WarnCtx(context.Background(), "database", "could not close migrations connection", logger.F{"error": cerr})
 		}
 	}()
 

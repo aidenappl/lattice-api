@@ -209,6 +209,38 @@ func TestEventFieldDoesNotRenameTheEvent(t *testing.T) {
 	}
 }
 
+// EventCtx files the event under its own name, attributed to the caller, and
+// stdout shows that name as a field.
+func TestEventCtxIsFiledUnderItsOwnName(t *testing.T) {
+	var buf bytes.Buffer
+	logger.SetOutput(&buf)
+	t.Cleanup(func() { logger.SetOutput(os.Stdout) })
+	logger.Init("info", "json")
+	t.Cleanup(func() { logger.Init("info", "text") })
+	rec := record(t)
+
+	logger.EventCtx(context.Background(), logger.LevelInfo, "deployment.succeeded", "deploy", "deployment succeeded", logger.F{"deployment_id": 7})
+	_, _, line, _ := runtime.Caller(0)
+
+	evs := rec.Named("deployment.succeeded")
+	if len(evs) != 1 {
+		t.Fatalf("recorded %d deployment.succeeded events, want 1 (all: %v)", len(evs), rec.Events())
+	}
+	if n := len(rec.Named("deploy.log.info")); n != 0 {
+		t.Errorf("recorded %d deploy.log.info events, want 0", n)
+	}
+	d := evs[0].Data.(map[string]any)
+	if evs[0].Level != monitor.LevelInfo || d["message"] != "deployment succeeded" || fmt.Sprint(d["deployment_id"]) != "7" {
+		t.Errorf("event = %v %v", evs[0].Level, d)
+	}
+	if d["source_func"] != "TestEventCtxIsFiledUnderItsOwnName" || fmt.Sprint(d["source_line"]) != fmt.Sprint(line-1) {
+		t.Errorf("source = %v:%v, want line %d", d["source_func"], d["source_line"], line-1)
+	}
+	if !strings.Contains(buf.String(), `"event":"deployment.succeeded"`) {
+		t.Errorf("stdout = %s, want the event name as a field", buf.String())
+	}
+}
+
 // Through the whole chain each call prints exactly one stdout line, in the
 // format logger has always printed: no derived event, no source fields.
 func TestStdoutLinesAreUnchangedAndNotDuplicated(t *testing.T) {

@@ -69,6 +69,7 @@ func (h *DeployHandler) startDeploymentMonitor(ctx context.Context, deploymentID
 // a force-fail guarantee.
 func (h *DeployHandler) lightweightDeploymentWatchdog(ctx context.Context, deploymentID, stackID int) {
 	defer logger.Recover("deployment-watchdog", logger.F{"deployment_id": deploymentID})
+	defer forgetRunnerDeploymentStatus(deploymentID)
 
 	ticker := time.NewTicker(deployPingInterval)
 	defer ticker.Stop()
@@ -91,30 +92,19 @@ func (h *DeployHandler) lightweightDeploymentWatchdog(ctx context.Context, deplo
 			continue
 		}
 
-		logger.ErrorCtx(ctx, "deploy", "lightweight watchdog exceeded maximum runtime, marking as failed",
-			logger.F{"deployment_id": deploymentID, "max_runtime": deployMaxRuntime.String()})
-		_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+		writeDeploymentLog(ctx, query.CreateDeploymentLogRequest{
 			DeploymentID: deploymentID,
 			Level:        "error",
 			Message:      fmt.Sprintf("Deployment watchdog timed out after %s with no terminal state", deployMaxRuntime),
 		})
-		tx, txErr := db.BeginTx()
-		if txErr != nil {
-			logger.ErrorCtx(ctx, "deploy", "watchdog failed to start transaction", logger.F{"deployment_id": deploymentID, "error": txErr})
-			return
-		}
-		defer tx.Rollback()
-		if err := query.UpdateDeploymentAndStackStatus(tx, deploymentID, "failed", stackID, "failed"); err != nil {
-			logger.ErrorCtx(ctx, "deploy", "watchdog failed to update status", logger.F{"deployment_id": deploymentID, "error": err})
-			return
-		}
-		_ = tx.Commit()
+		failDeployment(ctx, deploymentID, stackID, "timeout", nil)
 		return
 	}
 }
 
 func (h *DeployHandler) monitorDeployment(ctx context.Context, deploymentID, stackID, workerID int, payload map[string]any) {
 	defer logger.Recover("deployment-monitor", logger.F{"deployment_id": deploymentID})
+	defer forgetRunnerDeploymentStatus(deploymentID)
 
 	ticker := time.NewTicker(deployPingInterval)
 	defer ticker.Stop()
@@ -126,20 +116,17 @@ func (h *DeployHandler) monitorDeployment(ctx context.Context, deploymentID, sta
 
 	attempt := 1
 	lastProgressAt := time.Now().UTC()
+	pingFailing := false
 
 	for {
 		select {
 		case <-maxTimer.C:
-			logger.ErrorCtx(ctx, "deploy", "deployment monitor exceeded maximum runtime, marking as failed",
-				logger.F{"deployment_id": deploymentID, "max_runtime": deployMaxRuntime.String()})
-			_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+			writeDeploymentLog(ctx, query.CreateDeploymentLogRequest{
 				DeploymentID: deploymentID,
 				Level:        "error",
 				Message:      fmt.Sprintf("Deployment monitor timed out after %s with no terminal state", deployMaxRuntime),
 			})
-			failedStatus := "failed"
-			_, _ = query.UpdateStack(db.DB, stackID, query.UpdateStackRequest{Status: &failedStatus})
-			_ = query.UpdateDeploymentStatus(db.DB, deploymentID, "failed")
+			failDeployment(ctx, deploymentID, stackID, "timeout", nil)
 			return
 		case <-ticker.C:
 		}
@@ -154,9 +141,18 @@ func (h *DeployHandler) monitorDeployment(ctx context.Context, deploymentID, sta
 			return
 		}
 
-		_ = h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(ctx, socket.MsgDeploymentPing, map[string]any{
+		if err := h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(ctx, socket.MsgDeploymentPing, map[string]any{
 			"deployment_id": deploymentID,
-		}))
+		})); err != nil {
+			// Not fatal: the stall timeout below decides what happens next. Logged
+			// once per outage, not on every tick.
+			if !pingFailing {
+				logger.WarnCtx(ctx, "deploy", "deployment ping not sent", logger.F{"deployment_id": deploymentID, "worker_id": workerID, "error": err})
+			}
+			pingFailing = true
+		} else {
+			pingFailing = false
+		}
 
 		latest, err := query.GetLatestDeploymentLog(db.DB, deploymentID)
 		if err == nil && latest != nil && !isMonitorGeneratedLog(latest.Message) && latest.RecordedAt.After(lastProgressAt) {
@@ -176,16 +172,17 @@ func (h *DeployHandler) monitorDeployment(ctx context.Context, deploymentID, sta
 
 			err := h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(ctx, socket.MsgDeploy, retryPayload))
 			if err != nil {
-				_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+				writeDeploymentLog(ctx, query.CreateDeploymentLogRequest{
 					DeploymentID: deploymentID,
 					Level:        "error",
 					Message:      fmt.Sprintf("No deployment progress detected; retry %d/%d failed to dispatch: %v", attempt, deployMaxRetryCount, err),
 				})
+				// Not terminal: the next stall check retries or gives up.
 				logger.ErrorCtx(ctx, "deploy", "deployment retry dispatch failed", logger.F{"deployment_id": deploymentID, "worker_id": workerID, "attempt": attempt, "max_retries": deployMaxRetryCount, "error": err})
 				continue
 			}
 
-			_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+			writeDeploymentLog(ctx, query.CreateDeploymentLogRequest{
 				DeploymentID: deploymentID,
 				Level:        "warning",
 				Message:      fmt.Sprintf("No deployment progress detected for %s; retrying deployment (%d/%d)", deployStallTimeout, attempt, deployMaxRetryCount),
@@ -194,27 +191,13 @@ func (h *DeployHandler) monitorDeployment(ctx context.Context, deploymentID, sta
 			continue
 		}
 
-		_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+		writeDeploymentLog(ctx, query.CreateDeploymentLogRequest{
 			DeploymentID: deploymentID,
 			Level:        "error",
 			Message:      fmt.Sprintf("Deployment marked failed after %d stalled attempts with no progress", deployMaxRetryCount),
 		})
 
-		tx, txErr := db.BeginTx()
-		if txErr != nil {
-			logger.ErrorCtx(ctx, "deploy", "monitor failed to start transaction", logger.F{"deployment_id": deploymentID, "error": txErr})
-			return
-		}
-		defer tx.Rollback()
-		if err := query.UpdateDeploymentAndStackStatus(tx, deploymentID, "failed", stackID, "failed"); err != nil {
-			logger.ErrorCtx(ctx, "deploy", "monitor failed to update status", logger.F{"deployment_id": deploymentID, "error": err})
-			return
-		}
-		if err := tx.Commit(); err != nil {
-			logger.ErrorCtx(ctx, "deploy", "monitor failed to commit status", logger.F{"deployment_id": deploymentID, "error": err})
-			return
-		}
-		logger.ErrorCtx(ctx, "deploy", "deployment failed after stalled attempts", logger.F{"deployment_id": deploymentID, "stack_id": stackID, "attempts": deployMaxRetryCount})
+		failDeployment(ctx, deploymentID, stackID, "stalled", nil, logger.F{"attempts": deployMaxRetryCount})
 		return
 	}
 }

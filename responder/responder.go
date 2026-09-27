@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/aidenappl/lattice-api/logger"
 )
 
 type ResponseStructure struct {
@@ -38,10 +40,7 @@ func NewWithCount(w http.ResponseWriter, data interface{}, count int, next, prev
 	// set message to lowercase
 	response.Message = strings.ToLower(response.Message)
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func New(w http.ResponseWriter, data interface{}, message ...string) {
@@ -59,10 +58,7 @@ func New(w http.ResponseWriter, data interface{}, message ...string) {
 	// set message to lowercase
 	response.Message = strings.ToLower(response.Message)
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func NewCreated(w http.ResponseWriter, data interface{}, message ...string) {
@@ -79,9 +75,23 @@ func NewCreated(w http.ResponseWriter, data interface{}, message ...string) {
 
 	response.Message = strings.ToLower(response.Message)
 
+	writeJSON(w, http.StatusCreated, response)
+}
+
+// writeJSON encodes v before anything is written, so an encoding failure can
+// still become a clean 500. A failed write after that is the client going away
+// mid-response: the status and part of the body are already sent, so answering
+// with a 500 is impossible and recording one would report a disconnect as a
+// server error. It is logged at debug instead.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		SendError(w, http.StatusInternalServerError, "failed to encode response", err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+	w.WriteHeader(status)
+	if _, err := w.Write(append(b, '\n')); err != nil {
+		logger.Debug("http", "response write failed", logger.F{"status": status, "error": err})
 	}
 }

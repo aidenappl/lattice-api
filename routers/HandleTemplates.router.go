@@ -133,7 +133,7 @@ func HandleCreateTemplateFromStack(w http.ResponseWriter, r *http.Request) {
 
 	configJSON, err := json.Marshal(export)
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to marshal config")
+		responder.SendError(w, http.StatusInternalServerError, "failed to marshal config", err)
 		return
 	}
 

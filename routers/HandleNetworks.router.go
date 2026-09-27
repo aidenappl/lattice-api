@@ -2,7 +2,6 @@ package routers
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 
@@ -36,7 +35,7 @@ func (h *NetworkHandler) HandleListNetworks(w http.ResponseWriter, r *http.Reque
 	}
 
 	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(r.Context(), socket.MsgListNetworks, map[string]any{})); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send list_networks command: %v", err))
+		sendDispatchError(w, "list_networks", err)
 		return
 	}
 
@@ -78,7 +77,7 @@ func (h *NetworkHandler) HandleCreateNetwork(w http.ResponseWriter, r *http.Requ
 		"name":   body.Name,
 		"driver": body.Driver,
 	})); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send create_network command: %v", err))
+		sendDispatchError(w, "create_network", err)
 		return
 	}
 
@@ -113,7 +112,7 @@ func (h *NetworkHandler) HandleDeleteNetwork(w http.ResponseWriter, r *http.Requ
 	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(r.Context(), socket.MsgRemoveNetwork, map[string]any{
 		"name": networkName,
 	})); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send remove_network command: %v", err))
+		sendDispatchError(w, "remove_network", err)
 		return
 	}
 

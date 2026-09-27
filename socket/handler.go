@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aidenappl/lattice-api/logger"
+	"github.com/aidenappl/lattice-api/responder"
 	"github.com/gorilla/websocket"
 )
 
@@ -64,6 +65,19 @@ type WorkerHandler struct {
 	// AuthFunc validates the worker token and returns the worker ID.
 	// If nil, all connections are rejected.
 	AuthFunc func(r *http.Request) (int, bool)
+
+	// ClientIP resolves the address a connection came from, for
+	// WorkerSession.RemoteIP. If nil, it is the TCP peer's host.
+	ClientIP func(r *http.Request) string
+}
+
+// peerIP is the host part of the request's TCP peer address.
+func peerIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func NewWorkerHandler(hub *WorkerHub) *WorkerHandler {
@@ -83,7 +97,7 @@ func NewWorkerHandler(hub *WorkerHub) *WorkerHandler {
 
 func (h *WorkerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.AuthFunc == nil {
-		http.Error(w, "auth not configured", http.StatusInternalServerError)
+		responder.SendError(w, http.StatusInternalServerError, "auth not configured", errors.New("worker websocket AuthFunc is not set"))
 		return
 	}
 
@@ -109,12 +123,18 @@ func (h *WorkerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	remoteIP := peerIP(r)
+	if h.ClientIP != nil {
+		remoteIP = h.ClientIP(r)
+	}
+
 	session := &WorkerSession{
 		WorkerID:    workerID,
 		Conn:        conn,
 		LastSeenAt:  time.Now().UTC(),
 		ConnectedAt: time.Now().UTC(),
 		Send:        make(chan []byte, sendBufferSize),
+		RemoteIP:    remoteIP,
 		cancel:      cancel,
 		done:        make(chan struct{}),
 	}

@@ -2,6 +2,8 @@ package routers
 
 import (
 	"crypto/subtle"
+	"database/sql"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -163,13 +165,33 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Find user: try sso_subject first (stable), then email+auth_type=sso
 	// This allows the same email to have separate local and SSO accounts.
+	//
+	// Only "no such row" means no user. Any other lookup error must stop the
+	// login: read as "not found" it would auto-provision a second account for a
+	// person who already has one.
 	var user *structs.User
 	if subject != "" {
-		user, _ = query.GetUserBySSOSubject(db.DB, subject)
+		u, lerr := query.GetUserBySSOSubject(db.DB, subject)
+		if lerr != nil && !errors.Is(lerr, sql.ErrNoRows) {
+			logger.ErrorCtx(r.Context(), "sso", "user lookup by subject failed", logger.F{"error": lerr})
+			http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
+			return
+		}
+		if lerr == nil {
+			user = u
+		}
 	}
 	if user == nil {
 		// Look for an existing SSO account with this email (not local accounts)
-		user, _ = query.GetUserByEmailAndAuthType(db.DB, email, "sso")
+		u, lerr := query.GetUserByEmailAndAuthType(db.DB, email, "sso")
+		if lerr != nil && !errors.Is(lerr, sql.ErrNoRows) {
+			logger.ErrorCtx(r.Context(), "sso", "user lookup by email failed", logger.F{"error": lerr})
+			http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
+			return
+		}
+		if lerr == nil {
+			user = u
+		}
 	}
 
 	if user == nil {
@@ -231,7 +253,10 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Update profile image on each login (it might change at the provider)
 	if picture != "" {
-		_, _ = query.UpdateUser(db.DB, user.ID, query.UpdateUserRequest{ProfileImageURL: &picture})
+		if _, err := query.UpdateUser(db.DB, user.ID, query.UpdateUserRequest{ProfileImageURL: &picture}); err != nil && !errors.Is(err, query.ErrNoChanges) {
+			// Cosmetic: the login proceeds with the old picture.
+			logger.WarnCtx(r.Context(), "sso", "could not update profile image", logger.F{"user_id": user.ID, "error": err})
+		}
 	}
 
 	if !user.Active {

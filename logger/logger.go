@@ -349,46 +349,62 @@ func SetPanicSink(fn func(context.Context, PanicRecord)) {
 // caller depth is fixed.
 
 func Debug(component, msg string, fields ...map[string]any) {
-	logAt(context.Background(), LevelDebug, component, msg, fields)
+	logAt(context.Background(), LevelDebug, "", component, msg, fields)
 }
 
 func Info(component, msg string, fields ...map[string]any) {
-	logAt(context.Background(), LevelInfo, component, msg, fields)
+	logAt(context.Background(), LevelInfo, "", component, msg, fields)
 }
 
 func Warn(component, msg string, fields ...map[string]any) {
-	logAt(context.Background(), LevelWarn, component, msg, fields)
+	logAt(context.Background(), LevelWarn, "", component, msg, fields)
 }
 
 func Error(component, msg string, fields ...map[string]any) {
-	logAt(context.Background(), LevelError, component, msg, fields)
+	logAt(context.Background(), LevelError, "", component, msg, fields)
 }
 
 // DebugCtx is Debug for code that has a context: its request_id, trace_id,
 // user_id and job_id travel with the event.
 func DebugCtx(ctx context.Context, component, msg string, fields ...map[string]any) {
-	logAt(ctx, LevelDebug, component, msg, fields)
+	logAt(ctx, LevelDebug, "", component, msg, fields)
 }
 
 // InfoCtx is Info with the context's ids; see DebugCtx.
 func InfoCtx(ctx context.Context, component, msg string, fields ...map[string]any) {
-	logAt(ctx, LevelInfo, component, msg, fields)
+	logAt(ctx, LevelInfo, "", component, msg, fields)
 }
 
 // WarnCtx is Warn with the context's ids; see DebugCtx.
 func WarnCtx(ctx context.Context, component, msg string, fields ...map[string]any) {
-	logAt(ctx, LevelWarn, component, msg, fields)
+	logAt(ctx, LevelWarn, "", component, msg, fields)
 }
 
 // ErrorCtx is Error with the context's ids; see DebugCtx.
 func ErrorCtx(ctx context.Context, component, msg string, fields ...map[string]any) {
-	logAt(ctx, LevelError, component, msg, fields)
+	logAt(ctx, LevelError, "", component, msg, fields)
+}
+
+// EventCtx logs a lifecycle event under its own Monitor event name —
+// "deployment.succeeded", "worker.connected" — instead of the
+// "<component>.log.<level>" every other line is filed under. Use it for the few
+// events worth alerting on or counting by name; everything else stays on
+// DebugCtx/InfoCtx/WarnCtx/ErrorCtx.
+//
+// event is set as the record's slog "event" attribute deliberately. It is the
+// only way to name the event: an "event" key in fields is still renamed to
+// event_type, as for every other function here. An empty event falls back to
+// the derived name.
+func EventCtx(ctx context.Context, level Level, event, component, msg string, fields ...map[string]any) {
+	logAt(ctx, level, event, component, msg, fields)
 }
 
 // logAt builds the record and hands it to the default slog handler. It must be
 // called directly by the public functions above: runtime.Callers skips itself,
 // logAt and the public function, leaving the line that logged.
-func logAt(ctx context.Context, level Level, component, msg string, fields []map[string]any) {
+//
+// event, when not empty, names the Monitor event (see EventCtx).
+func logAt(ctx context.Context, level Level, event, component, msg string, fields []map[string]any) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -403,6 +419,9 @@ func logAt(ctx context.Context, level Level, component, msg string, fields []map
 
 	merged := mergeFields(fields)
 	r.AddAttrs(slog.String("component", component))
+	if event != "" {
+		r.AddAttrs(slog.String("event", event))
+	}
 	for _, k := range sortedKeys(merged) {
 		v := merged[k]
 		if e, ok := v.(error); ok && e != nil {

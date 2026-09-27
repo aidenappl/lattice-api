@@ -166,7 +166,7 @@ func (s *Scanner) scan(ctx context.Context) {
 		// Only scan online workers that have reported container state
 		if !s.workerHub.IsConnected(w.ID) {
 			// Check for stale state: DB says containers are running but worker is offline
-			anomalies = append(anomalies, s.checkStaleWorker(w.ID, w.Name)...)
+			anomalies = append(anomalies, s.checkStaleWorker(ctx, w.ID, w.Name)...)
 			continue
 		}
 
@@ -290,11 +290,16 @@ func (s *Scanner) scan(ctx context.Context) {
 	}
 }
 
-func (s *Scanner) checkStaleWorker(workerID int, workerName string) []Anomaly {
+func (s *Scanner) checkStaleWorker(ctx context.Context, workerID int, workerName string) []Anomaly {
 	containers, err := query.ListAllContainers(s.db, query.ListAllContainersRequest{
 		WorkerID: &workerID,
 	})
-	if err != nil || containers == nil {
+	if err != nil {
+		// Without the list the stale-worker check cannot run for this worker.
+		logger.ErrorCtx(ctx, "healthscan", "could not list worker containers", logger.F{"worker_id": workerID, "error": err})
+		return nil
+	}
+	if containers == nil {
 		return nil
 	}
 

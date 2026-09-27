@@ -76,7 +76,7 @@ func HandleCreateGlobalEnvVar(w http.ResponseWriter, r *http.Request) {
 
 	encrypted, err := crypto.Encrypt(body.Value)
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to encrypt value")
+		responder.SendError(w, http.StatusInternalServerError, "failed to encrypt value", err)
 		return
 	}
 
@@ -132,7 +132,7 @@ func HandleUpdateGlobalEnvVar(w http.ResponseWriter, r *http.Request) {
 	if body.Value != nil {
 		encryptedValue, err = crypto.Encrypt(*body.Value)
 		if err != nil {
-			responder.SendError(w, http.StatusInternalServerError, "failed to encrypt value")
+			responder.SendError(w, http.StatusInternalServerError, "failed to encrypt value", err)
 			return
 		}
 	}

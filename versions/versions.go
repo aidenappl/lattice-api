@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/aidenappl/lattice-api/logger"
-	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -75,11 +74,11 @@ func Refresh() {
 	cache.mu.Lock()
 	cache.checked = time.Now()
 	cache.mu.Unlock()
-	log.Printf("versions: refreshed — api=%s web=%s runner=%s",
-		Get("aidenappl/lattice-api"),
-		Get("aidenappl/lattice-web"),
-		Get("aidenappl/lattice-runner"),
-	)
+	logger.InfoCtx(ctx, "versions", "latest releases refreshed", logger.F{
+		"api":    Get("aidenappl/lattice-api"),
+		"web":    Get("aidenappl/lattice-web"),
+		"runner": Get("aidenappl/lattice-runner"),
+	})
 }
 
 // Get returns the cached latest release tag for a repo, or "" if unknown.

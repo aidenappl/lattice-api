@@ -45,7 +45,7 @@ func (h *ContainerActionHandler) HandleDeleteStack(w http.ResponseWriter, r *htt
 
 	tx, txErr := db.BeginTx()
 	if txErr != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction")
+		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction", txErr)
 		return
 	}
 	defer tx.Rollback()
@@ -62,7 +62,7 @@ func (h *ContainerActionHandler) HandleDeleteStack(w http.ResponseWriter, r *htt
 	}
 
 	if err := tx.Commit(); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to commit delete")
+		responder.SendError(w, http.StatusInternalServerError, "failed to commit delete", err)
 		return
 	}
 

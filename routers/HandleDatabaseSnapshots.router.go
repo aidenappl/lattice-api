@@ -212,14 +212,14 @@ func (h *DatabaseHandler) HandleRestoreSnapshot(w http.ResponseWriter, r *http.R
 	if destination.Config != nil {
 		var configMap map[string]any
 		if err := json.Unmarshal([]byte(*destination.Config), &configMap); err != nil {
-			responder.SendError(w, http.StatusInternalServerError, "failed to parse backup destination config")
+			responder.SendError(w, http.StatusInternalServerError, "failed to parse backup destination config", err)
 			return
 		}
 		payload["backup_destination"].(map[string]any)["config"] = configMap
 	}
 
 	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.NewCommand(r.Context(), socket.MsgDbRestore, payload)); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send restore command: %v", err))
+		sendDispatchError(w, "restore", err)
 		return
 	}
 

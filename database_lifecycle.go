@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -231,6 +232,9 @@ func (l *databaseLifecycle) SetWarning(instanceID int, warning *structs.Database
 
 	current, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
 	if err != nil {
+		logger.ErrorCtx(context.Background(), "database", "failed to load instance to raise warning", logger.F{
+			"database_instance_id": instanceID, "code": warning.Code, "error": err,
+		})
 		return
 	}
 	// Don't overwrite a real failure with a warning, and don't rewrite the same
@@ -272,13 +276,24 @@ func (l *databaseLifecycle) SetWarning(instanceID int, warning *structs.Database
 // detail untouched — recovery from one problem must not erase another.
 func (l *databaseLifecycle) ClearWarning(instanceID int, code string) {
 	current, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
-	if err != nil || current.LastError == nil || current.LastError.Code != code {
+	if err != nil {
+		logger.ErrorCtx(context.Background(), "database", "failed to load instance to clear warning", logger.F{
+			"database_instance_id": instanceID, "code": code, "error": err,
+		})
+		return
+	}
+	if current.LastError == nil || current.LastError.Code != code {
 		return
 	}
 
 	if _, err := query.UpdateDatabaseInstance(db.DB, instanceID, query.UpdateDatabaseInstanceRequest{
 		ClearLastError: true,
 	}); err != nil {
+		// The warning stays up although the problem is gone; the next
+		// freshness sweep retries.
+		logger.ErrorCtx(context.Background(), "database", "failed to clear warning", logger.F{
+			"database_instance_id": instanceID, "code": code, "error": err,
+		})
 		return
 	}
 
@@ -303,6 +318,11 @@ func (l *databaseLifecycle) SetHealth(instanceID int, health structs.DatabaseHea
 
 	current, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
 	if err != nil {
+		if !errors.Is(err, query.ErrNotFound) {
+			logger.ErrorCtx(context.Background(), "database", "failed to load instance to record health", logger.F{
+				"database_instance_id": instanceID, "health_status": string(health), "error": err,
+			})
+		}
 		return
 	}
 	if current.HealthStatus == string(health) {

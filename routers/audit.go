@@ -2,7 +2,6 @@ package routers
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -53,7 +52,7 @@ func logAudit(r *http.Request, action, resourceType string, resourceID *int, det
 			if err == nil {
 				return
 			}
-			log.Printf("audit log error (attempt %d/3): %v", attempt+1, err)
+			logger.WarnCtx(ctx, "audit", "audit log write failed, retrying", logger.F{"attempt": attempt + 1, "max_attempts": 3, "action": action, "resource_type": resourceType, "error": err})
 			time.Sleep(500 * time.Millisecond)
 		}
 		failed := logger.F{"action": action, "resource_type": resourceType, "error": err}

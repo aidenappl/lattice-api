@@ -1,12 +1,14 @@
 package routers
 
 import (
-	"log"
+	"errors"
 	"net/http"
+	"time"
 
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/jwt"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 )
@@ -14,7 +16,7 @@ import (
 func HandleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("lattice-refresh-token")
 	if err != nil || cookie.Value == "" {
-		log.Printf("auth/refresh: no refresh token cookie (err=%v)", err)
+		logger.DebugCtx(r.Context(), "auth", "refresh rejected: no refresh token cookie")
 		responder.SendError(w, http.StatusUnauthorized, "no refresh token provided")
 		return
 	}
@@ -25,14 +27,24 @@ func HandleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 		if claims != nil {
 			claimType = claims.Type
 		}
-		log.Printf("auth/refresh: invalid refresh token (err=%v, type=%s)", err, claimType)
+		fields := logger.F{"token_type": claimType}
+		if err != nil {
+			fields["error"] = err
+		}
+		logger.InfoCtx(r.Context(), "auth", "refresh rejected: invalid refresh token", fields)
 		responder.SendError(w, http.StatusUnauthorized, "invalid refresh token")
 		return
 	}
 
 	user, err := query.GetUserByID(db.DB, claims.UserID)
 	if err != nil || user == nil || !user.Active {
-		log.Printf("auth/refresh: user lookup failed (user_id=%d, err=%v, active=%v)", claims.UserID, err, user != nil && user.Active)
+		if err != nil && !errors.Is(err, query.ErrNotFound) {
+			// A database failure, not a bad token: the 401 below hides it from
+			// the client, so this is its only record.
+			logger.ErrorCtx(r.Context(), "auth", "refresh user lookup failed", logger.F{"user_id": claims.UserID, "error": err})
+		} else {
+			logger.InfoCtx(r.Context(), "auth", "refresh rejected: user missing or inactive", logger.F{"user_id": claims.UserID})
+		}
 		responder.SendError(w, http.StatusUnauthorized, "user not found or inactive")
 		return
 	}
@@ -62,13 +74,17 @@ func HandleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 			if claims.IssuedAt != nil {
 				issued = claims.IssuedAt.Time.String()
 			}
-			log.Printf("auth/refresh: token revoked (user_id=%d, issued=%s, revoked=%v)", user.ID, issued, *user.TokensRevokedAt)
+			logger.WarnCtx(r.Context(), "auth", "refresh rejected: token revoked", logger.F{
+				"user_id":    user.ID,
+				"issued_at":  issued,
+				"revoked_at": user.TokensRevokedAt.UTC().Format(time.RFC3339),
+			})
 			responder.SendError(w, http.StatusUnauthorized, "token has been revoked")
 			return
 		}
 	}
 
-	log.Printf("auth/refresh: success (user_id=%d)", user.ID)
+	logger.DebugCtx(r.Context(), "auth", "refresh accepted", logger.F{"user_id": user.ID})
 
 	accessToken, accessExpiry, err := jwt.NewAccessToken(user.ID)
 	if err != nil {

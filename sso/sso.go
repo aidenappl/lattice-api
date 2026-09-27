@@ -15,6 +15,7 @@ import (
 	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
+	"github.com/aidenappl/lattice-api/responder"
 )
 
 // State is stored in the DB via the settings table (so it survives restarts and
@@ -296,11 +297,18 @@ func sweepExpiredStates(ctx context.Context) {
 			// Includes every record written by the OLD format, which stored a bare
 			// RFC3339 timestamp rather than JSON. Those can never be consumed by the
 			// library, so deleting them is strictly better than leaving them.
-			_ = query.DeleteSetting(db.DB, k)
+			if err := query.DeleteSetting(db.DB, k); err != nil {
+				// One line, not one per record: the next sweep retries them all.
+				logger.WarnCtx(ctx, "sso", "could not delete unreadable login state", logger.F{"error": err})
+				return
+			}
 			continue
 		}
 		if time.Now().After(sd.ExpiresAt) {
-			_ = query.DeleteSetting(db.DB, k)
+			if err := query.DeleteSetting(db.DB, k); err != nil {
+				logger.WarnCtx(ctx, "sso", "could not delete expired login state", logger.F{"error": err})
+				return
+			}
 		}
 	}
 }
@@ -321,22 +329,19 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	provider := cfg.Provider()
 	adapter, err := ssolib.NewAdapter(r.Context(), provider)
 	if err != nil {
-		logger.ErrorCtx(r.Context(), "sso", "adapter build failed", logger.F{"error": err})
-		http.Error(w, "SSO misconfigured", http.StatusInternalServerError)
+		responder.SendError(w, http.StatusInternalServerError, "SSO misconfigured", err)
 		return
 	}
 
 	state, nonce, verifier, err := ssolib.GenerateState(r.Context(), NewStateStore(), provider.Slug, "")
 	if err != nil {
-		logger.ErrorCtx(r.Context(), "sso", "state generation failed", logger.F{"error": err})
-		http.Error(w, "failed to initialize login", http.StatusInternalServerError)
+		responder.SendError(w, http.StatusInternalServerError, "failed to generate login state", err)
 		return
 	}
 
 	authURL, err := adapter.AuthCodeURL(state, nonce, verifier)
 	if err != nil {
-		logger.ErrorCtx(r.Context(), "sso", "authorize url build failed", logger.F{"error": err})
-		http.Error(w, "failed to initialize login", http.StatusInternalServerError)
+		responder.SendError(w, http.StatusInternalServerError, "failed to build authorize url", err)
 		return
 	}
 

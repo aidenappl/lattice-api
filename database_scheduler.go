@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"time"
@@ -149,7 +150,11 @@ func (s *databaseScheduler) dispatchDue(ctx context.Context) {
 	instances, _, err := query.ListDatabaseInstances(db.DB, query.ListDatabaseInstancesRequest{
 		Limit: db.MAX_LIMIT,
 	})
-	if err != nil || instances == nil {
+	if err != nil {
+		logger.ErrorCtx(ctx, "database", "snapshot scheduler failed to list instances", logger.F{"error": err})
+		return
+	}
+	if instances == nil {
 		return
 	}
 
@@ -203,9 +208,9 @@ func (s *databaseScheduler) dispatchSlot(ctx context.Context, instance structs.D
 
 	skip := func(reason string) {
 		status := string(structs.SnapshotRunSkipped)
-		_ = query.UpdateSnapshotRun(db.DB, run.ID, query.UpdateSnapshotRunRequest{
+		logSnapshotRunUpdateErr(ctx, run.ID, status, query.UpdateSnapshotRun(db.DB, run.ID, query.UpdateSnapshotRunRequest{
 			Status: &status, SkipReason: &reason, Finished: true,
-		})
+		}))
 		logger.WarnCtx(ctx, "database", "scheduled snapshot skipped", logger.F{
 			"database_instance_id": instance.ID,
 			"scheduled_at":         slot,
@@ -227,6 +232,13 @@ func (s *databaseScheduler) dispatchSlot(ctx context.Context, instance structs.D
 	// Exclude the run just claimed above — it is `claimed`, and counting it
 	// would make every run skip itself.
 	inFlight, err := query.HasRunInFlight(db.DB, instance.ID, run.ID)
+	if err != nil {
+		// Proceeds as if nothing were in flight: a missed backup is worse than
+		// an overlapping one.
+		logger.ErrorCtx(ctx, "database", "failed to check for an in-flight snapshot run", logger.F{
+			"database_instance_id": instance.ID, "run_id": run.ID, "error": err,
+		})
+	}
 	if err == nil && inFlight {
 		skip("the previous scheduled snapshot is still running")
 		return
@@ -245,9 +257,9 @@ func (s *databaseScheduler) dispatchSlot(ctx context.Context, instance structs.D
 	if err != nil {
 		status := string(structs.SnapshotRunFailed)
 		reason := err.Error()
-		_ = query.UpdateSnapshotRun(db.DB, run.ID, query.UpdateSnapshotRunRequest{
+		logSnapshotRunUpdateErr(ctx, run.ID, status, query.UpdateSnapshotRun(db.DB, run.ID, query.UpdateSnapshotRunRequest{
 			Status: &status, SkipReason: &reason, Finished: true,
-		})
+		}))
 		logger.ErrorCtx(ctx, "database", "failed to dispatch scheduled snapshot", logger.F{
 			"database_instance_id": instance.ID, "error": err,
 		})
@@ -256,9 +268,9 @@ func (s *databaseScheduler) dispatchSlot(ctx context.Context, instance structs.D
 
 	status := string(structs.SnapshotRunRunning)
 	dispatched := time.Now().UTC()
-	_ = query.UpdateSnapshotRun(db.DB, run.ID, query.UpdateSnapshotRunRequest{
+	logSnapshotRunUpdateErr(ctx, run.ID, status, query.UpdateSnapshotRun(db.DB, run.ID, query.UpdateSnapshotRunRequest{
 		Status: &status, SnapshotID: &snapshot.ID, DispatchedAt: &dispatched,
-	})
+	}))
 
 	logger.InfoCtx(ctx, "database", "scheduled snapshot dispatched", logger.F{
 		"database_instance_id": instance.ID,
@@ -275,14 +287,15 @@ func (s *databaseScheduler) failStuckRuns(ctx context.Context) {
 	cutoff := time.Now().UTC().Add(-snapshotRunTimeout)
 	runs, err := query.ListStuckSnapshotRuns(db.DB, cutoff)
 	if err != nil {
+		logger.ErrorCtx(ctx, "database", "failed to list stuck snapshot runs", logger.F{"error": err})
 		return
 	}
 	for _, run := range runs {
 		status := string(structs.SnapshotRunFailed)
 		reason := fmt.Sprintf("no result within %s of its scheduled time", snapshotRunTimeout)
-		_ = query.UpdateSnapshotRun(db.DB, run.ID, query.UpdateSnapshotRunRequest{
+		logSnapshotRunUpdateErr(ctx, run.ID, status, query.UpdateSnapshotRun(db.DB, run.ID, query.UpdateSnapshotRunRequest{
 			Status: &status, SkipReason: &reason, Finished: true,
-		})
+		}))
 		logger.ErrorCtx(ctx, "database", "scheduled snapshot run timed out", logger.F{
 			"database_instance_id": run.DatabaseInstanceID,
 			"scheduled_at":         run.ScheduledAt,
@@ -293,16 +306,31 @@ func (s *databaseScheduler) failStuckRuns(ctx context.Context) {
 
 // closeRunForSnapshot marks the run owning a snapshot finished. Called when a
 // snapshot reaches a terminal status.
-func closeRunForSnapshot(snapshotID int, succeeded bool) {
+func closeRunForSnapshot(ctx context.Context, snapshotID int, succeeded bool) {
 	run, err := query.FindRunBySnapshotID(db.DB, snapshotID)
+	if errors.Is(err, query.ErrNotFound) {
+		return // a manual snapshot: no scheduled run owns it
+	}
 	if err != nil {
+		// The run stays open until failStuckRuns times it out, blocking the
+		// schedule's later slots until then.
+		logger.ErrorCtx(ctx, "database", "failed to find the snapshot run to close", logger.F{"snapshot_id": snapshotID, "error": err})
 		return
 	}
 	status := string(structs.SnapshotRunDone)
 	if !succeeded {
 		status = string(structs.SnapshotRunFailed)
 	}
-	_ = query.UpdateSnapshotRun(db.DB, run.ID, query.UpdateSnapshotRunRequest{
+	logSnapshotRunUpdateErr(ctx, run.ID, status, query.UpdateSnapshotRun(db.DB, run.ID, query.UpdateSnapshotRunRequest{
 		Status: &status, Finished: true,
-	})
+	}))
+}
+
+// logSnapshotRunUpdateErr records a failed write of a snapshot run's status. A
+// run whose close is lost stays open and, through skip-on-overrun, blocks the
+// schedule until failStuckRuns reaps it.
+func logSnapshotRunUpdateErr(ctx context.Context, runID int, status string, err error) {
+	if err != nil {
+		logger.ErrorCtx(ctx, "database", "failed to update snapshot run", logger.F{"run_id": runID, "status": status, "error": err})
+	}
 }

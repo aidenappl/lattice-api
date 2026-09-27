@@ -159,14 +159,14 @@ func isTrustedProxy(ipStr string) bool {
 	return false
 }
 
-// getClientIP extracts the client IP address for rate limiting.
+// ClientIP extracts the client IP address for rate limiting.
 //
 // Trust model: forwarding headers (X-Forwarded-For / X-Real-IP) are attacker-
 // controllable, so we only honor them when the direct TCP peer is a configured
 // trusted proxy (TRUSTED_PROXIES). Otherwise the client IP is the TCP peer
 // itself. This prevents an attacker from spoofing headers to evade the auth
 // brute-force limiter or to flood the bucket map with fake keys.
-func getClientIP(r *http.Request) string {
+func ClientIP(r *http.Request) string {
 	peer := remoteIP(r)
 	if !isTrustedProxy(peer) {
 		return peer
@@ -199,7 +199,7 @@ func RateLimitMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		ip := getClientIP(r)
+		ip := ClientIP(r)
 
 		// Deploy token + automation webhook + auth endpoints: 1 rps, burst 5.
 		// Automation webhooks share the token bucket deliberately: a retried

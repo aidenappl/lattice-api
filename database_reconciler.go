@@ -197,11 +197,15 @@ func (rc *databaseReconciler) failStuckInstances(ctx context.Context) {
 // not working. Instances that have never produced a snapshot are held to the same
 // rule, measured from whichever is later — the instance's creation or the
 // schedule's second-most-recent fire time.
-func (rc *databaseReconciler) flagStaleBackups(_ context.Context) {
+func (rc *databaseReconciler) flagStaleBackups(ctx context.Context) {
 	instances, _, err := query.ListDatabaseInstances(db.DB, query.ListDatabaseInstancesRequest{
 		Limit: db.MAX_LIMIT,
 	})
-	if err != nil || instances == nil {
+	if err != nil {
+		logger.ErrorCtx(ctx, "database", "backup freshness check failed to list instances", logger.F{"error": err})
+		return
+	}
+	if instances == nil {
 		return
 	}
 
@@ -227,6 +231,11 @@ func (rc *databaseReconciler) flagStaleBackups(_ context.Context) {
 
 		lastSuccess, err := query.GetLastSuccessfulSnapshotAt(db.DB, instance.ID)
 		if err != nil {
+			// Skipped, not guessed: a stale warning is neither raised nor
+			// cleared on a read that failed.
+			logger.ErrorCtx(ctx, "database", "backup freshness check skipped, last snapshot unreadable", logger.F{
+				"database_instance_id": instance.ID, "error": err,
+			})
 			continue
 		}
 		if lastSuccess != nil && !lastSuccess.Before(deadline) {

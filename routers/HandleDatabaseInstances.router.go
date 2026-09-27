@@ -346,7 +346,7 @@ func (h *DatabaseHandler) HandleCreateDatabaseInstance(w http.ResponseWriter, r 
 	if body.RootPassword == "" {
 		b := make([]byte, 12)
 		if _, err := rand.Read(b); err != nil {
-			responder.SendError(w, http.StatusInternalServerError, "failed to generate root password")
+			responder.SendError(w, http.StatusInternalServerError, "failed to generate root password", err)
 			return
 		}
 		body.RootPassword = hex.EncodeToString(b)
@@ -354,7 +354,7 @@ func (h *DatabaseHandler) HandleCreateDatabaseInstance(w http.ResponseWriter, r 
 	if body.Password == "" {
 		b := make([]byte, 12)
 		if _, err := rand.Read(b); err != nil {
-			responder.SendError(w, http.StatusInternalServerError, "failed to generate password")
+			responder.SendError(w, http.StatusInternalServerError, "failed to generate password", err)
 			return
 		}
 		body.Password = hex.EncodeToString(b)
@@ -426,16 +426,19 @@ func (h *DatabaseHandler) HandleCreateDatabaseInstance(w http.ResponseWriter, r 
 		// plainly instead of leaving it to sit in pending forever.
 		msg := fmt.Sprintf("failed to send create command to worker: %v", err)
 		failed := string(structs.DBStatusError)
-		_, _ = query.UpdateDatabaseInstance(db.DB, instance.ID, query.UpdateDatabaseInstanceRequest{
+		if _, uerr := query.UpdateDatabaseInstance(db.DB, instance.ID, query.UpdateDatabaseInstanceRequest{
 			Status: &failed,
 			LastError: &structs.DatabaseError{
 				Code:      structs.DBErrCodeWorkerOffline,
 				Message:   msg,
 				Retryable: true,
 			},
-		})
+		}); uerr != nil {
+			// The instance is left in pending with no record of why.
+			logger.ErrorCtx(r.Context(), "database", "could not record create dispatch failure", logger.F{"database_instance_id": instance.ID, "error": uerr})
+		}
 		dbEvent(instance.ID, structs.DBEventFailed, msg, r)
-		responder.SendError(w, http.StatusInternalServerError, msg)
+		responder.SendError(w, http.StatusInternalServerError, msg, err)
 		return
 	}
 
@@ -749,7 +752,7 @@ func (h *DatabaseHandler) HandleDeleteDatabaseInstance(w http.ResponseWriter, r 
 
 	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.NewCommand(r.Context(), socket.MsgDbRemove, payload)); err != nil {
 		responder.SendError(w, http.StatusInternalServerError,
-			fmt.Sprintf("failed to send delete command to worker %d: %v", instance.WorkerID, err))
+			fmt.Sprintf("failed to send delete command to worker %d: %v", instance.WorkerID, err), err)
 		return
 	}
 
@@ -808,7 +811,7 @@ func (h *DatabaseHandler) HandleDatabaseAction(w http.ResponseWriter, r *http.Re
 	}
 
 	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.NewCommand(r.Context(), msgType, payload)); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send %s command: %v", action, err))
+		sendDispatchError(w, action, err)
 		return
 	}
 

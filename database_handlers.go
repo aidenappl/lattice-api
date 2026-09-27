@@ -134,7 +134,15 @@ func ensureScheduledSnapshotRow(instanceID int, filename string) (*structs.Datab
 // Returns true when it took ownership of the instance.
 func finaliseDeleteAfterSnapshot(ctx context.Context, instanceID int, hub *socket.WorkerHub) bool {
 	instance, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
-	if err != nil || !instance.PendingFinalSnapshot {
+	if err != nil {
+		// A delete waiting on this snapshot, if any, stays pending: the
+		// database is kept, which is the safe side to fail on.
+		logger.ErrorCtx(ctx, "database", "failed to load instance after snapshot to check for a pending delete", logger.F{
+			"database_instance_id": instanceID, "error": err,
+		})
+		return false
+	}
+	if !instance.PendingFinalSnapshot {
 		return false
 	}
 
@@ -194,7 +202,11 @@ func applySnapshotRetention(ctx context.Context, instanceID int, hub *socket.Wor
 	const minSnapshotRedundancy = 2
 
 	instance, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
-	if err != nil || instance.RetentionCount == nil || *instance.RetentionCount <= 0 {
+	if err != nil {
+		logger.ErrorCtx(ctx, "database", "retention failed to load instance", logger.F{"database_instance_id": instanceID, "error": err})
+		return
+	}
+	if instance.RetentionCount == nil || *instance.RetentionCount <= 0 {
 		return
 	}
 
@@ -210,7 +222,11 @@ func applySnapshotRetention(ctx context.Context, instanceID int, hub *socket.Wor
 	}
 
 	snapshots, err := query.ListSnapshotsByInstance(db.DB, instanceID)
-	if err != nil || snapshots == nil {
+	if err != nil {
+		logger.ErrorCtx(ctx, "database", "retention failed to list snapshots", logger.F{"database_instance_id": instanceID, "error": err})
+		return
+	}
+	if snapshots == nil {
 		return
 	}
 
@@ -258,6 +274,9 @@ func isAbsentContainerMessage(message string) bool {
 func dbInstanceStatus(instanceID int) string {
 	instance, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
 	if err != nil {
+		if !errors.Is(err, query.ErrNotFound) {
+			logger.ErrorCtx(context.Background(), "database", "failed to load instance status", logger.F{"database_instance_id": instanceID, "error": err})
+		}
 		return ""
 	}
 	return instance.Status
@@ -559,7 +578,11 @@ func reconcileDatabaseInstance(ctx context.Context, instance structs.DatabaseIns
 // independent of the mirror's.
 func recordPrimaryReplicaAndMirror(ctx context.Context, snapshotID int, sizeBytes *int64, hub *socket.WorkerHub) {
 	snapshot, err := query.GetSnapshotByID(db.DB, snapshotID)
-	if err != nil || snapshot.BackupDestinationID == nil {
+	if err != nil {
+		logger.ErrorCtx(ctx, "database", "failed to load completed snapshot to record its replica", logger.F{"snapshot_id": snapshotID, "error": err})
+		return
+	}
+	if snapshot.BackupDestinationID == nil {
 		return
 	}
 
@@ -576,35 +599,51 @@ func recordPrimaryReplicaAndMirror(ctx context.Context, snapshotID int, sizeByte
 	}
 
 	instance, err := query.GetDatabaseInstanceByID(db.DB, snapshot.DatabaseInstanceID)
-	if err != nil || instance.MirrorBackupDestinationID == nil {
+	if err != nil {
+		logger.ErrorCtx(ctx, "database", "failed to load instance for snapshot mirror", logger.F{
+			"snapshot_id": snapshot.ID, "database_instance_id": snapshot.DatabaseInstanceID, "error": err,
+		})
+		return
+	}
+	if instance.MirrorBackupDestinationID == nil {
 		return
 	}
 	if *instance.MirrorBackupDestinationID == *snapshot.BackupDestinationID {
 		return // a mirror to the same destination is not a second copy
 	}
 
+	// Each failure below leaves the snapshot with no mirror, and nothing retries
+	// it: an error, not a warning.
+	mirrorFields := logger.F{"snapshot_id": snapshot.ID, "database_instance_id": instance.ID}
 	source, err := query.GetBackupDestinationByID(db.DB, *snapshot.BackupDestinationID)
 	if err != nil {
+		mirrorFields["backup_destination_id"], mirrorFields["error"] = *snapshot.BackupDestinationID, err
+		logger.ErrorCtx(ctx, "database", "failed to load mirror source destination", mirrorFields)
 		return
 	}
 	target, err := query.GetBackupDestinationByID(db.DB, *instance.MirrorBackupDestinationID)
 	if err != nil {
+		mirrorFields["backup_destination_id"], mirrorFields["error"] = *instance.MirrorBackupDestinationID, err
+		logger.ErrorCtx(ctx, "database", "failed to load mirror target destination", mirrorFields)
 		return
 	}
+	mirrorFields["backup_destination_id"] = target.ID
 
-	_ = query.UpsertSnapshotReplica(db.DB, query.UpsertReplicaRequest{
+	logMirrorReplicaErr(ctx, mirrorFields, structs.ReplicaPending, query.UpsertSnapshotReplica(db.DB, query.UpsertReplicaRequest{
 		SnapshotID:          snapshot.ID,
 		BackupDestinationID: target.ID,
 		Role:                structs.ReplicaRoleMirror,
 		Status:              structs.ReplicaPending,
-	})
+	}))
 
 	if !hub.IsConnected(instance.WorkerID) {
 		reason := fmt.Sprintf("worker %d is not connected", instance.WorkerID)
-		_ = query.UpsertSnapshotReplica(db.DB, query.UpsertReplicaRequest{
+		logMirrorReplicaErr(ctx, mirrorFields, structs.ReplicaFailed, query.UpsertSnapshotReplica(db.DB, query.UpsertReplicaRequest{
 			SnapshotID: snapshot.ID, BackupDestinationID: target.ID,
 			Role: structs.ReplicaRoleMirror, Status: structs.ReplicaFailed, ErrorMessage: &reason,
-		})
+		}))
+		mirrorFields["worker_id"] = instance.WorkerID
+		logger.WarnCtx(ctx, "database", "snapshot mirror not dispatched, worker not connected", mirrorFields)
 		return
 	}
 
@@ -618,11 +657,31 @@ func recordPrimaryReplicaAndMirror(ctx context.Context, snapshotID int, sizeByte
 
 	if err := hub.SendJSONToWorker(instance.WorkerID, socket.NewCommand(ctx, socket.MsgDbMirrorSnapshot, payload)); err != nil {
 		reason := err.Error()
-		_ = query.UpsertSnapshotReplica(db.DB, query.UpsertReplicaRequest{
+		logMirrorReplicaErr(ctx, mirrorFields, structs.ReplicaFailed, query.UpsertSnapshotReplica(db.DB, query.UpsertReplicaRequest{
 			SnapshotID: snapshot.ID, BackupDestinationID: target.ID,
 			Role: structs.ReplicaRoleMirror, Status: structs.ReplicaFailed, ErrorMessage: &reason,
-		})
+		}))
+		sendFields := logger.F{"worker_id": instance.WorkerID, "error": err}
+		for k, v := range mirrorFields {
+			sendFields[k] = v
+		}
+		logger.WarnCtx(ctx, "database", "snapshot mirror dispatch failed", sendFields)
 	}
+}
+
+// logMirrorReplicaErr records a failed write of a mirror replica's status: the
+// backup posture then misreports the mirror.
+func logMirrorReplicaErr(ctx context.Context, fields logger.F, status string, err error) {
+	if err == nil {
+		return
+	}
+	f := logger.F{"replica_status": status, "error": err}
+	for k, v := range fields {
+		if k != "error" {
+			f[k] = v
+		}
+	}
+	logger.ErrorCtx(ctx, "database", "failed to record mirror replica", f)
 }
 
 func destinationPayload(dest *structs.BackupDestination) map[string]any {
@@ -651,10 +710,20 @@ func handleMirrorStatus(ctx context.Context, payload map[string]any) {
 
 	snapshot, err := query.GetSnapshotByID(db.DB, snapshotID)
 	if err != nil {
+		logger.ErrorCtx(ctx, "database", "failed to load snapshot for mirror status", logger.F{"snapshot_id": snapshotID, "status": status, "error": err})
 		return
 	}
 	instance, err := query.GetDatabaseInstanceByID(db.DB, snapshot.DatabaseInstanceID)
-	if err != nil || instance.MirrorBackupDestinationID == nil {
+	if err != nil {
+		logger.ErrorCtx(ctx, "database", "failed to load instance for mirror status", logger.F{
+			"snapshot_id": snapshotID, "database_instance_id": snapshot.DatabaseInstanceID, "error": err,
+		})
+		return
+	}
+	if instance.MirrorBackupDestinationID == nil {
+		// The mirror was removed while the copy was running; there is no
+		// replica row to record it against.
+		logger.DebugCtx(ctx, "database", "mirror status for an instance with no mirror", logger.F{"snapshot_id": snapshotID, "database_instance_id": instance.ID, "status": status})
 		return
 	}
 

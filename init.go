@@ -122,6 +122,9 @@ func initApp() *appContext {
 	workerHandler.AuthFunc = func(r *http.Request) (int, bool) {
 		return middleware.WorkerTokenAuth(r)
 	}
+	// Behind the proxy, the TCP peer is the proxy; this resolves the worker's
+	// own address for worker.connected / worker.disconnected.
+	workerHandler.ClientIP = middleware.ClientIP
 	configureWorkerHandler(workerHandler, adminHub, scanner)
 
 	// Admin WebSocket handler

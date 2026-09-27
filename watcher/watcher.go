@@ -51,12 +51,21 @@ func safePoll() {
 func poll(ctx context.Context) {
 	// Get all active stacks
 	stacks, err := query.ListStacks(db.DB, query.ListStacksRequest{Limit: 500})
-	if err != nil || stacks == nil {
+	if err != nil {
+		logger.ErrorCtx(ctx, "watcher", "could not list stacks", logger.F{"error": err})
+		return
+	}
+	if stacks == nil {
 		return
 	}
 
-	// Get all registries (with decrypted credentials) for auth lookups
-	registries, _ := query.ListRegistries(db.DB)
+	// Get all registries (with decrypted credentials) for auth lookups. Without
+	// them no image can be checked, so the poll stops here.
+	registries, err := query.ListRegistries(db.DB)
+	if err != nil {
+		logger.ErrorCtx(ctx, "watcher", "could not list registries", logger.F{"error": err})
+		return
+	}
 
 	// Build a map of registry ID -> Registry for quick lookup
 	regMap := make(map[int]*registry.Client)
@@ -79,10 +88,16 @@ func poll(ctx context.Context) {
 	// Track which cache keys are still live this cycle so we can prune keys for
 	// containers/images that no longer exist and stop the map growing unbounded.
 	seenKeys := make(map[string]struct{})
+	// A registry that is down fails for every image on it; report it once a poll.
+	failedRegistries := make(map[int]struct{})
 
 	for _, stack := range *stacks {
 		containers, err := query.ListContainersByStack(db.DB, stack.ID)
-		if err != nil || containers == nil {
+		if err != nil {
+			logger.ErrorCtx(ctx, "watcher", "could not list stack containers", logger.F{"stack_id": stack.ID, "error": err})
+			continue
+		}
+		if containers == nil {
 			continue
 		}
 
@@ -114,6 +129,17 @@ func poll(ctx context.Context) {
 				// tags being pushed but won't detect mutable tag re-pushes.
 				tags, tagErr := reg.ListTags(repo)
 				if tagErr != nil {
+					// Unreachable or rejecting our credentials: the user's
+					// registry, not this service, so a warning.
+					if _, seen := failedRegistries[*c.RegistryID]; !seen {
+						failedRegistries[*c.RegistryID] = struct{}{}
+						logger.WarnCtx(ctx, "watcher", "registry check failed", logger.F{
+							"registry":    regNames[*c.RegistryID],
+							"registry_id": *c.RegistryID,
+							"image":       repo,
+							"error":       tagErr,
+						})
+					}
 					continue
 				}
 				sort.Strings(tags)

@@ -77,7 +77,7 @@ func (h *ContainerActionHandler) HandleRecreateContainer(w http.ResponseWriter, 
 	}
 
 	if err := h.RecreateContainer(r.Context(), container, *stack.WorkerID); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send recreate command: %v", err))
+		sendDispatchError(w, "recreate", err)
 		return
 	}
 
@@ -118,7 +118,7 @@ func (h *ContainerActionHandler) sendContainerAction(w http.ResponseWriter, r *h
 		"container_name": container.Name,
 		"container_id":   container.ID,
 	})); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send %s command: %v", action, err))
+		sendDispatchError(w, action, err)
 		return
 	}
 

@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"io"
 
 	"github.com/aidenappl/lattice-api/env"
+	"github.com/aidenappl/lattice-api/logger"
 )
 
 var (
@@ -26,7 +28,7 @@ func Init() {
 		if env.Environment == "production" {
 			panic("ENCRYPTION_KEY is required in production (64 hex chars / 32 bytes); refusing to start with plaintext secret storage")
 		}
-		fmt.Println("⚠️  WARNING: ENCRYPTION_KEY is not set — secrets will be stored/read as PLAINTEXT (development passthrough). Do NOT run this configuration in production.")
+		logger.WarnCtx(context.Background(), "config", "ENCRYPTION_KEY is not set: secrets are stored and read as PLAINTEXT (development passthrough); do not run this configuration in production")
 		active = false
 		return
 	}

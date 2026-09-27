@@ -2,7 +2,6 @@ package routers
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 
@@ -36,7 +35,7 @@ func (h *VolumeHandler) HandleListVolumes(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(r.Context(), socket.MsgListVolumes, map[string]any{})); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send list_volumes command: %v", err))
+		sendDispatchError(w, "list_volumes", err)
 		return
 	}
 
@@ -78,7 +77,7 @@ func (h *VolumeHandler) HandleCreateVolume(w http.ResponseWriter, r *http.Reques
 		"name":   body.Name,
 		"driver": body.Driver,
 	})); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send create_volume command: %v", err))
+		sendDispatchError(w, "create_volume", err)
 		return
 	}
 
@@ -114,7 +113,7 @@ func (h *VolumeHandler) HandleDeleteVolume(w http.ResponseWriter, r *http.Reques
 		"name":  volumeName,
 		"force": r.URL.Query().Get("force") == "true",
 	})); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send remove_volume command: %v", err))
+		sendDispatchError(w, "remove_volume", err)
 		return
 	}
 

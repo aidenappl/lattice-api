@@ -13,6 +13,7 @@ import (
 	monitor "github.com/aidenappl/go-monitor"
 	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/logger"
+	"github.com/aidenappl/lattice-api/responder"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 )
@@ -89,6 +90,10 @@ type failure struct {
 	message string
 	err     string
 	code    int
+	// upstream marks a failure of a third-party service the user configured
+	// (a registry that is down or rejects its credentials): the 5xx it produces
+	// is recorded as a warning, not an issue in this service.
+	upstream bool
 }
 
 type statusResponseWriter struct {
@@ -143,6 +148,13 @@ func (rw *statusResponseWriter) RecordFailure(message string, err error, code in
 	rw.failure = f
 }
 
+// RecordUpstreamFailure is RecordFailure for a failure caused by a third-party
+// service the user configured. responder.SendUpstreamError calls it.
+func (rw *statusResponseWriter) RecordUpstreamFailure(message string, err error, code int) {
+	rw.RecordFailure(message, err, code)
+	rw.failure.upstream = true
+}
+
 // findStatusWriter locates this package's writer under any wrappers.
 func findStatusWriter(w http.ResponseWriter) *statusResponseWriter {
 	for w != nil {
@@ -182,7 +194,10 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 
 		duration := time.Since(start)
 		requestID := GetRequestID(r.Context())
-		logger.Request(requestID, r.Method, r.URL.Path, srw.statusCode, duration)
+		// The route template, never the raw path: /api/deploy/{token} and
+		// /api/automations/{token} carry credentials, and stdout ends up in
+		// container logs.
+		logger.Request(requestID, r.Method, routeTemplate(r), srw.statusCode, duration)
 
 		emitRequest(r, srw, duration)
 	})
@@ -200,11 +215,11 @@ func emitRequest(r *http.Request, srw *statusResponseWriter, duration time.Durat
 	data := map[string]any{
 		"method":         r.Method,
 		"path":           routeTemplate(r),
-		"request_path":   r.URL.Path,
+		"request_path":   redactedPath(r),
 		"status_code":    status,
 		"duration_ms":    duration.Milliseconds(),
 		"response_bytes": srw.bytes,
-		"client_ip":      getClientIP(r),
+		"client_ip":      ClientIP(r),
 		"user_agent":     r.UserAgent(),
 	}
 	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
@@ -222,6 +237,10 @@ func emitRequest(r *http.Request, srw *statusResponseWriter, duration time.Durat
 
 	level := monitor.LevelInfo
 	switch {
+	case status >= 500 && srw.failure != nil && srw.failure.upstream:
+		// Someone else's service failed; nothing here needs fixing.
+		level = monitor.LevelWarn
+		data["upstream_failure"] = true
 	case status >= 500:
 		level = monitor.LevelError
 	case status >= 400:
@@ -235,6 +254,11 @@ func emitRequest(r *http.Request, srw *statusResponseWriter, duration time.Durat
 	monitor.Emit(ctx, "http.request.end", data, monitor.WithLevel(level))
 }
 
+// UnmatchedRoute is the route template of a request no route matched. It is a
+// constant on purpose: an unmatched path is caller-controlled, so it must never
+// become a grouping key or a stdout line.
+const UnmatchedRoute = "(unmatched)"
+
 // routeTemplate is the matched route pattern ("/admin/stacks/{id}"). Monitor
 // groups issues by it; the raw path would split one failing endpoint into an
 // issue per id — and /api/deploy/{token} would put a credential in the grouping
@@ -245,7 +269,53 @@ func routeTemplate(r *http.Request) string {
 			return t
 		}
 	}
-	return r.URL.Path
+	return UnmatchedRoute
+}
+
+// credentialVars are route variables that hold a secret.
+var credentialVars = []string{"token"}
+
+// redactedPath is the request path with any credential route variable
+// replaced, so the concrete path (with its ids) can still be recorded.
+//
+// An unmatched request (404/405) has no route variables to redact by, and its
+// path can still carry a credential (GET /api/deploy/<token> is a 405), so the
+// raw path is dropped entirely in favour of UnmatchedRoute.
+func redactedPath(r *http.Request) string {
+	if routeTemplate(r) == UnmatchedRoute {
+		return UnmatchedRoute
+	}
+	path := r.URL.Path
+	vars := mux.Vars(r)
+	for _, k := range credentialVars {
+		if v := vars[k]; v != "" {
+			path = strings.ReplaceAll(path, v, "[redacted]")
+		}
+	}
+	return path
+}
+
+// UnmatchedHandler answers a request no route matched with status (404 or
+// 405) in the API's JSON error shape. Wrap it in the same middleware chain as
+// the routes (see main.go): r.Use only runs for matched routes, so without the
+// wrapping an unmatched request produces no event at all.
+func UnmatchedHandler(status int) http.Handler {
+	msg := "route not found"
+	if status == http.StatusMethodNotAllowed {
+		msg = "method not allowed"
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		responder.SendError(w, status, msg)
+	})
+}
+
+// Wrap applies mws to h in the order router.Use would: mws[0] outermost. It
+// is for handlers r.Use never reaches, such as the router's NotFoundHandler.
+func Wrap(h http.Handler, mws ...mux.MiddlewareFunc) http.Handler {
+	for i := len(mws) - 1; i >= 0; i-- {
+		h = mws[i](h)
+	}
+	return h
 }
 
 // RecoverMiddleware turns a panicking handler into a 500 response and a
@@ -267,7 +337,7 @@ func RecoverMiddleware(next http.Handler) http.Handler {
 			rw := findStatusWriter(w)
 			logger.PanicContext(r.Context(), "http "+r.Method+" "+routeTemplate(r), rec, logger.F{
 				"request_id": GetRequestID(r.Context()),
-				"path":       r.URL.Path,
+				"path":       redactedPath(r),
 			})
 			if rw != nil {
 				rw.RecordFailure("internal server error", fmt.Errorf("panic: %v", rec), 1000)

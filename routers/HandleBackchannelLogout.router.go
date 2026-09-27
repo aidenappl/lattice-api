@@ -3,10 +3,11 @@ package routers
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
+	"strings"
 
 	ssolib "github.com/aidenappl/go-forta/sso"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/sso"
 )
 
@@ -49,7 +50,25 @@ var backchannelLogout = &ssolib.BackchannelLogout{
 		// effect at the next notification rather than the next restart.
 		return sso.LoadConfig().Provider(), nil
 	},
-	Logf: log.Printf,
+	Logf: logBackchannel,
+}
+
+// logBackchannel bridges go-forta's receiver diagnostics into the logger. Its
+// text varies per call, so it is data (detail), not the message — the same
+// bridge as the checkpointer's in middleware/auth.go. The library marks its
+// warnings with a "WARN " prefix and names each outcome with a fixed
+// SSO_BACKCHANNEL_* code, which is kept as a field to filter on.
+func logBackchannel(format string, args ...any) {
+	fields := logger.F{"detail": fmt.Sprintf(format, args...)}
+	f := strings.TrimPrefix(format, "WARN ")
+	if code, _, ok := strings.Cut(f, ":"); ok && strings.HasPrefix(code, "SSO_BACKCHANNEL_") {
+		fields["code"] = code
+	}
+	if f != format {
+		logger.WarnCtx(context.Background(), "sso", "sso backchannel logout", fields)
+		return
+	}
+	logger.InfoCtx(context.Background(), "sso", "sso backchannel logout", fields)
 }
 
 // HandleBackchannelLogout serves the receiver.

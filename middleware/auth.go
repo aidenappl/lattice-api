@@ -80,7 +80,7 @@ func DualAuthMiddleware(next http.Handler) http.Handler {
 
 		// Try API token (long-lived) from Authorization header
 		if bearerToken != "" {
-			if user, apiToken := validateApiToken(bearerToken); user != nil {
+			if user, apiToken := validateApiToken(r.Context(), bearerToken); user != nil {
 				if !apiTokenScopeAllows(apiToken.Scopes, r.Method) {
 					responder.SendError(w, http.StatusForbidden, "api token scope does not permit this operation")
 					return
@@ -159,8 +159,11 @@ func WorkerTokenAuth(r *http.Request) (int, bool) {
 		return 0, false
 	}
 
-	// Update last_used_at
-	_ = query.TouchWorkerToken(db.DB, wt.ID)
+	// Update last_used_at. Not worth refusing the worker over, but a token
+	// whose use stops being recorded is invisible to anyone auditing it.
+	if err := query.TouchWorkerToken(db.DB, wt.ID); err != nil {
+		logger.WarnCtx(r.Context(), "auth", "could not record worker token use", logger.F{"worker_token_id": wt.ID, "worker_id": wt.WorkerID, "error": err})
+	}
 
 	return wt.WorkerID, true
 }
@@ -248,7 +251,7 @@ func NormalizeApiTokenScopes(scopes *string) (*string, bool) {
 	return &joined, true
 }
 
-func validateApiToken(tokenStr string) (*structs.User, *structs.ApiToken) {
+func validateApiToken(ctx context.Context, tokenStr string) (*structs.User, *structs.ApiToken) {
 	hash := tools.HashToken(tokenStr)
 	apiToken, err := query.GetApiTokenByHash(db.DB, hash)
 	if err != nil || apiToken == nil || !apiToken.Active {
@@ -260,7 +263,10 @@ func validateApiToken(tokenStr string) (*structs.User, *structs.ApiToken) {
 		return nil, nil
 	}
 
-	_ = query.TouchApiToken(db.DB, apiToken.ID)
+	if err := query.TouchApiToken(db.DB, apiToken.ID); err != nil {
+		// As for worker tokens: the request proceeds, the lapse is recorded.
+		logger.WarnCtx(ctx, "auth", "could not record api token use", logger.F{"api_token_id": apiToken.ID, "user_id": user.ID, "error": err})
+	}
 
 	return user, apiToken
 }

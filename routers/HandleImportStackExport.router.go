@@ -64,7 +64,7 @@ func HandleImportStackExport(w http.ResponseWriter, r *http.Request) {
 	// Begin transaction — if container creation fails, the stack is rolled back too
 	tx, err := db.BeginTx()
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction")
+		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction", err)
 		return
 	}
 	defer tx.Rollback() // no-op if committed
@@ -122,7 +122,7 @@ func HandleImportStackExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := tx.Commit(); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to commit transaction")
+		responder.SendError(w, http.StatusInternalServerError, "failed to commit transaction", err)
 		return
 	}
 

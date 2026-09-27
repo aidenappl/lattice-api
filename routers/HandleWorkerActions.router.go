@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/socket"
@@ -70,7 +71,7 @@ func (h *WorkerActionHandler) sendWorkerAction(w http.ResponseWriter, r *http.Re
 	}
 
 	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(r.Context(), action, payload)); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send %s command: %v", label, err))
+		sendDispatchError(w, label, err)
 		return
 	}
 
@@ -83,7 +84,11 @@ func (h *WorkerActionHandler) sendWorkerAction(w http.ResponseWriter, r *http.Re
 		}
 		actionBytes, _ := json.Marshal(actionData)
 		actionJSON := string(actionBytes)
-		_ = query.SetWorkerPendingAction(db.DB, workerID, &actionJSON)
+		if err := query.SetWorkerPendingAction(db.DB, workerID, &actionJSON); err != nil {
+			// The command was sent, so this is not a failed request — but the
+			// dashboard will not show the action as in progress.
+			logger.ErrorCtx(r.Context(), "worker", "could not record pending worker action", logger.F{"worker_id": workerID, "action": action, "error": err})
+		}
 	}
 
 	logAudit(r, label, "worker", intPtr(workerID), nil)

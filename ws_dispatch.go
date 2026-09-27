@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aidenappl/lattice-api/db"
@@ -26,8 +27,47 @@ import (
 // goroutine growth under heavy WebSocket traffic.
 var msgSem = make(chan struct{}, 100)
 
+// POOL_SATURATED_LOG_INTERVAL is the least time between two "worker handler
+// pool saturated" warnings; the ones in between are counted into the next.
+const POOL_SATURATED_LOG_INTERVAL = time.Minute
+
+var poolSaturation struct {
+	mu      sync.Mutex
+	lastLog time.Time
+	missed  int
+}
+
+// logPoolSaturated warns that every msgSem slot is taken — at most once per
+// POOL_SATURATED_LOG_INTERVAL, carrying how many saturations went unlogged.
+func logPoolSaturated(name string) {
+	poolSaturation.mu.Lock()
+	now := time.Now()
+	if !poolSaturation.lastLog.IsZero() && now.Sub(poolSaturation.lastLog) < POOL_SATURATED_LOG_INTERVAL {
+		poolSaturation.missed++
+		poolSaturation.mu.Unlock()
+		return
+	}
+	suppressed := poolSaturation.missed
+	poolSaturation.lastLog, poolSaturation.missed = now, 0
+	poolSaturation.mu.Unlock()
+
+	logger.WarnCtx(context.Background(), "worker", "worker handler pool saturated", logger.F{
+		"slots":               cap(msgSem),
+		"handler":             name,
+		"unlogged_since_last": suppressed,
+	})
+}
+
+// safeGo runs fn on a pooled goroutine. When the pool is full it blocks the
+// caller — the worker's read pump — until a slot frees, which is the intended
+// backpressure; saturation is logged so that stall is not silent.
 func safeGo(name string, fn func()) {
-	msgSem <- struct{}{} // acquire semaphore
+	select {
+	case msgSem <- struct{}{}: // acquire semaphore
+	default:
+		logPoolSaturated(name)
+		msgSem <- struct{}{}
+	}
 	go func() {
 		defer func() { <-msgSem }() // release semaphore
 		defer logger.Recover(name)
@@ -48,7 +88,18 @@ func logWorkerWriteErr(op string, workerID int, err error) {
 // callbacks for the worker WebSocket handler.
 func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub, scanner *healthscan.Scanner) {
 	wh.OnConnect = func(session *socket.WorkerSession) {
-		logger.InfoCtx(context.Background(), "worker", "connected", logger.F{"worker_id": session.WorkerID})
+		connectFields := logger.F{"worker_id": session.WorkerID, "remote_ip": session.RemoteIP}
+		if w, err := query.GetWorkerByID(db.DB, session.WorkerID); err == nil {
+			connectFields["worker_name"] = w.Name
+			if w.RunnerVersion != nil {
+				// As last registered: an upgraded runner reports its new
+				// version in the registration that follows.
+				connectFields["runner_version"] = *w.RunnerVersion
+			}
+		} else {
+			logger.WarnCtx(context.Background(), "worker", "failed to load worker for connect event", logger.F{"worker_id": session.WorkerID, "error": err})
+		}
+		logger.EventCtx(context.Background(), logger.LevelInfo, "worker.connected", "worker", "worker connected", connectFields)
 		logWorkerWriteErr("heartbeat update", session.WorkerID, query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "online"))
 		mailer.CancelDisconnectAlert(session.WorkerID)
 		adminHub.BroadcastJSON(map[string]any{
@@ -71,8 +122,18 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 	}
 
 	wh.OnDisconnect = func(session *socket.WorkerSession, err error) {
+		workerName := fmt.Sprintf("Worker %d", session.WorkerID)
+		w, wErr := query.GetWorkerByID(db.DB, session.WorkerID)
+		if wErr == nil {
+			workerName = w.Name
+		} else {
+			logger.WarnCtx(context.Background(), "worker", "failed to load worker for disconnect event", logger.F{"worker_id": session.WorkerID, "error": wErr})
+		}
+
 		fields := logger.F{
 			"worker_id":     session.WorkerID,
+			"worker_name":   workerName,
+			"remote_ip":     session.RemoteIP,
 			"connected_for": time.Since(session.ConnectedAt).Round(time.Second).String(),
 		}
 		if err != nil {
@@ -80,21 +141,17 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 		}
 		// A worker that announced worker_shutdown first is a planned stop (an
 		// upgrade, a reboot); only an unannounced drop is worth a warning.
+		level := logger.LevelWarn
 		if session.GracefulShutdown.Load() {
 			fields["graceful"] = true
-			logger.InfoCtx(context.Background(), "worker", "disconnected", fields)
-		} else {
-			logger.WarnCtx(context.Background(), "worker", "disconnected", fields)
+			level = logger.LevelInfo
 		}
+		logger.EventCtx(context.Background(), level, "worker.disconnected", "worker", "worker disconnected", fields)
 		logWorkerWriteErr("offline status update", session.WorkerID, query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "offline"))
 		adminHub.BroadcastJSON(map[string]any{
 			"type":      "worker_disconnected",
 			"worker_id": session.WorkerID,
 		})
-		workerName := fmt.Sprintf("Worker %d", session.WorkerID)
-		if w, wErr := query.GetWorkerByID(db.DB, session.WorkerID); wErr == nil {
-			workerName = w.Name
-		}
 		webhooks.Fire("worker.disconnected", map[string]any{
 			"worker_id":   session.WorkerID,
 			"worker_name": workerName,
@@ -197,6 +254,10 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				"payload":   msg.Payload,
 			})
 			if depID, ok := msg.Payload["deployment_id"].(float64); ok {
+				// Kept so a stall/timeout force-fail can tell whether the runner is
+				// still executing the deploy (see routers.failDeployment).
+				inProgress, _ := msg.Payload["in_progress"].(bool)
+				routers.RecordRunnerDeploymentStatus(int(depID), inProgress)
 				message, _ := msg.Payload["message"].(string)
 				if message != "" {
 					stage := "status_check"
@@ -473,7 +534,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				// Close the scheduled run this snapshot belongs to, if any. A run
 				// left open blocks every later slot via skip-on-overrun.
 				if status == "completed" || status == "failed" {
-					closeRunForSnapshot(snapshotID, status == "completed")
+					closeRunForSnapshot(ctx, snapshotID, status == "completed")
 				}
 
 				if status == "completed" {

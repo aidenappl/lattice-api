@@ -6,9 +6,7 @@ import (
 	"strings"
 
 	"github.com/aidenappl/lattice-api/crypto"
-	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/mailer"
-	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 )
 
@@ -57,37 +55,29 @@ func HandleUpdateSMTPConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Helper to set a string setting if provided (trims whitespace)
-	setIf := func(key string, val *string) {
-		if val != nil {
-			_ = query.SetSetting(db.DB, key, strings.TrimSpace(*val))
-		}
-	}
-	// Helper to set a bool setting if provided
-	setBoolIf := func(key string, val *bool) {
-		if val != nil {
-			v := "false"
-			if *val {
-				v = "true"
-			}
-			_ = query.SetSetting(db.DB, key, v)
-		}
-	}
+	var form settingsForm
+	form.boolean("smtp.enabled", body.Enabled)
+	form.str("smtp.host", body.Host)
+	form.str("smtp.port", body.Port)
+	form.str("smtp.username", body.Username)
+	form.str("smtp.from_email", body.FromEmail)
+	form.str("smtp.from_name", body.FromName)
+	form.str("smtp.recipients", body.Recipients)
 
-	setBoolIf("smtp.enabled", body.Enabled)
-	setIf("smtp.host", body.Host)
-	setIf("smtp.port", body.Port)
-	setIf("smtp.username", body.Username)
-	setIf("smtp.from_email", body.FromEmail)
-	setIf("smtp.from_name", body.FromName)
-	setIf("smtp.recipients", body.Recipients)
-
-	// Only update password if non-empty and not the masked value
+	// Only update password if non-empty and not the masked value. A password
+	// that cannot be encrypted is never stored, and never silently skipped.
 	if body.Password != nil && *body.Password != "" && !strings.HasPrefix(*body.Password, "••") {
 		encrypted, err := crypto.Encrypt(*body.Password)
-		if err == nil {
-			_ = query.SetSetting(db.DB, "smtp.password", encrypted)
+		if err != nil {
+			responder.SendError(w, http.StatusInternalServerError, "failed to encrypt smtp password", err)
+			return
 		}
+		form.raw("smtp.password", encrypted)
+	}
+
+	if err := saveSettings(form); err != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to save smtp configuration", err)
+		return
 	}
 
 	logAudit(r, "update", "smtp_config", nil, nil)

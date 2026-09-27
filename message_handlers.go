@@ -18,6 +18,7 @@ import (
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/mailer"
 	"github.com/aidenappl/lattice-api/query"
+	"github.com/aidenappl/lattice-api/structs"
 	"github.com/aidenappl/lattice-api/webhooks"
 )
 
@@ -342,7 +343,13 @@ func handleDeploymentProgress(ctx context.Context, payload map[string]any) {
 				} else if dcs != nil {
 					for _, dc := range *dcs {
 						s := containerStatus
-						_, _ = query.UpdateContainer(tx, dc.ContainerID, query.UpdateContainerRequest{Status: &s})
+						// Logged, not fatal: the deployment's own outcome still has to be
+						// recorded, and the next container_sync corrects the container.
+						if _, err := query.UpdateContainer(tx, dc.ContainerID, query.UpdateContainerRequest{Status: &s}); err != nil {
+							logger.ErrorCtx(ctx, "deploy", "failed to update container status for deployment completion", logger.F{
+								"deployment_id": int(deploymentID), "container_id": dc.ContainerID, "status": s, "error": err,
+							})
+						}
 					}
 				}
 			}
@@ -352,13 +359,43 @@ func handleDeploymentProgress(ctx context.Context, payload map[string]any) {
 				return
 			}
 			logger.InfoCtx(ctx, "deploy", "updated deployment/stack status", logger.F{"deployment_id": int(deploymentID), "status": status, "stack_id": dep.StackID})
-			if status == "failed" {
-				logDeploymentFailed(ctx, dep.Status, logger.F{"deployment_id": int(deploymentID), "stack_id": dep.StackID, "stage": stage, "detail": logMsg})
+			switch status {
+			case "failed":
+				fields := deploymentOutcomeFields(dep, time.Now())
+				fields["stage"] = stage
+				fields["detail"] = logMsg
+				if step != "" {
+					fields["failed_step"] = step
+				}
+				logDeploymentFailed(ctx, dep.Status, fields)
+			case "deployed":
+				logDeploymentSucceeded(ctx, dep.Status, deploymentOutcomeFields(dep, time.Now()))
 			}
 		} else {
-			// Non-terminal state (deploying/validating) — simple update
+			// Non-terminal state (deploying/validating). The runner repeats
+			// "deploying" on every step; only a change is written, so started_at
+			// stays the time the deploy began rather than its latest step.
+			dep, err := query.GetDeploymentByID(db.DB, int(deploymentID))
+			if err != nil {
+				logger.ErrorCtx(ctx, "deploy", "failed to get deployment for status update", logger.F{"deployment_id": int(deploymentID), "error": err})
+				return
+			}
+			if dep.Status == status {
+				return
+			}
+			if lateProgress(dep.Status, status) {
+				// A runner still reporting steps for a deployment already settled —
+				// typically one the monitor force-failed. Writing it would resurrect
+				// the row as in-progress.
+				logger.DebugCtx(ctx, "deploy", "ignored late deployment progress", logger.F{"deployment_id": int(deploymentID), "status": status, "current_status": dep.Status})
+				return
+			}
 			if err := query.UpdateDeploymentStatus(db.DB, int(deploymentID), status); err != nil {
 				logger.ErrorCtx(ctx, "deploy", "failed to update deployment status", logger.F{"deployment_id": int(deploymentID), "error": err})
+				return
+			}
+			if status == "deploying" {
+				logDeploymentStarted(ctx, dep)
 			}
 		}
 	}
@@ -380,15 +417,98 @@ func logDeploymentProgress(ctx context.Context, status string, fields logger.F) 
 	}
 }
 
-// logDeploymentFailed reports a deployment's transition to failed: an error the
-// first time, when previous (the status before this message's update) is not
-// already failed, and debug for every repeat.
+// deploymentOutcomeFields are the fields of deployment.succeeded and
+// deployment.failed. dep is the row as it was before this message's update.
+func deploymentOutcomeFields(dep *structs.Deployment, now time.Time) logger.F {
+	fields := logger.F{
+		"deployment_id": dep.ID,
+		"stack_id":      dep.StackID,
+		"strategy":      dep.Strategy,
+	}
+	if ms, ok := deploymentDurationMS(dep, now); ok {
+		fields["duration_ms"] = ms
+	}
+	return fields
+}
+
+// deploymentDurationMS is how long a deployment has run: from started_at (its
+// first "deploying"), or from its creation when it failed before it began. A
+// negative span means the clocks disagree, and is left out rather than sent.
+func deploymentDurationMS(dep *structs.Deployment, now time.Time) (int64, bool) {
+	start := dep.InsertedAt
+	if dep.StartedAt != nil {
+		start = *dep.StartedAt
+	}
+	if start.IsZero() || now.Before(start) {
+		return 0, false
+	}
+	return now.Sub(start).Milliseconds(), true
+}
+
+// logDeploymentStarted reports deployment.started for the first "deploying" a
+// runner sends. dep is the row before this message's update: a deployment that
+// already has started_at (validating → deploying, or a late repeat after a
+// force-fail) has been reported once already.
+func logDeploymentStarted(ctx context.Context, dep *structs.Deployment) {
+	if dep.StartedAt != nil {
+		return
+	}
+	logger.EventCtx(ctx, logger.LevelInfo, "deployment.started", "deploy", "deployment started", logger.F{
+		"deployment_id": dep.ID,
+		"stack_id":      dep.StackID,
+		"strategy":      dep.Strategy,
+	})
+}
+
+// isTerminalDeploymentStatus reports whether a deployment in status is settled.
+func isTerminalDeploymentStatus(status string) bool {
+	switch status {
+	case "deployed", "failed", "rolled_back":
+		return true
+	}
+	return false
+}
+
+// lateProgress reports whether a non-terminal status (deploying, validating)
+// arrived for a deployment already in a terminal state, and must be ignored.
+func lateProgress(current, incoming string) bool {
+	return !isTerminalDeploymentStatus(incoming) && isTerminalDeploymentStatus(current)
+}
+
+// logDeploymentSucceeded reports deployment.succeeded once: a repeated
+// "deployed" (previous already deployed) is debug.
+//
+// A "deployed" for a deployment already marked failed — the monitor force-failed
+// it on a stall or timeout while the runner kept going — is the deploy genuinely
+// succeeding late. The row still flips to deployed, but it is reported as
+// deployment.recovered with the previous status, not as an ordinary success.
+func logDeploymentSucceeded(ctx context.Context, previous string, fields logger.F) {
+	if previous == "deployed" {
+		logger.DebugCtx(ctx, "deploy", "deployment succeeded (already deployed)", fields)
+		return
+	}
+	if previous == "failed" {
+		fields["previous_status"] = previous
+		logger.EventCtx(ctx, logger.LevelInfo, "deployment.recovered", "deploy", "deployment recovered after being marked failed", fields)
+		return
+	}
+	logger.EventCtx(ctx, logger.LevelInfo, "deployment.succeeded", "deploy", "deployment succeeded", fields)
+}
+
+// logDeploymentFailed records a runner-reported transition to failed as
+// deployment.failed at info, the first time — when previous (the status before
+// this message's update) is not already failed — and debug for every repeat.
+//
+// Info, not error: the runner raises its own deployment.failed error for the
+// same failure, with the error text, and that is the one Monitor issue. This is
+// the control plane's record of the state change. Failures only the API sees
+// (stall, dispatch, timeout) stay errors, with a cause field.
 func logDeploymentFailed(ctx context.Context, previous string, fields logger.F) {
 	if previous == "failed" {
 		logger.DebugCtx(ctx, "deploy", "deployment failed (already failed)", fields)
 		return
 	}
-	logger.ErrorCtx(ctx, "deploy", "deployment failed", fields)
+	logger.EventCtx(ctx, logger.LevelInfo, "deployment.failed", "deploy", "deployment failed", fields)
 }
 
 func handleContainerStatus(ctx context.Context, workerID int, payload map[string]any) map[string]any {

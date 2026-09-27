@@ -301,6 +301,7 @@ func (e *Executor) FireScheduled(a *structs.Automation, slot time.Time, skipReas
 func (e *Executor) FailStuckRuns(ctx context.Context) {
 	runs, err := e.store.ListStuckRuns(e.now().UTC().Add(-CLAIM_STALE_AFTER))
 	if err != nil {
+		logger.ErrorCtx(ctx, "automation", "could not list stuck automation runs", logger.F{"error": err})
 		return
 	}
 	for _, run := range runs {
@@ -308,10 +309,20 @@ func (e *Executor) FailStuckRuns(ctx context.Context) {
 			"Steps marked succeeded did take effect; the audit log has the rest", CLAIM_STALE_AFTER)
 		steps := finishPending(run.Steps, 0, "not run: the run was interrupted")
 		status := structs.AutomationRunFailed
-		_ = e.store.UpdateRun(run.ID, query.UpdateAutomationRunRequest{
+		if err := e.store.UpdateRun(run.ID, query.UpdateAutomationRunRequest{
 			Status: &status, Error: &msg, Steps: &steps, Finished: true,
-		})
-		_ = e.store.ReleaseAutomation(run.AutomationID, run.ID)
+		}); err != nil {
+			// The run keeps reading "in progress"; the next sweep retries it.
+			logger.ErrorCtx(ctx, "automation", "could not fail stuck automation run", logger.F{
+				"automation_id": run.AutomationID, "run_id": run.ID, "error": err,
+			})
+		}
+		if err := e.store.ReleaseAutomation(run.AutomationID, run.ID); err != nil {
+			// The automation stays guarded and will not fire until released.
+			logger.ErrorCtx(ctx, "automation", "could not release stuck automation run guard", logger.F{
+				"automation_id": run.AutomationID, "run_id": run.ID, "error": err,
+			})
+		}
 		logger.ErrorCtx(ctx, "automation", "stuck automation run failed", logger.F{
 			"automation_id": run.AutomationID, "run_id": run.ID,
 		})

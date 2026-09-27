@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/socket"
@@ -61,17 +62,40 @@ func (h *ContainerActionHandler) stackBulkAction(
 		return
 	}
 
-	count := 0
+	count, failed := 0, 0
+	var firstErr error
 	for _, c := range *containers {
 		if !filter(c) {
 			continue
 		}
-		_ = h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.NewCommand(r.Context(), action, map[string]any{
+		if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.NewCommand(r.Context(), action, map[string]any{
 			"container_name": c.Name,
-		}))
+		})); err != nil {
+			failed++
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
 		count++
 	}
 
+	if failed > 0 {
+		if count == 0 {
+			// Nothing reached the worker: not a success of "0 containers".
+			responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send %s command", label), firstErr)
+			return
+		}
+		logger.ErrorCtx(r.Context(), "stack", "stack action not sent to every container", logger.F{
+			"stack_id":  stackID,
+			"worker_id": *stack.WorkerID,
+			"action":    action,
+			"sent":      count,
+			"failed":    failed,
+			"error":     firstErr,
+		})
+	}
+
 	logAudit(r, label, "stack", intPtr(stackID), strPtr(fmt.Sprintf("%d containers", count)))
-	responder.New(w, map[string]any{"count": count}, fmt.Sprintf("%s command sent to %d containers", label, count))
+	responder.New(w, map[string]any{"count": count, "failed": failed}, fmt.Sprintf("%s command sent to %d containers", label, count))
 }

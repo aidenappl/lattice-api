@@ -182,3 +182,76 @@ func TestQueryError(t *testing.T) {
 		t.Errorf("status = %d, want %d", rr.Code, http.StatusInternalServerError)
 	}
 }
+
+func TestUnencodableResponseIsARecorded500(t *testing.T) {
+	rr := httptest.NewRecorder()
+	New(rr, make(chan int))
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rr.Code)
+	}
+	var resp ErrorResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil || resp.Success || resp.ErrorMessage != "failed to encode response" {
+		t.Errorf("body = %+v (decode err %v); want the JSON error shape", resp, err)
+	}
+}
+
+func TestSendUpstreamErrorKeepsTheReasonForTheClient(t *testing.T) {
+	rr := httptest.NewRecorder()
+	SendUpstreamError(rr, http.StatusBadGateway, "Registry connection failed", fmt.Errorf("401 unauthorized"))
+
+	var resp ErrorResponse
+	json.NewDecoder(rr.Body).Decode(&resp)
+	if rr.Code != http.StatusBadGateway || resp.ErrorMessage != "registry connection failed: 401 unauthorized" || resp.Error != "401 unauthorized" {
+		t.Errorf("status=%d body=%+v", rr.Code, resp)
+	}
+}
+
+// failingWriter accepts the header, then fails every body write, like a client
+// that disconnected mid-response.
+type failingWriter struct {
+	*httptest.ResponseRecorder
+	headerCalls int
+	failures    int
+}
+
+func (f *failingWriter) WriteHeader(code int) {
+	f.headerCalls++
+	f.ResponseRecorder.WriteHeader(code)
+}
+
+func (f *failingWriter) Write([]byte) (int, error) { return 0, fmt.Errorf("write: broken pipe") }
+
+func (f *failingWriter) RecordFailure(string, error, int) { f.failures++ }
+
+func TestWriteFailureAfterHeaderIsNotRecordedAsA500(t *testing.T) {
+	tests := []struct {
+		name   string
+		send   func(http.ResponseWriter)
+		status int
+	}{
+		{"New", func(w http.ResponseWriter) { New(w, map[string]string{"k": "v"}) }, http.StatusOK},
+		{"NewCreated", func(w http.ResponseWriter) { NewCreated(w, map[string]string{"k": "v"}) }, http.StatusCreated},
+		{"NewWithCount", func(w http.ResponseWriter) { NewWithCount(w, []int{1}, 1, "", "") }, http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fw := &failingWriter{ResponseRecorder: httptest.NewRecorder()}
+			tt.send(fw)
+			if fw.failures != 0 {
+				t.Errorf("recorded %d failures; a client disconnect is not a server error", fw.failures)
+			}
+			if fw.headerCalls != 1 || fw.Code != tt.status {
+				t.Errorf("WriteHeader called %d times, status %d; want once with %d", fw.headerCalls, fw.Code, tt.status)
+			}
+		})
+	}
+}
+
+func TestEncodeFailureIsAClean500(t *testing.T) {
+	fw := &failingWriter{ResponseRecorder: httptest.NewRecorder()}
+	New(fw, map[string]any{"bad": make(chan int)})
+	if fw.Code != http.StatusInternalServerError || fw.failures != 1 || fw.headerCalls != 1 {
+		t.Errorf("status=%d failures=%d headerCalls=%d; want one recorded 500", fw.Code, fw.failures, fw.headerCalls)
+	}
+}

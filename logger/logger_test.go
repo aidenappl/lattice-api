@@ -75,6 +75,7 @@ func TestRecordsCarryTheCallersPC(t *testing.T) {
 		{"InfoCtx", slog.LevelInfo, func() { InfoCtx(ctx, "c", "m") }},
 		{"WarnCtx", slog.LevelWarn, func() { WarnCtx(ctx, "c", "m") }},
 		{"ErrorCtx", slog.LevelError, func() { ErrorCtx(ctx, "c", "m") }},
+		{"EventCtx", slog.LevelInfo, func() { EventCtx(ctx, LevelInfo, "c.happened", "c", "m") }},
 	}
 	for i, c := range calls {
 		t.Run(c.name, func(t *testing.T) {
@@ -225,3 +226,49 @@ func TestRecoverIsSilentWithoutAPanic(t *testing.T) {
 }
 
 func panicsHere() { panic("boom") }
+
+// EventCtx names the event through the slog "event" attribute and is attributed
+// to its caller like every other function; an "event" field is still renamed.
+func TestEventCtxNamesTheEvent(t *testing.T) {
+	records, _ := capture(t)
+
+	tests := []struct {
+		name      string
+		level     Level
+		event     string
+		fields    F
+		wantLevel slog.Level
+		wantEvent any
+	}{
+		{"named info event", LevelInfo, "deployment.succeeded", F{"deployment_id": 7}, slog.LevelInfo, "deployment.succeeded"},
+		{"named error event", LevelError, "deployment.failed", F{"deployment_id": 7}, slog.LevelError, "deployment.failed"},
+		{"event field is still renamed", LevelWarn, "worker.disconnected", F{"event": "other"}, slog.LevelWarn, "worker.disconnected"},
+		{"empty event adds no attribute", LevelInfo, "", nil, slog.LevelInfo, nil},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			EventCtx(context.Background(), tt.level, tt.event, "deploy", "static message", tt.fields)
+			_, file, line, _ := runtime.Caller(0)
+
+			rs := records()
+			if len(rs) != i+1 {
+				t.Fatalf("handler received %d records, want %d", len(rs), i+1)
+			}
+			r := rs[i]
+			a := attrs(r)
+			if r.Level != tt.wantLevel || r.Message != "static message" || a["component"] != "deploy" {
+				t.Errorf("record = %v %q %v", r.Level, r.Message, a)
+			}
+			if got, ok := a["event"]; tt.wantEvent == nil && ok || tt.wantEvent != nil && got != tt.wantEvent {
+				t.Errorf("event = %v, want %v", got, tt.wantEvent)
+			}
+			if tt.fields["event"] != nil && a["event_type"] != tt.fields["event"] {
+				t.Errorf("event field = %v, want it renamed to event_type", a)
+			}
+			frame, _ := runtime.CallersFrames([]uintptr{r.PC}).Next()
+			if frame.File != file || frame.Line != line-1 {
+				t.Errorf("PC resolves to %s:%d, want %s:%d", frame.File, frame.Line, file, line-1)
+			}
+		})
+	}
+}
