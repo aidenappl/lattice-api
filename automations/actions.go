@@ -124,7 +124,7 @@ func (redeployContainer) execute(ctx context.Context, e *Executor, config json.R
 	if err := ctx.Err(); err != nil {
 		return effect, err
 	}
-	if err := e.redeployer.RecreateContainer(container, *stack.WorkerID); err != nil {
+	if err := e.redeployer.RecreateContainer(ctx, container, *stack.WorkerID); err != nil {
 		return effect, fmt.Errorf("worker #%d did not accept the recreate for %s/%s: %w", *stack.WorkerID, stack.Name, container.Name, err)
 	}
 

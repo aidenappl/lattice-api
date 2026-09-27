@@ -36,7 +36,7 @@ func HandleTestRegistry(w http.ResponseWriter, r *http.Request) {
 
 	client := registryClient(reg)
 	if err := client.Ping(); err != nil {
-		responder.SendError(w, http.StatusBadGateway, "registry connection failed: "+err.Error())
+		responder.SendUpstreamError(w, http.StatusBadGateway, "registry connection failed", err)
 		return
 	}
 
@@ -68,7 +68,7 @@ func HandleTestRegistryInline(w http.ResponseWriter, r *http.Request) {
 
 	client := registry.NewClient(body.URL, body.Username, body.Password)
 	if err := client.Ping(); err != nil {
-		responder.SendError(w, http.StatusBadGateway, "registry connection failed: "+err.Error())
+		responder.SendUpstreamError(w, http.StatusBadGateway, "registry connection failed", err)
 		return
 	}
 

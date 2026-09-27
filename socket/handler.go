@@ -3,12 +3,15 @@ package socket
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
 
 	"github.com/aidenappl/lattice-api/logger"
+	"github.com/aidenappl/lattice-api/responder"
 	"github.com/gorilla/websocket"
 )
 
@@ -62,6 +65,19 @@ type WorkerHandler struct {
 	// AuthFunc validates the worker token and returns the worker ID.
 	// If nil, all connections are rejected.
 	AuthFunc func(r *http.Request) (int, bool)
+
+	// ClientIP resolves the address a connection came from, for
+	// WorkerSession.RemoteIP. If nil, it is the TCP peer's host.
+	ClientIP func(r *http.Request) string
+}
+
+// peerIP is the host part of the request's TCP peer address.
+func peerIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func NewWorkerHandler(hub *WorkerHub) *WorkerHandler {
@@ -81,7 +97,7 @@ func NewWorkerHandler(hub *WorkerHub) *WorkerHandler {
 
 func (h *WorkerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.AuthFunc == nil {
-		http.Error(w, "auth not configured", http.StatusInternalServerError)
+		responder.SendError(w, http.StatusInternalServerError, "auth not configured", errors.New("worker websocket AuthFunc is not set"))
 		return
 	}
 
@@ -93,7 +109,7 @@ func (h *WorkerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := h.Upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		logger.Error("socket", "upgrade failed", logger.F{"worker_id": workerID, "error": err})
+		logger.ErrorCtx(r.Context(), "socket", "upgrade failed", logger.F{"worker_id": workerID, "error": err})
 		return
 	}
 
@@ -107,18 +123,24 @@ func (h *WorkerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	remoteIP := peerIP(r)
+	if h.ClientIP != nil {
+		remoteIP = h.ClientIP(r)
+	}
+
 	session := &WorkerSession{
 		WorkerID:    workerID,
 		Conn:        conn,
 		LastSeenAt:  time.Now().UTC(),
 		ConnectedAt: time.Now().UTC(),
 		Send:        make(chan []byte, sendBufferSize),
+		RemoteIP:    remoteIP,
 		cancel:      cancel,
 		done:        make(chan struct{}),
 	}
 
 	if err := h.Hub.Register(session); err != nil {
-		logger.Warn("socket", "worker connection rejected", logger.F{"worker_id": workerID, "error": err})
+		logger.WarnCtx(r.Context(), "socket", "worker connection rejected", logger.F{"worker_id": workerID, "error": err})
 		_ = conn.WriteControl(
 			websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "max connections reached"),
@@ -140,7 +162,7 @@ func (h *WorkerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	if err := h.Hub.SendJSONToWorker(workerID, hello); err != nil {
-		logger.Warn("socket", "failed to queue connected message", logger.F{"worker_id": workerID, "error": err})
+		logger.WarnCtx(r.Context(), "socket", "failed to queue connected message", logger.F{"worker_id": workerID, "error": err})
 	}
 
 	go h.writePump(ctx, session)
@@ -207,7 +229,15 @@ func (h *WorkerHandler) writePump(ctx context.Context, session *WorkerSession) {
 
 			if err := session.Conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 				session.setCloseCause(fmt.Errorf("write: %w", err))
-				logger.Error("socket", "write failed", logger.F{"worker_id": session.WorkerID, "error": err})
+				// A write fails whenever the worker goes away mid-send — the
+				// disconnect itself is logged by OnDisconnect. A write to a
+				// connection already closed is part of a normal teardown.
+				writeFields := logger.F{"worker_id": session.WorkerID, "error": err}
+				if errors.Is(err, net.ErrClosed) || errors.Is(err, websocket.ErrCloseSent) {
+					logger.InfoCtx(ctx, "socket", "write failed", writeFields)
+				} else {
+					logger.WarnCtx(ctx, "socket", "write failed", writeFields)
+				}
 				return
 			}
 
@@ -215,7 +245,7 @@ func (h *WorkerHandler) writePump(ctx context.Context, session *WorkerSession) {
 			_ = session.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := session.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				session.setCloseCause(fmt.Errorf("ping: %w", err))
-				logger.Warn("socket", "ping failed", logger.F{"worker_id": session.WorkerID, "error": err})
+				logger.WarnCtx(ctx, "socket", "ping failed", logger.F{"worker_id": session.WorkerID, "error": err})
 				return
 			}
 		}
@@ -237,7 +267,7 @@ func (h *WorkerHandler) readPump(ctx context.Context, session *WorkerSession) {
 		if err != nil {
 			session.setCloseCause(fmt.Errorf("read: %w", err))
 			if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-				logger.Warn("socket", "read error", logger.F{"worker_id": session.WorkerID, "error": err})
+				logger.WarnCtx(ctx, "socket", "read error", logger.F{"worker_id": session.WorkerID, "error": err})
 			}
 			return
 		}
@@ -252,7 +282,7 @@ func (h *WorkerHandler) readPump(ctx context.Context, session *WorkerSession) {
 		var msg IncomingMessage
 		msg.Raw = json.RawMessage(payload)
 		if err := json.Unmarshal(payload, &msg); err != nil {
-			logger.Warn("socket", "invalid JSON from worker", logger.F{"worker_id": session.WorkerID, "error": err})
+			logger.WarnCtx(ctx, "socket", "invalid JSON from worker", logger.F{"worker_id": session.WorkerID, "error": err})
 			continue
 		}
 

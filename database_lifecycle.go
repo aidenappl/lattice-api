@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -38,6 +40,9 @@ type transitionOpts struct {
 	Actor string
 	// StartedAt stamps the instance's start time (set when entering running).
 	StartedAt *time.Time
+	// Ctx carries the correlation ids of whatever caused the transition (the
+	// worker reply, the reconciler tick) onto its log events. Nil means none.
+	Ctx context.Context
 }
 
 // Transition moves an instance to a new status, recording an event and
@@ -45,8 +50,12 @@ type transitionOpts struct {
 // instance already holds writes nothing and emits no event, so the reconciler
 // can call it every tick without flooding the audit trail.
 func (l *databaseLifecycle) Transition(instanceID int, to structs.DatabaseStatus, opts transitionOpts) {
+	ctx := opts.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if !to.IsValid() {
-		logger.Error("database", "refusing to write invalid status", logger.F{
+		logger.ErrorCtx(ctx, "database", "refusing to write invalid status", logger.F{
 			"database_instance_id": instanceID, "status": string(to),
 		})
 		return
@@ -54,7 +63,7 @@ func (l *databaseLifecycle) Transition(instanceID int, to structs.DatabaseStatus
 
 	current, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
 	if err != nil {
-		logger.Error("database", "transition failed to load instance", logger.F{
+		logger.ErrorCtx(ctx, "database", "transition failed to load instance", logger.F{
 			"database_instance_id": instanceID, "error": err,
 		})
 		return
@@ -85,7 +94,7 @@ func (l *databaseLifecycle) Transition(instanceID int, to structs.DatabaseStatus
 	}
 
 	if _, err := query.UpdateDatabaseInstance(db.DB, instanceID, req); err != nil {
-		logger.Error("database", "transition failed to write status", logger.F{
+		logger.ErrorCtx(ctx, "database", "transition failed to write status", logger.F{
 			"database_instance_id": instanceID, "status": statusStr, "error": err,
 		})
 		return
@@ -123,7 +132,7 @@ func (l *databaseLifecycle) Transition(instanceID int, to structs.DatabaseStatus
 		"last_error":           opts.Err,
 	})
 
-	logger.Info("database", "instance status changed", logger.F{
+	logger.InfoCtx(ctx, "database", "instance status changed", logger.F{
 		"database_instance_id": instanceID,
 		"name":                 current.Name,
 		"from":                 current.Status,
@@ -154,7 +163,7 @@ func (l *databaseLifecycle) BeginDeleting(instanceID int, actor string) {
 func (l *databaseLifecycle) FinalizeDeletion(instanceID int, volumeRemoved bool) bool {
 	instance, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
 	if err != nil {
-		logger.Error("database", "delete finalisation failed to load instance", logger.F{
+		logger.ErrorCtx(context.Background(), "database", "delete finalisation failed to load instance", logger.F{
 			"database_instance_id": instanceID, "error": err,
 		})
 		return false
@@ -180,7 +189,7 @@ func (l *databaseLifecycle) FinalizeDeletion(instanceID int, volumeRemoved bool)
 
 	if err := query.DeleteDatabaseInstance(db.DB, instanceID); err != nil {
 		message := fmt.Sprintf("container and data volume were destroyed but the record could not be retired: %v", err)
-		logger.Error("database", "delete finalisation failed to retire row", logger.F{
+		logger.ErrorCtx(context.Background(), "database", "delete finalisation failed to retire row", logger.F{
 			"database_instance_id": instanceID, "error": err,
 		})
 		l.Transition(instanceID, structs.DBStatusError, transitionOpts{
@@ -198,7 +207,7 @@ func (l *databaseLifecycle) FinalizeDeletion(instanceID int, volumeRemoved bool)
 		"database_instance_id": instanceID,
 		"name":                 instance.Name,
 	})
-	logger.Info("database", "instance deleted", logger.F{
+	logger.InfoCtx(context.Background(), "database", "instance deleted", logger.F{
 		"database_instance_id": instanceID,
 		"name":                 instance.Name,
 		"worker_id":            instance.WorkerID,
@@ -223,6 +232,9 @@ func (l *databaseLifecycle) SetWarning(instanceID int, warning *structs.Database
 
 	current, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
 	if err != nil {
+		logger.ErrorCtx(context.Background(), "database", "failed to load instance to raise warning", logger.F{
+			"database_instance_id": instanceID, "code": warning.Code, "error": err,
+		})
 		return
 	}
 	// Don't overwrite a real failure with a warning, and don't rewrite the same
@@ -239,7 +251,7 @@ func (l *databaseLifecycle) SetWarning(instanceID int, warning *structs.Database
 	if _, err := query.UpdateDatabaseInstance(db.DB, instanceID, query.UpdateDatabaseInstanceRequest{
 		LastError: warning,
 	}); err != nil {
-		logger.Error("database", "failed to write warning", logger.F{
+		logger.ErrorCtx(context.Background(), "database", "failed to write warning", logger.F{
 			"database_instance_id": instanceID, "code": warning.Code, "error": err,
 		})
 		return
@@ -252,11 +264,11 @@ func (l *databaseLifecycle) SetWarning(instanceID int, warning *structs.Database
 		"message":              warning.Message,
 		"last_error":           warning,
 	})
-	logger.Warn("database", "instance warning raised", logger.F{
+	logger.WarnCtx(context.Background(), "database", "instance warning raised", logger.F{
 		"database_instance_id": instanceID,
 		"name":                 current.Name,
 		"code":                 warning.Code,
-		"message":              warning.Message,
+		"detail":               warning.Message,
 	})
 }
 
@@ -264,13 +276,24 @@ func (l *databaseLifecycle) SetWarning(instanceID int, warning *structs.Database
 // detail untouched — recovery from one problem must not erase another.
 func (l *databaseLifecycle) ClearWarning(instanceID int, code string) {
 	current, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
-	if err != nil || current.LastError == nil || current.LastError.Code != code {
+	if err != nil {
+		logger.ErrorCtx(context.Background(), "database", "failed to load instance to clear warning", logger.F{
+			"database_instance_id": instanceID, "code": code, "error": err,
+		})
+		return
+	}
+	if current.LastError == nil || current.LastError.Code != code {
 		return
 	}
 
 	if _, err := query.UpdateDatabaseInstance(db.DB, instanceID, query.UpdateDatabaseInstanceRequest{
 		ClearLastError: true,
 	}); err != nil {
+		// The warning stays up although the problem is gone; the next
+		// freshness sweep retries.
+		logger.ErrorCtx(context.Background(), "database", "failed to clear warning", logger.F{
+			"database_instance_id": instanceID, "code": code, "error": err,
+		})
 		return
 	}
 
@@ -287,7 +310,7 @@ func (l *databaseLifecycle) ClearWarning(instanceID int, code string) {
 // running instance can legitimately be unhealthy.
 func (l *databaseLifecycle) SetHealth(instanceID int, health structs.DatabaseHealth, message string) {
 	if !health.IsValid() {
-		logger.Error("database", "refusing to write invalid health status", logger.F{
+		logger.ErrorCtx(context.Background(), "database", "refusing to write invalid health status", logger.F{
 			"database_instance_id": instanceID, "health_status": string(health),
 		})
 		return
@@ -295,6 +318,11 @@ func (l *databaseLifecycle) SetHealth(instanceID int, health structs.DatabaseHea
 
 	current, err := query.GetDatabaseInstanceByID(db.DB, instanceID)
 	if err != nil {
+		if !errors.Is(err, query.ErrNotFound) {
+			logger.ErrorCtx(context.Background(), "database", "failed to load instance to record health", logger.F{
+				"database_instance_id": instanceID, "health_status": string(health), "error": err,
+			})
+		}
 		return
 	}
 	if current.HealthStatus == string(health) {
@@ -305,7 +333,7 @@ func (l *databaseLifecycle) SetHealth(instanceID int, health structs.DatabaseHea
 	if _, err := query.UpdateDatabaseInstance(db.DB, instanceID, query.UpdateDatabaseInstanceRequest{
 		HealthStatus: &healthStr,
 	}); err != nil {
-		logger.Error("database", "failed to write health status", logger.F{
+		logger.ErrorCtx(context.Background(), "database", "failed to write health status", logger.F{
 			"database_instance_id": instanceID, "error": err,
 		})
 		return
@@ -340,7 +368,7 @@ func (l *databaseLifecycle) recordEvent(instanceID int, kind string, status *str
 		Code:               code,
 		Actor:              actorPtr,
 	}); err != nil {
-		logger.Error("database", "failed to record instance event", logger.F{
+		logger.ErrorCtx(context.Background(), "database", "failed to record instance event", logger.F{
 			"database_instance_id": instanceID, "kind": kind, "error": err,
 		})
 	}

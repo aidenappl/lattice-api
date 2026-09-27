@@ -50,7 +50,7 @@ dev up                    # start MariaDB + API + web via docker compose
 dev                       # sources .env, go run .
 ```
 
-Set at least `DATABASE_DSN` and `JWT_SIGNING_KEY` (min 32 chars; production panics on weak/known-default keys). In production `ENCRYPTION_KEY` (64 hex chars) is **required** — the app panics at boot without it rather than storing secrets as plaintext; in development it may be omitted (loud warning, plaintext passthrough). Set `TRUSTED_PROXIES` (comma-separated IPs/CIDRs) if the API sits behind a reverse proxy so rate limiting reads the forwarded client IP instead of the proxy's. SSO is optional — uncomment the `SSO_*` block in `.env.example` or configure it at runtime via `PUT /admin/sso-config`. Monitor telemetry is optional too, and never a boot requirement: set `MONITOR_INGEST_URL` and an ingest-scoped `MONITOR_API_KEY` (plus `MONITOR_SPOOL_DIR` on a persistent volume) to ship every log line, request, panic and boot failure to the appleby zone — see *Monitor telemetry* in [`AGENTS.md`](AGENTS.md). See `.env.example` for the rest.
+Set at least `DATABASE_DSN` and `JWT_SIGNING_KEY` (min 32 chars; production panics on weak/known-default keys). In production `ENCRYPTION_KEY` (64 hex chars) is **required** — the app panics at boot without it rather than storing secrets as plaintext; in development it may be omitted (loud warning, plaintext passthrough). Set `TRUSTED_PROXIES` (comma-separated IPs/CIDRs) if the API sits behind a reverse proxy so rate limiting reads the forwarded client IP instead of the proxy's. SSO is optional — uncomment the `SSO_*` block in `.env.example` or configure it at runtime via `PUT /admin/sso-config`. Monitor telemetry is optional too, and never a boot requirement: set `MONITOR_INGEST_URL` and an ingest-scoped `MONITOR_API_KEY` (plus `MONITOR_SPOOL_DIR` on a persistent volume) to ship every info-and-above log line (debug too with `MONITOR_DEBUG`), request, panic and boot failure to the appleby zone — see *Monitor telemetry* in [`AGENTS.md`](AGENTS.md). See `.env.example` for the rest.
 
 ## Development
 
@@ -85,7 +85,7 @@ message_handlers.go  # Worker & admin WebSocket OnConnect/OnDisconnect/OnMessage
 ws_dispatch.go       # Persistence helpers for inbound worker messages
 container_cache.go   # 60s name→container cache (kills the per-message N+1 lookup)
 env/  db/  logger/    # Env vars; MariaDB pool + Queryable + in-code migrations; structured logging
-telemetry/           # Monitor wiring — logger/panic tee, boot-failure reporting (never a boot requirement)
+telemetry/           # Monitor wiring — slog handler (Monitor fan-out, warn limiter), panic tee, boot-failure reporting (never a boot requirement)
 middleware/          # DualAuth, RejectPending, RequireAdmin/Editor, WorkerTokenAuth, CSRF, rate limit
 jwt/  crypto/  sso/    # Local JWTs (HS512); AES-256-GCM secrets; OAuth2/OIDC client + introspection
 routers/             # ~80 Handle<Verb><Entity>.router.go handlers (+ deployment monitor, audit helper)

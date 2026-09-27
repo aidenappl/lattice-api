@@ -30,7 +30,7 @@ func HandleListRegistryRepos(w http.ResponseWriter, r *http.Request) {
 	client := registryClient(reg)
 	repos, err := client.ListRepositories()
 	if err != nil {
-		responder.SendError(w, http.StatusBadGateway, "failed to list repositories: "+err.Error())
+		responder.SendUpstreamError(w, http.StatusBadGateway, "failed to list repositories", err)
 		return
 	}
 
@@ -63,7 +63,7 @@ func HandleListRegistryTags(w http.ResponseWriter, r *http.Request) {
 	client := registryClient(reg)
 	tags, err := client.ListTags(repo)
 	if err != nil {
-		responder.SendError(w, http.StatusBadGateway, "failed to list tags: "+err.Error())
+		responder.SendUpstreamError(w, http.StatusBadGateway, "failed to list tags", err)
 		return
 	}
 

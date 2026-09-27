@@ -2,7 +2,6 @@ package routers
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 
@@ -34,13 +33,10 @@ func (h *ContainerActionHandler) HandleForceRemoveContainer(w http.ResponseWrite
 		return
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.Envelope{
-		Type: socket.MsgForceRemove,
-		Payload: map[string]any{
-			"container_name": body.ContainerName,
-		},
-	}); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send force-remove command: %v", err))
+	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(r.Context(), socket.MsgForceRemove, map[string]any{
+		"container_name": body.ContainerName,
+	})); err != nil {
+		sendDispatchError(w, "force-remove", err)
 		return
 	}
 

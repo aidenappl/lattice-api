@@ -2,7 +2,6 @@ package routers
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 
@@ -203,17 +202,14 @@ func (h *DatabaseHandler) HandleTestBackupDestination(w http.ResponseWriter, r *
 	if destination.Config != nil {
 		var configMap map[string]any
 		if err := json.Unmarshal([]byte(*destination.Config), &configMap); err != nil {
-			responder.SendError(w, http.StatusInternalServerError, "failed to parse backup destination config")
+			responder.SendError(w, http.StatusInternalServerError, "failed to parse backup destination config", err)
 			return
 		}
 		payload["config"] = configMap
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.Envelope{
-		Type:    socket.MsgBackupDestTest,
-		Payload: payload,
-	}); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send test command: %v", err))
+	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(r.Context(), socket.MsgBackupDestTest, payload)); err != nil {
+		sendDispatchError(w, "test", err)
 		return
 	}
 

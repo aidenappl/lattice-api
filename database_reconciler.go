@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
 
+	monitor "github.com/aidenappl/go-monitor"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
@@ -74,7 +76,7 @@ func (rc *databaseReconciler) Start() {
 	go rc.runLoop("db-reconcile", dbReconcileInterval, rc.reconcileAll)
 	go rc.runLoop("db-watchdog", dbWatchdogInterval, rc.failStuckInstances)
 	go rc.runLoop("db-backup-freshness", dbBackupFreshnessInterval, rc.flagStaleBackups)
-	logger.Info("database", "reconciler started", logger.F{
+	logger.InfoCtx(context.Background(), "database", "reconciler started", logger.F{
 		"reconcile_interval": dbReconcileInterval.String(),
 		"provision_timeout":  dbProvisionTimeout.String(),
 	})
@@ -85,18 +87,20 @@ func (rc *databaseReconciler) Stop() {
 	rc.once.Do(func() { close(rc.stop) })
 }
 
-func (rc *databaseReconciler) runLoop(name string, interval time.Duration, fn func()) {
+// runLoop runs fn every interval until Stop, each tick as one job with its
+// own job_id.
+func (rc *databaseReconciler) runLoop(name string, interval time.Duration, fn func(ctx context.Context)) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-rc.stop:
-			logger.Info("database", "reconciler loop stopped", logger.F{"loop": name})
+			logger.InfoCtx(context.Background(), "database", "reconciler loop stopped", logger.F{"loop": name})
 			return
 		case <-ticker.C:
 			func() {
 				defer logger.Recover(name)
-				fn()
+				fn(monitor.WithJobID(context.Background(), monitor.NewJobID()))
 			}()
 		}
 	}
@@ -105,9 +109,9 @@ func (rc *databaseReconciler) runLoop(name string, interval time.Duration, fn fu
 // reconcileAll asks every connected worker for a full report of the database
 // containers it can see. Workers answer with db_sync, which handleDbSync diffs
 // against desired state.
-func (rc *databaseReconciler) reconcileAll() {
+func (rc *databaseReconciler) reconcileAll(ctx context.Context) {
 	for _, workerID := range rc.workerHub.ListConnectedIDs() {
-		rc.RequestSync(workerID)
+		rc.RequestSync(ctx, workerID)
 	}
 }
 
@@ -115,18 +119,15 @@ func (rc *databaseReconciler) reconcileAll() {
 // reconcile tick and immediately on worker reconnect, so a worker that was
 // offline during a state change is corrected as soon as it returns rather than
 // up to a full interval later.
-func (rc *databaseReconciler) RequestSync(workerID int) {
+func (rc *databaseReconciler) RequestSync(ctx context.Context, workerID int) {
 	if rc == nil || rc.workerHub == nil {
 		return
 	}
 	if !rc.workerHub.IsConnected(workerID) {
 		return
 	}
-	if err := rc.workerHub.SendJSONToWorker(workerID, socket.Envelope{
-		Type:    socket.MsgDbSyncRequest,
-		Payload: map[string]any{},
-	}); err != nil {
-		logger.Warn("database", "failed to request database sync", logger.F{
+	if err := rc.workerHub.SendJSONToWorker(workerID, socket.NewCommand(ctx, socket.MsgDbSyncRequest, map[string]any{})); err != nil {
+		logger.WarnCtx(ctx, "database", "failed to request database sync", logger.F{
 			"worker_id": workerID, "error": err,
 		})
 	}
@@ -136,12 +137,12 @@ func (rc *databaseReconciler) RequestSync(workerID int) {
 // impossible. Anything sitting in a transitional status past the deadline is
 // moved to error with a reason attached, whatever the cause — lost message,
 // crashed runner, worker that never came back.
-func (rc *databaseReconciler) failStuckInstances() {
+func (rc *databaseReconciler) failStuckInstances(ctx context.Context) {
 	cutoff := time.Now().UTC().Add(-dbProvisionTimeout)
 
 	stuck, err := query.ListStuckDatabaseInstances(db.DB, cutoff)
 	if err != nil {
-		logger.Error("database", "watchdog failed to list stuck instances", logger.F{"error": err})
+		logger.ErrorCtx(ctx, "database", "watchdog failed to list stuck instances", logger.F{"error": err})
 		return
 	}
 
@@ -196,11 +197,15 @@ func (rc *databaseReconciler) failStuckInstances() {
 // not working. Instances that have never produced a snapshot are held to the same
 // rule, measured from whichever is later — the instance's creation or the
 // schedule's second-most-recent fire time.
-func (rc *databaseReconciler) flagStaleBackups() {
+func (rc *databaseReconciler) flagStaleBackups(ctx context.Context) {
 	instances, _, err := query.ListDatabaseInstances(db.DB, query.ListDatabaseInstancesRequest{
 		Limit: db.MAX_LIMIT,
 	})
-	if err != nil || instances == nil {
+	if err != nil {
+		logger.ErrorCtx(ctx, "database", "backup freshness check failed to list instances", logger.F{"error": err})
+		return
+	}
+	if instances == nil {
 		return
 	}
 
@@ -226,6 +231,11 @@ func (rc *databaseReconciler) flagStaleBackups() {
 
 		lastSuccess, err := query.GetLastSuccessfulSnapshotAt(db.DB, instance.ID)
 		if err != nil {
+			// Skipped, not guessed: a stale warning is neither raised nor
+			// cleared on a read that failed.
+			logger.ErrorCtx(ctx, "database", "backup freshness check skipped, last snapshot unreadable", logger.F{
+				"database_instance_id": instance.ID, "error": err,
+			})
 			continue
 		}
 		if lastSuccess != nil && !lastSuccess.Before(deadline) {

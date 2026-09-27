@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/mailer"
@@ -32,7 +31,10 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	_ = query.TouchDeployToken(db.DB, dt.ID)
+	if err := query.TouchDeployToken(db.DB, dt.ID); err != nil {
+		// The deploy proceeds; the token's last-used time is what goes stale.
+		logger.WarnCtx(r.Context(), "deploy", "could not record deploy token use", logger.F{"deploy_token_id": dt.ID, "stack_id": dt.StackID, "error": err})
+	}
 
 	// Look up the stack
 	stack, err := query.GetStackByID(db.DB, dt.StackID)
@@ -76,8 +78,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 	deploySettled := false
 	defer func() {
 		if !deploySettled {
-			active := "active"
-			_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{Status: &active})
+			releaseStackClaim(r.Context(), stack.ID)
 		}
 	}()
 
@@ -106,29 +107,12 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Load global env vars and merge as base layer
-	globalVars, _ := query.ListGlobalEnvVars(db.DB)
-	globalEnvMap := make(map[string]any)
-	if globalVars != nil {
-		for _, gv := range *globalVars {
-			decrypted, _ := crypto.Decrypt(gv.EncryptedValue)
-			globalEnvMap[gv.Key] = decrypted
-		}
-	}
-
-	// Parse stack-level env vars
-	stackEnvVars := map[string]any{}
-	if stack.EnvVars != nil {
-		_ = json.Unmarshal([]byte(*stack.EnvVars), &stackEnvVars)
-	}
-
-	// Merge: global -> stack (stack wins)
-	mergedEnvVars := make(map[string]any)
-	for k, v := range globalEnvMap {
-		mergedEnvVars[k] = v
-	}
-	for k, v := range stackEnvVars {
-		mergedEnvVars[k] = v
+	// Global env vars as the base layer, the stack's own on top (stack wins).
+	// A deploy that cannot read either fails rather than shipping without them.
+	mergedEnvVars, envErr := loadDeployEnv(stack.EnvVars)
+	if envErr != nil {
+		responder.SendError(w, http.StatusInternalServerError, envErr.message, envErr.err)
+		return
 	}
 
 	// Load all registries for auto-matching by image hostname
@@ -149,34 +133,34 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		if c.PortMappings != nil {
 			var pm []any
 			if err := json.Unmarshal([]byte(*c.PortMappings), &pm); err != nil {
-				logger.Error("deploy", "invalid port_mappings JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid port_mappings JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				resolved := resolveVarsInValue(pm, mergedEnvVars)
 				spec["port_mappings"] = resolved
 			}
 		}
-		if c.EnvVars != nil {
-			var ev map[string]any
-			if err := json.Unmarshal([]byte(*c.EnvVars), &ev); err != nil {
-				logger.Error("deploy", "invalid env_vars JSON", logger.F{"container": c.Name, "error": err})
-			} else {
-				merged := make(map[string]any, len(ev))
-				for k, v := range ev {
-					if s, ok := v.(string); ok {
-						if resolved, ok := resolveEnvRef(s, mergedEnvVars); ok {
-							merged[k] = resolved
-							continue
-						}
+		ev, err := parseContainerEnvVars(c.EnvVars)
+		if err != nil {
+			responder.SendError(w, http.StatusInternalServerError, "container env vars could not be read", fmt.Errorf("container %s: %w", c.Name, err))
+			return
+		}
+		if ev != nil {
+			merged := make(map[string]any, len(ev))
+			for k, v := range ev {
+				if s, ok := v.(string); ok {
+					if resolved, ok := resolveEnvRef(s, mergedEnvVars); ok {
+						merged[k] = resolved
+						continue
 					}
-					merged[k] = v
 				}
-				spec["env_vars"] = merged
+				merged[k] = v
 			}
+			spec["env_vars"] = merged
 		}
 		if c.Volumes != nil {
 			var vol map[string]any
 			if err := json.Unmarshal([]byte(*c.Volumes), &vol); err != nil {
-				logger.Error("deploy", "invalid volumes JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid volumes JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				resolved := resolveVarsInValue(vol, mergedEnvVars)
 				spec["volumes"] = resolved
@@ -191,7 +175,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		if c.Command != nil {
 			var cmd []string
 			if err := json.Unmarshal([]byte(*c.Command), &cmd); err != nil {
-				logger.Error("deploy", "invalid command JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid command JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				spec["command"] = cmd
 			}
@@ -199,7 +183,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		if c.Entrypoint != nil {
 			var ep []string
 			if err := json.Unmarshal([]byte(*c.Entrypoint), &ep); err != nil {
-				logger.Error("deploy", "invalid entrypoint JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid entrypoint JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				spec["entrypoint"] = ep
 			}
@@ -207,7 +191,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		if c.HealthCheck != nil {
 			var hc map[string]any
 			if err := json.Unmarshal([]byte(*c.HealthCheck), &hc); err != nil {
-				logger.Error("deploy", "invalid health_check JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid health_check JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				allEnvVars := make(map[string]any, len(mergedEnvVars))
 				for k, v := range mergedEnvVars {
@@ -252,7 +236,7 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 					}
 					if len(auth) > 0 {
 						spec["registry_auth"] = auth
-						logger.Info("deploy", "auto-matched registry", logger.F{"registry": reg.Name, "image": c.Image})
+						logger.InfoCtx(r.Context(), "deploy", "auto-matched registry", logger.F{"registry": reg.Name, "image": c.Image})
 					}
 					break
 				}
@@ -282,14 +266,14 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 			Tag:          c.Tag,
 		})
 		if err != nil {
-			logger.Error("deploy", "failed to record deployment container", logger.F{"container": c.Name, "error": err})
+			logger.ErrorCtx(r.Context(), "deploy", "failed to record deployment container", logger.F{"container": c.Name, "error": err})
 		}
 	}
 
 	// Stack is already in "deploying" from ClaimStackForDeploy above.
 
 	// Log deployment initiation
-	_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+	writeDeploymentLog(r.Context(), query.CreateDeploymentLogRequest{
 		DeploymentID: deployment.ID,
 		Level:        "info",
 		Message:      fmt.Sprintf("Deployment initiated by deploy token %q for stack '%s' (strategy=%s, containers=%d)", dt.Name, stack.Name, stack.DeploymentStrategy, len(*containers)),
@@ -329,35 +313,29 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		payload["volumes"] = volSpecs
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.Envelope{
-		Type:    socket.MsgDeploy,
-		Payload: payload,
-	}); err != nil {
-		logger.Error("deploy", "failed to send deploy command to worker", logger.F{"worker_id": *stack.WorkerID, "error": err})
-		_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.NewCommand(r.Context(), socket.MsgDeploy, payload)); err != nil {
+		writeDeploymentLog(r.Context(), query.CreateDeploymentLogRequest{
 			DeploymentID: deployment.ID,
 			Level:        "error",
 			Message:      fmt.Sprintf("Failed to send deploy command to worker %d: %v", *stack.WorkerID, err),
 		})
-		failedStatus := "failed"
-		_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{Status: &failedStatus})
-		_ = query.UpdateDeploymentStatus(db.DB, deployment.ID, "failed")
+		failDeployment(r.Context(), deployment.ID, stack.ID, "dispatch_failed", err)
 		// Explicit terminal status set — suppress the deferred unclaim.
 		deploySettled = true
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send deploy command: %v", err))
+		sendDispatchError(w, "deploy", err)
 		return
 	}
 
 	// Deploy handed off to the worker; the monitor now owns the stack status.
 	deploySettled = true
 
-	_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+	writeDeploymentLog(r.Context(), query.CreateDeploymentLogRequest{
 		DeploymentID: deployment.ID,
 		Level:        "info",
 		Message:      fmt.Sprintf("Deploy command sent to worker %d via WebSocket", *stack.WorkerID),
 	})
 
-	h.startDeploymentMonitor(deployment.ID, stack.ID, *stack.WorkerID, payload)
+	h.startDeploymentMonitor(r.Context(), deployment.ID, stack.ID, *stack.WorkerID, payload)
 
 	mailer.Notify("deployment.triggered", "Deployment Triggered",
 		fmt.Sprintf("Stack <strong>%s</strong> deployment triggered via deploy token <strong>%s</strong>.\n\nStrategy: %s\nContainers: %d",
@@ -377,8 +355,11 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 func (h *DeployHandler) handleSingleContainerDeploy(w http.ResponseWriter, r *http.Request, stack *structs.Stack, containerName string, dt *structs.DeployToken) {
 	// Find the container in this stack
 	containers, err := query.ListContainersByStack(db.DB, stack.ID)
-	if err != nil || containers == nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to list containers")
+	if err == nil && containers == nil {
+		err = fmt.Errorf("no container list for stack %d", stack.ID)
+	}
+	if err != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to list containers", err)
 		return
 	}
 
@@ -395,15 +376,12 @@ func (h *DeployHandler) handleSingleContainerDeploy(w http.ResponseWriter, r *ht
 	}
 
 	// Same payload as HandleRecreateContainer and automations — one builder.
-	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.Envelope{
-		Type:    socket.MsgRecreate,
-		Payload: recreateContainerPayload(target),
-	}); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send recreate command: %v", err))
+	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.NewCommand(r.Context(), socket.MsgRecreate, recreateContainerPayload(target))); err != nil {
+		sendDispatchError(w, "recreate", err)
 		return
 	}
 
-	logger.Info("deploy", "single container deploy triggered via token", logger.F{
+	logger.InfoCtx(r.Context(), "deploy", "single container deploy triggered via token", logger.F{
 		"stack":     stack.Name,
 		"container": containerName,
 		"token":     dt.Name,

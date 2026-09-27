@@ -73,7 +73,7 @@ func HandleUpdateSelf(w http.ResponseWriter, r *http.Request) {
 		}
 		hash, err := tools.HashPassword(*body.NewPassword)
 		if err != nil {
-			responder.SendError(w, http.StatusInternalServerError, "failed to hash password")
+			responder.SendError(w, http.StatusInternalServerError, "failed to hash password", err)
 			return
 		}
 		_, err = query.UpdateUser(db.DB, user.ID, query.UpdateUserRequest{PasswordHash: &hash})

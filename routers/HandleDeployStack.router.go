@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/mailer"
@@ -103,8 +102,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 	deploySettled := false
 	defer func() {
 		if !deploySettled {
-			active := "active"
-			_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{Status: &active})
+			releaseStackClaim(r.Context(), stack.ID)
 		}
 	}()
 
@@ -150,29 +148,12 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Load global env vars and merge as base layer
-	globalVars, _ := query.ListGlobalEnvVars(db.DB)
-	globalEnvMap := make(map[string]any)
-	if globalVars != nil {
-		for _, gv := range *globalVars {
-			decrypted, _ := crypto.Decrypt(gv.EncryptedValue)
-			globalEnvMap[gv.Key] = decrypted
-		}
-	}
-
-	// Parse stack-level env vars
-	stackEnvVars := map[string]any{}
-	if stack.EnvVars != nil {
-		_ = json.Unmarshal([]byte(*stack.EnvVars), &stackEnvVars)
-	}
-
-	// Merge: global -> stack (stack wins)
-	mergedEnvVars := make(map[string]any)
-	for k, v := range globalEnvMap {
-		mergedEnvVars[k] = v
-	}
-	for k, v := range stackEnvVars {
-		mergedEnvVars[k] = v
+	// Global env vars as the base layer, the stack's own on top (stack wins).
+	// A deploy that cannot read either fails rather than shipping without them.
+	mergedEnvVars, envErr := loadDeployEnv(stack.EnvVars)
+	if envErr != nil {
+		responder.SendError(w, http.StatusInternalServerError, envErr.message, envErr.err)
+		return
 	}
 
 	// Load all registries for auto-matching by image hostname
@@ -219,9 +200,10 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		// Network aliases — merge from DB column and compose-derived map.
 		// This ensures containers get their compose service names as DNS aliases
 		// even if they were imported before the network_aliases column existed.
-		var aliases []string
-		if c.NetworkAliases != nil {
-			_ = json.Unmarshal([]byte(*c.NetworkAliases), &aliases)
+		aliases, err := parseNetworkAliases(c.NetworkAliases)
+		if err != nil {
+			responder.SendError(w, http.StatusInternalServerError, "network aliases could not be read", fmt.Errorf("container %s: %w", c.Name, err))
+			return
 		}
 		if composeAlias, ok := composeAliases[c.Name]; ok {
 			for _, a := range composeAlias {
@@ -244,37 +226,37 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		if c.PortMappings != nil {
 			var pm []any
 			if err := json.Unmarshal([]byte(*c.PortMappings), &pm); err != nil {
-				logger.Error("deploy", "invalid port_mappings JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid port_mappings JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				// Resolve environment variable references in port mappings
 				resolved := resolveVarsInValue(pm, mergedEnvVars)
 				spec["port_mappings"] = resolved
 			}
 		}
-		if c.EnvVars != nil {
-			var ev map[string]any
-			if err := json.Unmarshal([]byte(*c.EnvVars), &ev); err != nil {
-				logger.Error("deploy", "invalid env_vars JSON", logger.F{"container": c.Name, "error": err})
-			} else {
-				// Preserve compose semantics: only include env keys explicitly defined
-				// for the service, but resolve ${VAR} references from stack-level env.
-				merged := make(map[string]any, len(ev))
-				for k, v := range ev {
-					if s, ok := v.(string); ok {
-						if resolved, ok := resolveEnvRef(s, mergedEnvVars); ok {
-							merged[k] = resolved
-							continue
-						}
+		ev, err := parseContainerEnvVars(c.EnvVars)
+		if err != nil {
+			responder.SendError(w, http.StatusInternalServerError, "container env vars could not be read", fmt.Errorf("container %s: %w", c.Name, err))
+			return
+		}
+		if ev != nil {
+			// Preserve compose semantics: only include env keys explicitly defined
+			// for the service, but resolve ${VAR} references from stack-level env.
+			merged := make(map[string]any, len(ev))
+			for k, v := range ev {
+				if s, ok := v.(string); ok {
+					if resolved, ok := resolveEnvRef(s, mergedEnvVars); ok {
+						merged[k] = resolved
+						continue
 					}
-					merged[k] = v
 				}
-				spec["env_vars"] = merged
+				merged[k] = v
 			}
+			spec["env_vars"] = merged
 		}
 		if c.Volumes != nil {
 			var vol map[string]any
 			if err := json.Unmarshal([]byte(*c.Volumes), &vol); err != nil {
-				logger.Error("deploy", "invalid volumes JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid volumes JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				// Resolve environment variable references in volumes
 				resolved := resolveVarsInValue(vol, mergedEnvVars)
@@ -290,7 +272,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		if c.Command != nil {
 			var cmd []string
 			if err := json.Unmarshal([]byte(*c.Command), &cmd); err != nil {
-				logger.Error("deploy", "invalid command JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid command JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				spec["command"] = cmd
 			}
@@ -298,7 +280,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		if c.Entrypoint != nil {
 			var ep []string
 			if err := json.Unmarshal([]byte(*c.Entrypoint), &ep); err != nil {
-				logger.Error("deploy", "invalid entrypoint JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid entrypoint JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				spec["entrypoint"] = ep
 			}
@@ -306,7 +288,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		if c.HealthCheck != nil {
 			var hc map[string]any
 			if err := json.Unmarshal([]byte(*c.HealthCheck), &hc); err != nil {
-				logger.Error("deploy", "invalid health_check JSON", logger.F{"container": c.Name, "error": err})
+				logger.ErrorCtx(r.Context(), "deploy", "invalid health_check JSON", logger.F{"container": c.Name, "error": err})
 			} else {
 				// Resolve env var references in health check against both stack-level
 				// and container-level env vars (container vars take precedence).
@@ -355,7 +337,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 					}
 					if len(auth) > 0 {
 						spec["registry_auth"] = auth
-						logger.Info("deploy", "auto-matched registry", logger.F{"registry": reg.Name, "image": c.Image})
+						logger.InfoCtx(r.Context(), "deploy", "auto-matched registry", logger.F{"registry": reg.Name, "image": c.Image})
 					}
 					break
 				}
@@ -369,7 +351,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 	// partial failures don't leave orphaned state.
 	tx, txErr := db.BeginTx()
 	if txErr != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction")
+		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction", txErr)
 		return
 	}
 	defer tx.Rollback()
@@ -398,12 +380,12 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := tx.Commit(); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to commit deployment")
+		responder.SendError(w, http.StatusInternalServerError, "failed to commit deployment", err)
 		return
 	}
 
 	// Log deployment initiation
-	_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+	writeDeploymentLog(r.Context(), query.CreateDeploymentLogRequest{
 		DeploymentID: deployment.ID,
 		Level:        "info",
 		Message:      fmt.Sprintf("Deployment initiated by user %d for stack '%s' (strategy=%s, containers=%d, targeted=%v, force=%v)", user.ID, stack.Name, stack.DeploymentStrategy, len(*containers), targeted, body.Force),
@@ -445,23 +427,17 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		payload["volumes"] = volSpecs
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.Envelope{
-		Type:    socket.MsgDeploy,
-		Payload: payload,
-	}); err != nil {
-		logger.Error("deploy", "failed to send deploy command to worker", logger.F{"worker_id": *stack.WorkerID, "error": err})
-		_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.NewCommand(r.Context(), socket.MsgDeploy, payload)); err != nil {
+		writeDeploymentLog(r.Context(), query.CreateDeploymentLogRequest{
 			DeploymentID: deployment.ID,
 			Level:        "error",
 			Message:      fmt.Sprintf("Failed to send deploy command to worker %d: %v", *stack.WorkerID, err),
 		})
-		failedStatus := "failed"
-		_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{Status: &failedStatus})
-		_ = query.UpdateDeploymentStatus(db.DB, deployment.ID, "failed")
+		failDeployment(r.Context(), deployment.ID, stack.ID, "dispatch_failed", err)
 		// We've set an explicit terminal (failed) status — don't let the deferred
 		// unclaim reset it back to active.
 		deploySettled = true
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send deploy command: %v", err))
+		sendDispatchError(w, "deploy", err)
 		return
 	}
 
@@ -469,13 +445,13 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 	// the stack status. Suppress the deferred unclaim.
 	deploySettled = true
 
-	_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+	writeDeploymentLog(r.Context(), query.CreateDeploymentLogRequest{
 		DeploymentID: deployment.ID,
 		Level:        "info",
 		Message:      fmt.Sprintf("Deploy command sent to worker %d via WebSocket", *stack.WorkerID),
 	})
 
-	h.startDeploymentMonitor(deployment.ID, stack.ID, *stack.WorkerID, payload)
+	h.startDeploymentMonitor(r.Context(), deployment.ID, stack.ID, *stack.WorkerID, payload)
 
 	triggeredBy := user.Email
 	if user.Name != nil {

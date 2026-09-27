@@ -1,11 +1,13 @@
 package retention
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"regexp"
 	"time"
 
+	monitor "github.com/aidenappl/go-monitor"
 	"github.com/aidenappl/lattice-api/logger"
 )
 
@@ -34,38 +36,38 @@ func Start(db *sql.DB) {
 // and the next hour tries again.
 func safeRun(db *sql.DB) {
 	defer logger.Recover("retention")
-	run(db)
+	run(monitor.WithJobID(context.Background(), monitor.NewJobID()), db)
 }
 
-func run(db *sql.DB) {
-	logger.Info("retention", "starting cleanup")
+func run(ctx context.Context, db *sql.DB) {
+	logger.InfoCtx(ctx, "retention", "starting cleanup")
 
 	// Container logs: keep 7 days
-	purge(db, "container_logs", "recorded_at", "7 DAY")
+	purge(ctx, db, "container_logs", "recorded_at", "7 DAY")
 
 	// Lifecycle logs: keep 14 days
-	purge(db, "lifecycle_logs", "recorded_at", "14 DAY")
+	purge(ctx, db, "lifecycle_logs", "recorded_at", "14 DAY")
 
 	// Worker metrics: keep 30 days
-	purge(db, "worker_metrics", "recorded_at", "30 DAY")
+	purge(ctx, db, "worker_metrics", "recorded_at", "30 DAY")
 
 	// Container metrics: keep 7 days (high volume, shorter retention)
-	purge(db, "container_metrics", "recorded_at", "7 DAY")
+	purge(ctx, db, "container_metrics", "recorded_at", "7 DAY")
 
 	// Deployment logs: keep 90 days
-	purge(db, "deployment_logs", "recorded_at", "90 DAY")
+	purge(ctx, db, "deployment_logs", "recorded_at", "90 DAY")
 
 	// Audit log: keep 180 days
-	purge(db, "audit_log", "inserted_at", "180 DAY")
+	purge(ctx, db, "audit_log", "inserted_at", "180 DAY")
 
 	// Database instance lifecycle events: keep 180 days. This table had no
 	// retention at all and grows with every status change, health observation,
 	// reconcile and credential reveal.
-	purge(db, "database_instance_events", "recorded_at", "180 DAY")
+	purge(ctx, db, "database_instance_events", "recorded_at", "180 DAY")
 
 	// Automation runs: keep 90 days, matching deployment logs. A "* * * * *"
 	// schedule writes 1,440 rows a day, and every skipped firing is a row too.
-	purge(db, "automation_runs", "inserted_at", "90 DAY")
+	purge(ctx, db, "automation_runs", "inserted_at", "90 DAY")
 
 	// Retired snapshot rows: keep 90 days, and only rows already soft-deleted.
 	//
@@ -73,25 +75,25 @@ func run(db *sql.DB) {
 	// record of where its remote file lives, so purging by age alone would
 	// silently orphan objects on S3/Drive/Samba with nothing left to find them
 	// by — the same leak the remote-delete path exists to prevent.
-	purgeWhere(db, "database_snapshots", "inserted_at", "90 DAY", "active = 0")
+	purgeWhere(ctx, db, "database_snapshots", "inserted_at", "90 DAY", "active = 0")
 
-	logger.Info("retention", "cleanup complete")
+	logger.InfoCtx(ctx, "retention", "cleanup complete")
 }
 
 // purge deletes rows older than the retention interval in batches to avoid
 // holding long table locks. Loops until fewer than batchSize rows are deleted.
 // All arguments must be safe SQL identifiers or interval literals — they are
 // validated before use but should only ever be hardcoded constants.
-func purge(db *sql.DB, table, column, interval string) {
-	purgeWhere(db, table, column, interval, "")
+func purge(ctx context.Context, db *sql.DB, table, column, interval string) {
+	purgeWhere(ctx, db, table, column, interval, "")
 }
 
 // purgeWhere is purge with an additional hardcoded predicate, for tables where
 // age alone is not a safe criterion. Like the other arguments, `extra` must be a
 // compile-time constant — it is interpolated, not parameterised.
-func purgeWhere(db *sql.DB, table, column, interval, extra string) {
+func purgeWhere(ctx context.Context, db *sql.DB, table, column, interval, extra string) {
 	if !validIdentifier.MatchString(table) || !validIdentifier.MatchString(column) {
-		logger.Error("retention", "invalid table/column name", logger.F{"table": table, "column": column})
+		logger.ErrorCtx(ctx, "retention", "invalid table/column name", logger.F{"table": table, "column": column})
 		return
 	}
 	condition := ""
@@ -104,7 +106,7 @@ func purgeWhere(db *sql.DB, table, column, interval, extra string) {
 	for {
 		result, err := db.Exec(query)
 		if err != nil {
-			logger.Error("retention", table+" cleanup error", logger.F{"error": err})
+			logger.ErrorCtx(ctx, "retention", "cleanup error", logger.F{"table": table, "rows": totalDeleted, "error": err})
 			return
 		}
 		affected, _ := result.RowsAffected()
@@ -117,6 +119,6 @@ func purgeWhere(db *sql.DB, table, column, interval, extra string) {
 	}
 
 	if totalDeleted > 0 {
-		logger.Info("retention", "deleted old "+table+" rows", logger.F{"rows": totalDeleted})
+		logger.InfoCtx(ctx, "retention", "deleted old rows", logger.F{"table": table, "rows": totalDeleted})
 	}
 }

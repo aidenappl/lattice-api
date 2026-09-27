@@ -79,7 +79,7 @@ func (h *AutomationHandler) HandleListAutomations(w http.ResponseWriter, r *http
 	}
 	latest, err := query.ListLatestAutomationRuns(db.DB, ids)
 	if err != nil {
-		logger.Warn("automation", "failed to load latest runs", logger.F{"error": err})
+		logger.WarnCtx(r.Context(), "automation", "failed to load latest runs", logger.F{"error": err})
 	}
 
 	viewer, _ := middleware.GetUserFromContext(r.Context())
@@ -389,7 +389,7 @@ func (h *AutomationHandler) HandleRunAutomation(w http.ResponseWriter, r *http.R
 	}
 
 	ip := r.RemoteAddr
-	outcome, err := h.Executor.Fire(existing, automations.Firing{
+	outcome, err := h.Executor.Fire(r.Context(), existing, automations.Firing{
 		Source:      structs.AutomationSourceManual,
 		Detail:      "manual run by " + user.Email,
 		TriggeredBy: &user.ID,
@@ -493,7 +493,7 @@ func (h *AutomationHandler) HandleAutomationWebhook(w http.ResponseWriter, r *ht
 		detail += " @ " + commit
 	}
 
-	outcome, err := h.Executor.FireWebhook(token, automations.Firing{
+	outcome, err := h.Executor.FireWebhook(r.Context(), token, automations.Firing{
 		Source: structs.AutomationSourceWebhook,
 		Detail: detail,
 		IP:     &ip,

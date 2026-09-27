@@ -1,6 +1,7 @@
 package bootstrap
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/aidenappl/lattice-api/db"
@@ -25,7 +26,7 @@ func EnsureAdminUser(engine db.Queryable) error {
 	}
 
 	if env.LatticeAdminEmail == "" || env.LatticeAdminPassword == "" {
-		logger.Warn("bootstrap", "no users exist and LATTICE_ADMIN_EMAIL/LATTICE_ADMIN_PASSWORD are not set; no admin user created")
+		logger.WarnCtx(context.Background(), "bootstrap", "no users exist and LATTICE_ADMIN_EMAIL/LATTICE_ADMIN_PASSWORD are not set; no admin user created")
 		return nil
 	}
 

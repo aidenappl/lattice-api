@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -300,11 +301,11 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 
 	// Validate service name and compose dir to prevent command injection
 	if !safeServiceName.MatchString(env.APIServiceName) {
-		responder.SendError(w, http.StatusInternalServerError, "invalid API_SERVICE_NAME configuration")
+		responder.SendError(w, http.StatusInternalServerError, "invalid API_SERVICE_NAME configuration", fmt.Errorf("API_SERVICE_NAME %q is not a valid service name", env.APIServiceName))
 		return
 	}
 	if !filepath.IsAbs(env.DockerComposeDir) {
-		responder.SendError(w, http.StatusInternalServerError, "DOCKER_COMPOSE_DIR must be an absolute path")
+		responder.SendError(w, http.StatusInternalServerError, "DOCKER_COMPOSE_DIR must be an absolute path", fmt.Errorf("DOCKER_COMPOSE_DIR %q is not absolute", env.DockerComposeDir))
 		return
 	}
 
@@ -325,14 +326,14 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 
 	extraEnv, cleanup, err := registryAuthEnv()
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to prepare registry credentials: %v", err))
+		responder.SendError(w, http.StatusInternalServerError, "failed to prepare registry credentials", err)
 		return
 	}
 	defer cleanup()
 
 	imageRef, err := serviceImageRef(service, extraEnv)
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, err.Error())
+		responder.SendError(w, http.StatusInternalServerError, "failed to resolve service image", err)
 		return
 	}
 
@@ -344,7 +345,7 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 	pullCmd.Env = append(os.Environ(), extraEnv...)
 	pullOut, err := pullCmd.CombinedOutput()
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to pull API image: %v — %s", err, string(pullOut)))
+		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to pull API image: %v — %s", err, string(pullOut)), err)
 		return
 	}
 
@@ -379,7 +380,8 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 			"cannot recreate the API container: helper container %q is not running. "+
 				"The API cannot recreate itself directly, so the new image is pulled but cannot be applied. "+
 				"Start the helper, or recreate manually: cd %s && docker compose up -d --force-recreate %s",
-			env.DockerHelperContainer, env.DockerComposeDir, service))
+			env.DockerHelperContainer, env.DockerComposeDir, service),
+			fmt.Errorf("helper container %q is not running", env.DockerHelperContainer))
 		return
 	}
 
@@ -420,6 +422,7 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 	// container's lifecycle. `docker exec` without -d means the exec session
 	// is attached, but the process inside the helper container continues even if
 	// this container dies before the command finishes.
+	ctx := context.WithoutCancel(r.Context())
 	go func() {
 		defer logger.Recover("self-update.exec")
 		time.Sleep(2 * time.Second)
@@ -432,9 +435,9 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 			// Anything else is a genuine failure, but the response has already
 			// gone out, so the audit entry above is the durable record that an
 			// attempt was made.
-			logger.Warn("self-update", "API self-update exec returned an error (expected when this container is replaced before exec returns)", logger.F{"error": err, "output": string(out)})
+			logger.WarnCtx(ctx, "self-update", "API self-update exec returned an error (expected when this container is replaced before exec returns)", logger.F{"error": err, "output": string(out)})
 		} else {
-			logger.Info("self-update", "API self-update exec completed", logger.F{"output": string(out)})
+			logger.InfoCtx(ctx, "self-update", "API self-update exec completed", logger.F{"output": string(out)})
 		}
 	}()
 }
@@ -446,11 +449,11 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !safeServiceName.MatchString(env.WebServiceName) {
-		responder.SendError(w, http.StatusInternalServerError, "invalid WEB_SERVICE_NAME configuration")
+		responder.SendError(w, http.StatusInternalServerError, "invalid WEB_SERVICE_NAME configuration", fmt.Errorf("WEB_SERVICE_NAME %q is not a valid service name", env.WebServiceName))
 		return
 	}
 	if !filepath.IsAbs(env.DockerComposeDir) {
-		responder.SendError(w, http.StatusInternalServerError, "DOCKER_COMPOSE_DIR must be an absolute path")
+		responder.SendError(w, http.StatusInternalServerError, "DOCKER_COMPOSE_DIR must be an absolute path", fmt.Errorf("DOCKER_COMPOSE_DIR %q is not absolute", env.DockerComposeDir))
 		return
 	}
 
@@ -465,14 +468,14 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 
 	extraEnv, cleanup, err := registryAuthEnv()
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to prepare registry credentials: %v", err))
+		responder.SendError(w, http.StatusInternalServerError, "failed to prepare registry credentials", err)
 		return
 	}
 	defer cleanup()
 
 	imageRef, err := serviceImageRef(service, extraEnv)
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, err.Error())
+		responder.SendError(w, http.StatusInternalServerError, "failed to resolve service image", err)
 		return
 	}
 
@@ -483,7 +486,7 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 	pullCmd.Env = append(os.Environ(), extraEnv...)
 	pullOut, err := pullCmd.CombinedOutput()
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to pull Web image: %v — %s", err, string(pullOut)))
+		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to pull Web image: %v — %s", err, string(pullOut)), err)
 		return
 	}
 
@@ -511,7 +514,7 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 	upCmd.Env = append(os.Environ(), extraEnv...)
 	upOut, err := upCmd.CombinedOutput()
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to recreate Web container: %v — %s", err, string(upOut)))
+		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to recreate Web container: %v — %s", err, string(upOut)), err)
 		return
 	}
 

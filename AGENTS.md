@@ -120,8 +120,8 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `container_cache.go` | 60s in-memory `name → *structs.Container` cache to kill the N+1 lookup on every heartbeat/log/status message. Status/health writes call `Invalidate(name)` so the next read is fresh, and a background `StartEviction` goroutine prunes expired entries to bound memory. |
 | `env/env.go` | All env vars via `getEnv`/`getEnvOrPanic`. `ValidateSecurityDefaults()` panics in production on weak `JWT_SIGNING_KEY` / admin password. |
 | `db/db.go` | MariaDB pool (IIFE-free lazy `Init()`), `Queryable` interface, `DEFAULT_LIMIT`/`MAX_LIMIT`, `BeginTx`, and **all schema migrations run in-code** via the idempotent `migrate()` helper. |
-| `logger/logger.go` | Structured leveled logger (text/ANSI or JSON). `logger.F` = `map[string]any`. `Request()` picks level by HTTP status. `SetSink`/`SetPanicSink` tee every Debug/Info/Warn/Error call and every reported panic out of the process (telemetry installs both; `Request` lines are not teed — the middleware reports requests itself). `Recover(name, fields)`, deferred directly, is the panic guard for every goroutine; `Panic`/`PanicContext` report a value already recovered. |
-| `telemetry/telemetry.go` | Monitor wiring: `Init(version)` (never fails or blocks — Monitor is a Lattice stack), `InstallSinks` (logger → `<component>.log.<level>` and `panic.recovered` events), `Shutdown`, `Fatal`/`ReportFatal` for boot failures, `CrashGuard` (deferred first in `main`). See *Operations → Monitor telemetry*. |
+| `logger/logger.go` | Structured leveled logger (text/ANSI or JSON). `logger.F` = `map[string]any`. `Request()` picks level by HTTP status. `Debug/Info/Warn/Error` (and the `…Ctx(ctx, …)` variants, which carry the context's request/trace/user/job ids) build a `log/slog` record with the caller's PC and hand it to the slog default handler; `StdoutHandler` prints the historical stdout format gated by `LOG_LEVEL`, and telemetry installs `componentHandler`, which writes each record unchanged to `StdoutHandler` and hands Monitor (`monitor.NewSlogHandler(nil, …)`) a copy, so Monitor events name the true call site. `SetPanicSink` tees every reported panic out of the process; `Request` lines are stdout only — the middleware reports requests itself. `Recover(name, fields)`, deferred directly, is the panic guard for every goroutine; `Panic`/`PanicContext` report a value already recovered. |
+| `telemetry/telemetry.go` | Monitor wiring: `Init(version)` (never fails or blocks — Monitor is a Lattice stack), `InstallSinks(version)` (logger → `<component>.log.<level>` and `panic.recovered` events); `handler.go` is the `componentHandler` fan-out and the warn limiter, `Shutdown`, `Fatal`/`ReportFatal` for boot failures, `CrashGuard` (deferred first in `main`). See *Operations → Monitor telemetry*. |
 | `middleware/` | `middleware.go` (RequestID, Logging + the per-request `http.request.end` Monitor event, Recover, `SetUser`, MuxHeader, SecurityHeaders, MaxBodySize, `statusResponseWriter` with Hijack/Unwrap/`RecordFailure`), `auth.go` (DualAuth, RejectPending, RequireAdmin, RequireEditor, WorkerTokenAuth, SSO checkpoint), `csrf.go` (double-submit), `ratelimit.go` (per-IP token bucket). |
 | `jwt/jwt.go` | HS512 local tokens. 15-min access / 7-day refresh. `Claims{UserID, Type}`. Validation pins the alg to HS512 (`WithValidMethods`), requires an expiry (`WithExpirationRequired`) and the issuer, and rejects a token with no `iat` (so it can't bypass `tokens_revoked_at`). Revocation compare is `!IssuedAt.After(revokedAt)` (a token minted in the same second as revocation is rejected). |
 | `crypto/crypto.go` | AES-256-GCM encrypt/decrypt for secrets at rest. Passthrough (no-op) when `ENCRYPTION_KEY` unset **only in non-production** — `Init()` **panics at boot** if the key is empty and `ENVIRONMENT=production`. `Decrypt` returns a real error on bad base64 / short input / auth failure (no silent plaintext fallthrough); callers propagate it. |
@@ -308,10 +308,14 @@ lattice-web (browser) ──WS───────────▶ /ws/admin  �
 lattice-runner (host) ──WS (outbound)─▶ /ws/worker ◀──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The middleware chain applied globally (in order) is: `RateLimitMiddleware` → `RequestIDMiddleware`
-→ `LoggingMiddleware` → `MuxHeaderMiddleware` → `SecurityHeadersMiddleware` → `CSRFMiddleware` →
-`MaxBodySize(1MB)`. `/admin` additionally applies `DualAuthMiddleware` then `RejectPending`;
-individual mutating routes wrap the handler in `RequireEditor` or `RequireAdmin`.
+The middleware chain applied globally (outermost first, `main.go` `global`) is:
+`RequestIDMiddleware` → `LoggingMiddleware` → `RecoverMiddleware` → `RateLimitMiddleware` →
+`MuxHeaderMiddleware` → `SecurityHeadersMiddleware` → `CSRFMiddleware` → `MaxBodySize(1MB)`.
+Rate limiting sits inside logging so a 429 is recorded with the request id the client was given.
+The router's `NotFoundHandler` / `MethodNotAllowedHandler` get the same chain (`middleware.Wrap`),
+so a 404/405 still produces an event, under the route `(unmatched)`. `/admin` additionally applies
+`DualAuthMiddleware` then `RejectPending`; individual mutating routes wrap the handler in
+`RequireEditor` or `RequireAdmin`.
 
 ### Auth model — three credentials, one middleware
 
@@ -471,11 +475,13 @@ worker connection down. A panicking `OnMessage` costs only that message. `OnDisc
 the connection's close cause — the first read/write/ping error, or a replacement by the same
 worker's new connection. The connect/disconnect/message callbacks are set in `message_handlers.go`:
 
-- **OnConnect:** mark worker online, cancel any pending disconnect alert, broadcast
+- **OnConnect:** emit `worker.connected` (info: `worker_id`, `worker_name`, `runner_version`,
+  `remote_ip`), mark worker online, cancel any pending disconnect alert, broadcast
   `worker_connected`, re-push DB snapshot schedules to the runner (`distributeDbSchedules`), and
   request a full database-container report (`dbReconciler.RequestSync`) so anything that changed
   while the worker was unreachable is corrected immediately.
-- **OnDisconnect:** log a warning with the `cause` and `connected_for`, mark offline, broadcast
+- **OnDisconnect:** emit `worker.disconnected` with the `cause` and `connected_for` — warn, or
+  info with `graceful=true` when the runner sent `worker_shutdown` first — mark offline, broadcast
   `worker_disconnected`, fire the
   `worker.disconnected` webhook, and schedule a grace-delayed email alert.
 - **OnMessage:** switch on `msg.Type` — heartbeat (metrics + container-name reconciliation),
@@ -487,8 +493,20 @@ worker's new connection. The connect/disconnect/message callbacks are set in `me
 
 ### Worker protocol (`socket/protocol.go`)
 
-`Envelope` (API→worker: `type`, `command_id`, `worker_id`, `issued_at`, `payload`) and
-`IncomingMessage` (worker→API: adds `status`, keeps `Raw`).
+`Envelope` (API→worker: `type`, `command_id`, `request_id`, `trace_id`, `worker_id`, `issued_at`,
+`payload`) and `IncomingMessage` (worker→API: the same ids, adds `status`, keeps `Raw`).
+
+**Build every command with `socket.NewCommand(ctx, type, payload)`** — never an `Envelope{}`
+literal (the `connected` hello in `socket/handler.go` is the one exception: it is not a command). It sets a fresh `command_id` (`monitor.NewRequestID()`) and copies `request_id` /
+`trace_id` from `ctx` (the HTTP request, or the background job that issued it), dropping ids
+Monitor would reject. The runner echoes all three on every reply that relates to a command
+(deploy progress/status, `container_status`, `worker_action_status`, `db_*` replies…);
+`msg.Context(ctx)` turns a reply back into a context carrying them (`request_id` falls back to
+`command_id` when only that was echoed), so the handler's log events join the originating
+request's trace. Unsolicited messages (heartbeat, `container_sync`, logs) carry no ids. The fields
+are **additive** (`omitempty`): an older runner ignores them and every consumer must tolerate their
+absence, so runner and API can be deployed in either order. The `db_*` payload-level
+`request_id` / `idempotency_key` (see *Command correlation* below) are separate and unchanged.
 
 | Direction | Message types |
 |-----------|---------------|
@@ -1221,9 +1239,10 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
     `deploy_claimed_at` (>30 min) is auto-breakable.
   - *"fetch failed" on every Monitor/Lattice MCP call* — the shared TLS proxy cert expired
     (a platform-wide symptom, not a `lattice-api` bug).
-- *A worker shows as disconnected* — `worker.log.warn` "disconnected" carries `cause` (the read,
+- *A worker shows as disconnected* — the `worker.disconnected` event carries `cause` (the read,
   write or ping error that ended the connection, or "replaced by a new connection from the same
-  worker") and `connected_for`.
+  worker") and `connected_for`; it is warn unless the runner announced `worker_shutdown` first
+  (`graceful=true`, info).
 
 ### Monitor telemetry
 
@@ -1241,21 +1260,57 @@ retries) before they are counted as dropped.
 | `MONITOR_ZONE` | `appleby` | Asserted against the zone's `/health` at boot, in the background; never transmitted |
 | `MONITOR_ENV` | `production` | The events' `env` |
 | `MONITOR_SPOOL_DIR` | *(unset — memory only)* | Durable spool. Must be a host path or named volume: the container's writable layer is destroyed by the self-update recreate it would need to survive |
-| `MONITOR_DEBUG` | `false` | Also ship `logger.Debug` lines |
+| `MONITOR_DEBUG` | `false` | Also ship debug records to Monitor (the Monitor handler's level drops to debug). Without it no debug event ships. Stdout's debug lines follow `LOG_LEVEL` alone |
 | `MONITOR_STDOUT` | `false` | Also print every event to stdout. The logger already writes each line once, and the orchestrator's disk has filled from an unrotated container log before |
 
 | Event | Level | What |
 |-------|-------|------|
-| `http.request.end` | info / warn (4xx) / error (5xx) | Every request except `/healthcheck`: route template as `path` (so `/api/deploy/{token}` never puts a token in the grouping key), status, duration, bytes, client IP (trusted-proxy aware), user agent, `user_id` once `DualAuthMiddleware` has verified a credential, and the responder's `error_message` / `error` / `error_code` — including the internal error a 5xx hides from the client. WebSocket upgrades report `101` with `websocket: true`. |
-| `<component>.log.<level>` | as logged | Every `logger.Info/Warn/Error` call (`Debug` too with `MONITOR_DEBUG`), whatever `LOG_LEVEL` is. `caller` is the logging line; `message`, `component` and the call's fields ride along. Container status and health are logged **only on a change** (`logContainerTransition`: info, warn when a container turns unhealthy, with `previous`); runners re-report both constantly, so repeats go to debug. `healthscan` likewise logs only when what it found changes. Don't add an Info log to a per-message or per-tick path. |
+| `http.request.end` | info / warn (4xx) / error (5xx) | Every request except `/healthcheck`, including unmatched ones (404/405, `path` = `(unmatched)`): route template as `path` (so `/api/deploy/{token}` never puts a token in the grouping key), status, duration, bytes, client IP (trusted-proxy aware), user agent, `user_id` once `DualAuthMiddleware` has verified a credential, and the responder's `error_message` / `error` / `error_code` — including the internal error a 5xx hides from the client. WebSocket upgrades report `101` with `websocket: true`. |
+| `<component>.log.<level>` | as logged | Every `logger.Info/Warn/Error` call (`Debug` too with `MONITOR_DEBUG`), whatever `LOG_LEVEL` is; `app` when the component is empty. `source_file` / `source_func` / `source_line` are the logging line; `message`, `component`, `version` and the call's fields ride along. The `…Ctx(ctx, …)` variants add the context's `request_id` / `trace_id` / `user_id` / `job_id` — use them wherever a request or job context exists. A field named `event` would rename the event, so use an explicit key (`webhook_event`, `lifecycle_event`); the logger renames a stray one to `event_type`. Repeats of one warning (same component and message) reach Monitor at most 20 times a minute; the next one through carries `suppressed=<n>`. Errors are never limited, and stdout always gets every line. Container status and health are logged **only on a change** (`logContainerTransition`: info, warn when a container turns unhealthy, with `previous`); runners re-report both constantly, so repeats go to debug. `healthscan` likewise logs only when what it found changes. Don't add an Info log to a per-message or per-tick path. |
+| `deployment.started` | info | The first `deploying` a runner reports: `deployment_id`, `stack_id`, `strategy`. |
+| `deployment.succeeded` | info | A runner-reported `deployed`: `deployment_id`, `stack_id`, `strategy`, `duration_ms` (from `started_at`, else creation). A repeat is debug. |
+| `deployment.recovered` | info | A `deployed` for a deployment already force-failed (stalled/timed out while the runner kept going): the success fields plus `previous_status=failed`. |
+| `deployment.failed` | info / warn / error | See the policy below. Fields: `deployment_id`, `stack_id`, `strategy`, `duration_ms`, and for API-raised failures `cause`, `error`. A repeat is debug. |
+| `worker.connected` | info | `worker_id`, `worker_name`, `runner_version` (as last registered), `remote_ip`. |
+| `worker.disconnected` | warn / info | `worker_id`, `worker_name`, `remote_ip`, `connected_for`, `cause`; info with `graceful=true` after `worker_shutdown`. |
 | `panic.recovered` | error | Every recovered panic, with the stack where it happened: HTTP handlers (`RecoverMiddleware`), worker/admin WebSocket callbacks and pumps, `safeGo`, every background loop and goroutine. |
 | `<resource_type>.<action>.success` | info | A mirror of every `logAudit` call, on the request's ids. Details are left out — they are free text. |
 | `service.startup` / `service.shutdown` | info | Boot (version, spool on/off) and the signal that stopped it. |
 | `service.startup.db_unreachable` · `service.startup.bootstrap_failed` · `service.listen_failed` | fatal | Boot failures, flushed before exit. |
 | `service.crashed` | fatal | A panic escaping `main` — the boot's own panics (weak `JWT_SIGNING_KEY`, missing `ENCRYPTION_KEY` in production). |
 
-CORS exposes `X-Request-ID`, so lattice-web's `api.request.*` events carry the same id as the
-request's `http.request.end` event. `/healthcheck` includes `telemetry` — go-monitor's `Stats()` (sent, dropped, spooled, pending). A
+**Named events** (`deployment.*`, `worker.*`) go through `logger.EventCtx(ctx, level, event,
+component, msg, fields)`; everything else is `<component>.log.<level>`. Use `EventCtx` only for
+something worth alerting on or counting by name, and keep the message text fixed — variable values
+go in fields, because the message is part of the issue fingerprint.
+
+**`deployment.failed` policy — one failed deploy is one Monitor issue.** The runner executes the
+deploy and raises the **error**-level `deployment.failed` (with the error text). The API's own
+record of a runner-reported failure is **info**. The API raises **error** only for failures it
+alone sees — `cause=timeout|stalled|dispatch_failed` (`failDeployment`,
+`routers/deployment_writes.go`) — except that a stall or timeout while the runner's latest
+`deployment_ping` reply says it still has the deploy in progress is **warn**
+(`runner_in_progress=true`): the runner will raise its own error if it fails.
+
+**Level policy.** Error means something failed that someone should look at; warn means degraded
+or suspicious but handled (4xx, retries, graceful fallbacks, unannounced disconnects); info is a
+state change; debug is per-message/per-tick detail and never ships without `MONITOR_DEBUG`.
+Handled or user-caused conditions (an SSO provider error or state mismatch, a webhook endpoint
+down) are warn, not error.
+
+**Correlation.** `RequestIDMiddleware` takes the caller's `X-Request-ID` when Monitor would
+accept it (`monitor.ValidCorrelationID`), otherwise mints a UUID; the `trace_id` comes from a valid
+W3C `traceparent`, then `X-Trace-ID`, otherwise `monitor.NewTraceID()`. Both go on the context
+and back out as `X-Request-ID` / `X-Trace-ID` response headers. CORS allows `X-Request-ID`,
+`X-Trace-ID` and `traceparent` inbound and exposes `X-Request-ID` / `X-Trace-ID`, so lattice-web's
+`api.request.*` events carry the same id as the request's `http.request.end` event. Commands to a
+runner carry the ids on the envelope (see *Worker protocol*), so a deploy clicked in the browser is
+one `request_id` across lattice-web, this API and the runner. Background jobs log under their own
+`monitor.WithJobID` context.
+
+**Deploy order.** lattice-api must be deployed **before** lattice-web: the browser now sends
+`X-Request-ID` on every call, and an API whose CORS preflight does not allow that header fails
+every request. The runner and the API can go in either order (the envelope fields are additive). `/healthcheck` includes `telemetry` — go-monitor's `Stats()` (sent, dropped, spooled, pending). A
 rising `dropped` or `pending` means events are not arriving, which the service cannot tell you
 through Monitor itself. Redaction happens in the SDK before anything is written or sent
 (credential-shaped keys and values, plus `email`); query strings are never logged; webhook URLs

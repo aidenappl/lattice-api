@@ -1,8 +1,11 @@
 package env
 
 import (
+	"context"
 	"fmt"
 	"os"
+
+	"github.com/aidenappl/lattice-api/logger"
 )
 
 var (
@@ -106,14 +109,14 @@ func ValidateSecurityDefaults() {
 		if isProd {
 			panic(msg)
 		}
-		fmt.Printf("⚠️  WARNING: %s\n", msg)
+		logger.WarnCtx(context.Background(), "config", "insecure configuration", logger.F{"detail": msg})
 	}
 	if weakJWTKeys[JWTSigningKey] {
 		msg := "JWT_SIGNING_KEY is a known default value. Generate a secure key with: openssl rand -hex 32"
 		if isProd {
 			panic(msg)
 		}
-		fmt.Printf("⚠️  WARNING: %s\n", msg)
+		logger.WarnCtx(context.Background(), "config", "insecure configuration", logger.F{"detail": msg})
 	}
 
 	// Bootstrap admin password
@@ -122,19 +125,19 @@ func ValidateSecurityDefaults() {
 		if isProd {
 			panic(msg)
 		}
-		fmt.Printf("⚠️  WARNING: %s\n", msg)
+		logger.WarnCtx(context.Background(), "config", "insecure configuration", logger.F{"detail": msg})
 	}
 	if LatticeAdminPassword == "changeme" || LatticeAdminPassword == "password" {
 		msg := "LATTICE_ADMIN_PASSWORD is a known weak default. Set a strong password."
 		if isProd {
 			panic(msg)
 		}
-		fmt.Printf("⚠️  WARNING: %s\n", msg)
+		logger.WarnCtx(context.Background(), "config", "insecure configuration", logger.F{"detail": msg})
 	}
 
 	// Encryption key format (if provided)
 	if EncryptionKey != "" && len(EncryptionKey) != 64 {
-		fmt.Printf("⚠️  WARNING: ENCRYPTION_KEY should be exactly 64 hex characters (32 bytes). Current length: %d\n", len(EncryptionKey))
+		logger.WarnCtx(context.Background(), "config", "ENCRYPTION_KEY should be exactly 64 hex characters (32 bytes)", logger.F{"length": len(EncryptionKey)})
 	}
 }
 

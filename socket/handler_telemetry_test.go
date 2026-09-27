@@ -80,3 +80,60 @@ func TestPanickingHandlerIsContainedAndCloseCauseReachesOnDisconnect(t *testing.
 		t.Fatal("OnDisconnect was never called")
 	}
 }
+
+// failureCapture stands in for the logging middleware's writer: a 500 from a
+// socket handler must reach RecordFailure like any other handler's.
+type failureCapture struct {
+	http.ResponseWriter
+	message string
+	err     error
+	code    int
+}
+
+func (f *failureCapture) RecordFailure(message string, err error, code int) {
+	f.message, f.err, f.code = message, err, code
+}
+
+func TestUnconfiguredAuthGoesThroughTheResponder(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler http.Handler
+	}{
+		{"worker", NewWorkerHandler(nil)},
+		{"admin", NewAdminHandler(nil)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			w := &failureCapture{ResponseWriter: rec}
+			tt.handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ws", nil))
+			if rec.Code != http.StatusInternalServerError {
+				t.Errorf("status = %d, want 500", rec.Code)
+			}
+			if w.message != "auth not configured" || w.err == nil {
+				t.Errorf("RecordFailure got message=%q err=%v", w.message, w.err)
+			}
+			if !strings.Contains(rec.Header().Get("Content-Type"), "application/json") {
+				t.Errorf("Content-Type = %q, want the responder's JSON", rec.Header().Get("Content-Type"))
+			}
+		})
+	}
+}
+
+func TestMessageType(t *testing.T) {
+	tests := []struct {
+		payload string
+		want    string
+	}{
+		{`{"type":"worker_heartbeat","payload":{}}`, "worker_heartbeat"},
+		{`{"payload":{}}`, ""},
+		{`not json`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.payload, func(t *testing.T) {
+			if got := messageType([]byte(tt.payload)); got != tt.want {
+				t.Errorf("messageType = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

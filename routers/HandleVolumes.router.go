@@ -2,7 +2,6 @@ package routers
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 
@@ -35,11 +34,8 @@ func (h *VolumeHandler) HandleListVolumes(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.Envelope{
-		Type:    socket.MsgListVolumes,
-		Payload: map[string]any{},
-	}); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send list_volumes command: %v", err))
+	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(r.Context(), socket.MsgListVolumes, map[string]any{})); err != nil {
+		sendDispatchError(w, "list_volumes", err)
 		return
 	}
 
@@ -77,14 +73,11 @@ func (h *VolumeHandler) HandleCreateVolume(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.Envelope{
-		Type: socket.MsgCreateVolume,
-		Payload: map[string]any{
-			"name":   body.Name,
-			"driver": body.Driver,
-		},
-	}); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send create_volume command: %v", err))
+	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(r.Context(), socket.MsgCreateVolume, map[string]any{
+		"name":   body.Name,
+		"driver": body.Driver,
+	})); err != nil {
+		sendDispatchError(w, "create_volume", err)
 		return
 	}
 
@@ -116,14 +109,11 @@ func (h *VolumeHandler) HandleDeleteVolume(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.Envelope{
-		Type: socket.MsgRemoveVolume,
-		Payload: map[string]any{
-			"name":  volumeName,
-			"force": r.URL.Query().Get("force") == "true",
-		},
-	}); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send remove_volume command: %v", err))
+	if err := h.WorkerHub.SendJSONToWorker(workerID, socket.NewCommand(r.Context(), socket.MsgRemoveVolume, map[string]any{
+		"name":  volumeName,
+		"force": r.URL.Query().Get("force") == "true",
+	})); err != nil {
+		sendDispatchError(w, "remove_volume", err)
 		return
 	}
 

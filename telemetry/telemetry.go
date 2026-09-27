@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 
 	monitor "github.com/aidenappl/go-monitor"
 	"github.com/aidenappl/lattice-api/env"
@@ -42,7 +43,7 @@ func Init(version string) {
 		logger.Warn("telemetry", "Monitor disabled", logger.F{"error": err.Error()})
 		return
 	}
-	InstallSinks()
+	InstallSinks(version)
 	if env.MonitorIngestURL == "" {
 		logger.Warn("telemetry", "MONITOR_INGEST_URL is not set; events are not being shipped")
 	}
@@ -54,32 +55,26 @@ func Init(version string) {
 	})
 }
 
-// InstallSinks routes the logger into Monitor: every log line becomes a
-// "<component>.log.<level>" event, and every recovered panic a panic.recovered
-// event with its stack.
-func InstallSinks() {
-	logger.SetSink(emitRecord)
+// InstallSinks routes logging into Monitor: every log record becomes a
+// "<component>.log.<level>" event attributed to the line that logged and
+// carrying version, and every recovered panic a panic.recovered event with its
+// stack.
+//
+// componentHandler writes each record unchanged to stdout (what LOG_LEVEL
+// allows, in the format it always had) and hands Monitor a copy with the event
+// name and the warn limiter applied. Monitor keeps info and above (debug too
+// with MONITOR_DEBUG).
+func InstallSinks(version string) {
+	level := slog.LevelInfo
+	if env.MonitorDebug {
+		level = slog.LevelDebug
+	}
+	// version is a WithAttrs attribute, so a record's own "version" field (a
+	// runner's, say) wins over it in the event's data.
+	mon := monitor.NewSlogHandler(nil, &monitor.SlogOptions{Level: level}).
+		WithAttrs([]slog.Attr{slog.String("version", version)})
+	logger.SetHandler(newComponentHandler(logger.StdoutHandler(), mon, DEFAULT_WARN_LIMIT, DEFAULT_WARN_WINDOW))
 	logger.SetPanicSink(emitPanic)
-}
-
-func emitRecord(r logger.Record) {
-	component := r.Component
-	if component == "" {
-		component = "app"
-	}
-	data := make(map[string]any, len(r.Fields)+3)
-	for k, v := range r.Fields {
-		if e, ok := v.(error); ok && e != nil {
-			v = e.Error()
-		}
-		data[k] = v
-	}
-	data["message"] = r.Msg
-	data["component"] = r.Component
-	// Monitor's own source_* fields would name this file; caller is the line
-	// that logged.
-	data["caller"] = r.Caller
-	monitor.Emit(context.Background(), component+".log."+levelName(r.Level), data, monitor.WithLevel(levelName(r.Level)))
 }
 
 func emitPanic(ctx context.Context, p logger.PanicRecord) {
@@ -95,19 +90,6 @@ func emitPanic(ctx context.Context, p logger.PanicRecord) {
 	data["panic_type"] = fmt.Sprintf("%T", p.Recovered)
 	data["stacktrace"] = p.Stack
 	monitor.Emit(ctx, "panic.recovered", data, monitor.WithLevel(monitor.LevelError))
-}
-
-func levelName(l logger.Level) string {
-	switch l {
-	case logger.LevelDebug:
-		return monitor.LevelDebug
-	case logger.LevelWarn:
-		return monitor.LevelWarn
-	case logger.LevelError:
-		return monitor.LevelError
-	default:
-		return monitor.LevelInfo
-	}
 }
 
 // Shutdown announces the stop and delivers (or, with a spool, persists) what is

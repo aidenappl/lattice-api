@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -51,7 +52,7 @@ func initApp() *appContext {
 	// included (see telemetry.CrashGuard), is then reported. It never blocks or
 	// fails — Monitor is a Lattice stack and may well not be up yet.
 	telemetry.Init(Version)
-	logger.Info("server", fmt.Sprintf("Lattice API %s starting", Version))
+	logger.InfoCtx(context.Background(), "server", "Lattice API starting", logger.F{"version": Version})
 
 	routers.InstallScript = installRunnerScript
 	routers.APIVersion = Version
@@ -78,7 +79,7 @@ func initApp() *appContext {
 	// failure is unmissable in the logs, and `migrate` — where a failure aborts a
 	// deliberate action and nothing is serving — stays fatal.
 	if err := db.RunMigrations(); err != nil {
-		logger.Error("database", "SCHEMA MIGRATIONS FAILED — starting on the existing schema; "+
+		logger.ErrorCtx(context.Background(), "database", "SCHEMA MIGRATIONS FAILED — starting on the existing schema; "+
 			"features depending on new columns will not work until this is resolved", logger.F{
 			"error": err.Error(),
 			"fix":   "run `lattice-api migrate` against this database and read the error",
@@ -102,9 +103,9 @@ func initApp() *appContext {
 	routers.BackfillNetworksFromCompose(db.DB)
 
 	if sso.IsConfigured() {
-		logger.Info("sso", "configured")
+		logger.InfoCtx(context.Background(), "sso", "configured")
 	} else {
-		logger.Info("sso", "not configured (local auth only)")
+		logger.InfoCtx(context.Background(), "sso", "not configured (local auth only)")
 	}
 
 	// WebSocket hubs
@@ -121,6 +122,9 @@ func initApp() *appContext {
 	workerHandler.AuthFunc = func(r *http.Request) (int, bool) {
 		return middleware.WorkerTokenAuth(r)
 	}
+	// Behind the proxy, the TCP peer is the proxy; this resolves the worker's
+	// own address for worker.connected / worker.disconnected.
+	workerHandler.ClientIP = middleware.ClientIP
 	configureWorkerHandler(workerHandler, adminHub, scanner)
 
 	// Admin WebSocket handler

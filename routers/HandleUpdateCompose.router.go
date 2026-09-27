@@ -90,7 +90,7 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 	// Begin transaction — if creation fails partway, soft-deleted containers are restored
 	tx, err := db.BeginTx()
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction")
+		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction", err)
 		return
 	}
 	defer tx.Rollback() // no-op if committed
@@ -111,7 +111,12 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 	// Soft-delete existing containers
 	if existing != nil {
 		for _, c := range *existing {
-			_ = query.DeleteContainer(tx, c.ID)
+			if err := query.DeleteContainer(tx, c.ID); err != nil {
+				// Returning rolls the whole update back: committing now would
+				// leave the old container beside its replacement.
+				responder.SendError(w, http.StatusInternalServerError, "failed to remove existing container", err)
+				return
+			}
 		}
 	}
 
@@ -221,7 +226,10 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Replace networks — delete existing, create from compose
-	_ = query.DeleteNetworksByStack(tx, stack.ID)
+	if err := query.DeleteNetworksByStack(tx, stack.ID); err != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to replace stack networks", err)
+		return
+	}
 	if len(compose.Networks) > 0 {
 		for key, net := range compose.Networks {
 			driver := net.Driver
@@ -232,11 +240,14 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 			if name == "" {
 				name = key
 			}
-			_ = query.CreateNetwork(tx, query.CreateNetworkRequest{
+			if err := query.CreateNetwork(tx, query.CreateNetworkRequest{
 				StackID: stack.ID,
 				Name:    name,
 				Driver:  driver,
-			})
+			}); err != nil {
+				responder.SendError(w, http.StatusInternalServerError, "failed to create stack network", err)
+				return
+			}
 		}
 	}
 
@@ -250,7 +261,7 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := tx.Commit(); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to commit transaction")
+		responder.SendError(w, http.StatusInternalServerError, "failed to commit transaction", err)
 		return
 	}
 

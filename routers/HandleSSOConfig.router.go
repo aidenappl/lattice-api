@@ -6,8 +6,6 @@ import (
 	"strings"
 
 	"github.com/aidenappl/lattice-api/crypto"
-	"github.com/aidenappl/lattice-api/db"
-	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/sso"
 	"github.com/aidenappl/lattice-api/tools"
@@ -73,23 +71,6 @@ func HandleUpdateSSOConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Helper to set a string setting if provided (trims whitespace)
-	setIf := func(key string, val *string) {
-		if val != nil {
-			_ = query.SetSetting(db.DB, key, strings.TrimSpace(*val))
-		}
-	}
-	// Helper to set a bool setting if provided
-	setBoolIf := func(key string, val *bool) {
-		if val != nil {
-			v := "false"
-			if *val {
-				v = "true"
-			}
-			_ = query.SetSetting(db.DB, key, v)
-		}
-	}
-
 	// Validate SSO endpoint URLs to prevent SSRF
 	for _, u := range []*string{body.TokenURL, body.UserInfoURL, body.AuthorizeURL, body.LogoutURL} {
 		if u != nil && *u != "" {
@@ -100,21 +81,25 @@ func HandleUpdateSSOConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	setBoolIf("sso.enabled", body.Enabled)
-	setIf("sso.client_id", body.ClientID)
+	var form settingsForm
+	form.boolean("sso.enabled", body.Enabled)
+	form.str("sso.client_id", body.ClientID)
 
-	// Only update secret if non-empty and not the masked value
+	// Only update secret if non-empty and not the masked value. A secret that
+	// cannot be encrypted is never stored, and never silently skipped either.
 	if body.ClientSecret != nil && *body.ClientSecret != "" && !strings.HasPrefix(*body.ClientSecret, "••") {
 		encrypted, err := crypto.Encrypt(*body.ClientSecret)
-		if err == nil {
-			_ = query.SetSetting(db.DB, "sso.client_secret", encrypted)
+		if err != nil {
+			responder.SendError(w, http.StatusInternalServerError, "failed to encrypt sso client secret", err)
+			return
 		}
+		form.raw("sso.client_secret", encrypted)
 	}
 
-	setIf("sso.issuer_url", body.IssuerURL)
-	setIf("sso.authorize_url", body.AuthorizeURL)
-	setIf("sso.token_url", body.TokenURL)
-	setIf("sso.userinfo_url", body.UserInfoURL)
+	form.str("sso.issuer_url", body.IssuerURL)
+	form.str("sso.authorize_url", body.AuthorizeURL)
+	form.str("sso.token_url", body.TokenURL)
+	form.str("sso.userinfo_url", body.UserInfoURL)
 	// ⚠️ WITHOUT THIS, THE REVOCATION CHECKPOINT CANNOT RUN AT ALL.
 	//
 	// LoadConfig has always read sso.introspect_url, but no handler ever wrote it,
@@ -123,10 +108,10 @@ func HandleUpdateSSOConfig(w http.ResponseWriter, r *http.Request) {
 	// checkpoint was dead — the first being that sso_sessions did not exist.
 	//
 	// For forta-api the value is https://auth.appleby.cloud/oauth/introspect.
-	setIf("sso.introspect_url", body.IntrospectURL)
-	setIf("sso.redirect_url", body.RedirectURL)
-	setIf("sso.logout_url", body.LogoutURL)
-	setIf("sso.scopes", body.Scopes)
+	form.str("sso.introspect_url", body.IntrospectURL)
+	form.str("sso.redirect_url", body.RedirectURL)
+	form.str("sso.logout_url", body.LogoutURL)
+	form.str("sso.scopes", body.Scopes)
 	// ⚠️ VESTIGIAL. Nothing reads this any more, and nothing should.
 	//
 	// It used to name the claim treated as the user's identity, and its production
@@ -138,10 +123,15 @@ func HandleUpdateSSOConfig(w http.ResponseWriter, r *http.Request) {
 	// The field is still accepted and returned so the admin UI and lattice-mcp do
 	// not break on an unknown key. Do NOT reconnect it to Provider.SubjectClaim;
 	// see sso/provider.go.
-	setIf("sso.user_identifier", body.UserIdentifier)
-	setIf("sso.button_label", body.ButtonLabel)
-	setBoolIf("sso.auto_provision", body.AutoProvision)
-	setIf("sso.post_login_url", body.PostLoginURL)
+	form.str("sso.user_identifier", body.UserIdentifier)
+	form.str("sso.button_label", body.ButtonLabel)
+	form.boolean("sso.auto_provision", body.AutoProvision)
+	form.str("sso.post_login_url", body.PostLoginURL)
+
+	if err := saveSettings(form); err != nil {
+		responder.SendError(w, http.StatusInternalServerError, "failed to save sso configuration", err)
+		return
+	}
 
 	logAudit(r, "update", "sso_config", nil, nil)
 

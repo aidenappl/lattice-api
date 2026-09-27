@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aidenappl/lattice-api/db"
@@ -25,8 +27,47 @@ import (
 // goroutine growth under heavy WebSocket traffic.
 var msgSem = make(chan struct{}, 100)
 
+// POOL_SATURATED_LOG_INTERVAL is the least time between two "worker handler
+// pool saturated" warnings; the ones in between are counted into the next.
+const POOL_SATURATED_LOG_INTERVAL = time.Minute
+
+var poolSaturation struct {
+	mu      sync.Mutex
+	lastLog time.Time
+	missed  int
+}
+
+// logPoolSaturated warns that every msgSem slot is taken — at most once per
+// POOL_SATURATED_LOG_INTERVAL, carrying how many saturations went unlogged.
+func logPoolSaturated(name string) {
+	poolSaturation.mu.Lock()
+	now := time.Now()
+	if !poolSaturation.lastLog.IsZero() && now.Sub(poolSaturation.lastLog) < POOL_SATURATED_LOG_INTERVAL {
+		poolSaturation.missed++
+		poolSaturation.mu.Unlock()
+		return
+	}
+	suppressed := poolSaturation.missed
+	poolSaturation.lastLog, poolSaturation.missed = now, 0
+	poolSaturation.mu.Unlock()
+
+	logger.WarnCtx(context.Background(), "worker", "worker handler pool saturated", logger.F{
+		"slots":               cap(msgSem),
+		"handler":             name,
+		"unlogged_since_last": suppressed,
+	})
+}
+
+// safeGo runs fn on a pooled goroutine. When the pool is full it blocks the
+// caller — the worker's read pump — until a slot frees, which is the intended
+// backpressure; saturation is logged so that stall is not silent.
 func safeGo(name string, fn func()) {
-	msgSem <- struct{}{} // acquire semaphore
+	select {
+	case msgSem <- struct{}{}: // acquire semaphore
+	default:
+		logPoolSaturated(name)
+		msgSem <- struct{}{}
+	}
 	go func() {
 		defer func() { <-msgSem }() // release semaphore
 		defer logger.Recover(name)
@@ -39,7 +80,7 @@ func safeGo(name string, fn func()) {
 // trace of why.
 func logWorkerWriteErr(op string, workerID int, err error) {
 	if err != nil {
-		logger.Error("worker", op+" failed", logger.F{"worker_id": workerID, "error": err})
+		logger.ErrorCtx(context.Background(), "worker", op+" failed", logger.F{"worker_id": workerID, "error": err})
 	}
 }
 
@@ -47,7 +88,18 @@ func logWorkerWriteErr(op string, workerID int, err error) {
 // callbacks for the worker WebSocket handler.
 func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub, scanner *healthscan.Scanner) {
 	wh.OnConnect = func(session *socket.WorkerSession) {
-		logger.Info("worker", "connected", logger.F{"worker_id": session.WorkerID})
+		connectFields := logger.F{"worker_id": session.WorkerID, "remote_ip": session.RemoteIP}
+		if w, err := query.GetWorkerByID(db.DB, session.WorkerID); err == nil {
+			connectFields["worker_name"] = w.Name
+			if w.RunnerVersion != nil {
+				// As last registered: an upgraded runner reports its new
+				// version in the registration that follows.
+				connectFields["runner_version"] = *w.RunnerVersion
+			}
+		} else {
+			logger.WarnCtx(context.Background(), "worker", "failed to load worker for connect event", logger.F{"worker_id": session.WorkerID, "error": err})
+		}
+		logger.EventCtx(context.Background(), logger.LevelInfo, "worker.connected", "worker", "worker connected", connectFields)
 		logWorkerWriteErr("heartbeat update", session.WorkerID, query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "online"))
 		mailer.CancelDisconnectAlert(session.WorkerID)
 		adminHub.BroadcastJSON(map[string]any{
@@ -65,28 +117,41 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 		// was offline is corrected now rather than up to a reconcile interval
 		// later.
 		safeGo("db-sync-request", func() {
-			dbReconciler.RequestSync(session.WorkerID)
+			dbReconciler.RequestSync(context.Background(), session.WorkerID)
 		})
 	}
 
 	wh.OnDisconnect = func(session *socket.WorkerSession, err error) {
+		workerName := fmt.Sprintf("Worker %d", session.WorkerID)
+		w, wErr := query.GetWorkerByID(db.DB, session.WorkerID)
+		if wErr == nil {
+			workerName = w.Name
+		} else {
+			logger.WarnCtx(context.Background(), "worker", "failed to load worker for disconnect event", logger.F{"worker_id": session.WorkerID, "error": wErr})
+		}
+
 		fields := logger.F{
 			"worker_id":     session.WorkerID,
+			"worker_name":   workerName,
+			"remote_ip":     session.RemoteIP,
 			"connected_for": time.Since(session.ConnectedAt).Round(time.Second).String(),
 		}
 		if err != nil {
 			fields["cause"] = err.Error()
 		}
-		logger.Warn("worker", "disconnected", fields)
+		// A worker that announced worker_shutdown first is a planned stop (an
+		// upgrade, a reboot); only an unannounced drop is worth a warning.
+		level := logger.LevelWarn
+		if session.GracefulShutdown.Load() {
+			fields["graceful"] = true
+			level = logger.LevelInfo
+		}
+		logger.EventCtx(context.Background(), level, "worker.disconnected", "worker", "worker disconnected", fields)
 		logWorkerWriteErr("offline status update", session.WorkerID, query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "offline"))
 		adminHub.BroadcastJSON(map[string]any{
 			"type":      "worker_disconnected",
 			"worker_id": session.WorkerID,
 		})
-		workerName := fmt.Sprintf("Worker %d", session.WorkerID)
-		if w, wErr := query.GetWorkerByID(db.DB, session.WorkerID); wErr == nil {
-			workerName = w.Name
-		}
 		webhooks.Fire("worker.disconnected", map[string]any{
 			"worker_id":   session.WorkerID,
 			"worker_name": workerName,
@@ -100,6 +165,10 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 	}
 
 	wh.OnMessage = func(session *socket.WorkerSession, msg socket.IncomingMessage) {
+		// A reply to a command carries the command's request_id/trace_id, so
+		// what its handler logs joins the request that issued the command.
+		// Unsolicited messages carry none and ctx stays empty of ids.
+		ctx := msg.Context(context.Background())
 		switch msg.Type {
 		case socket.MsgHeartbeat:
 			logWorkerWriteErr("heartbeat update", session.WorkerID, query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "online"))
@@ -168,7 +237,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 						"event":          "deploy",
 						"message":        message,
 					}
-					handleLifecycleLog(session.WorkerID, lcPayload)
+					handleLifecycleLog(ctx, session.WorkerID, lcPayload)
 					adminHub.BroadcastJSON(map[string]any{
 						"type":      "lifecycle_log",
 						"worker_id": session.WorkerID,
@@ -176,7 +245,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 					})
 				}
 			}
-			handleDeploymentProgress(msg.Payload)
+			handleDeploymentProgress(ctx, msg.Payload)
 
 		case socket.MsgDeploymentStatus:
 			adminHub.BroadcastJSON(map[string]any{
@@ -185,6 +254,10 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				"payload":   msg.Payload,
 			})
 			if depID, ok := msg.Payload["deployment_id"].(float64); ok {
+				// Kept so a stall/timeout force-fail can tell whether the runner is
+				// still executing the deploy (see routers.failDeployment).
+				inProgress, _ := msg.Payload["in_progress"].(bool)
+				routers.RecordRunnerDeploymentStatus(int(depID), inProgress)
 				message, _ := msg.Payload["message"].(string)
 				if message != "" {
 					stage := "status_check"
@@ -194,13 +267,13 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 						Stage:        &stage,
 						Message:      fmt.Sprintf("Runner status check: %s", message),
 					}); err != nil {
-						logger.Error("deploy", "deployment log write failed", logger.F{"deployment_id": int(depID), "error": err})
+						logger.ErrorCtx(ctx, "deploy", "deployment log write failed", logger.F{"deployment_id": int(depID), "error": err})
 					}
 				}
 			}
 
 		case socket.MsgContainerStatus:
-			enriched := handleContainerStatus(session.WorkerID, msg.Payload)
+			enriched := handleContainerStatus(ctx, session.WorkerID, msg.Payload)
 			adminHub.BroadcastJSON(map[string]any{
 				"type":      "container_status",
 				"worker_id": session.WorkerID,
@@ -219,7 +292,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
-			safeGo("container-health", func() { handleContainerHealthStatus(msg.Payload) })
+			safeGo("container-health", func() { handleContainerHealthStatus(ctx, msg.Payload) })
 			hs, _ := msg.Payload["health_status"].(string)
 			cName, _ := msg.Payload["container_name"].(string)
 			if hs == "unhealthy" {
@@ -264,7 +337,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 			safeGo("container-log", func() { handleContainerLog(session.WorkerID, msg.Payload) })
 
 		case socket.MsgLifecycleLog:
-			handleLifecycleLog(session.WorkerID, msg.Payload)
+			handleLifecycleLog(ctx, session.WorkerID, msg.Payload)
 			adminHub.BroadcastJSON(map[string]any{
 				"type":      "lifecycle_log",
 				"worker_id": session.WorkerID,
@@ -299,7 +372,8 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 		case socket.MsgWorkerShutdown:
 			reason, _ := msg.Payload["reason"].(string)
 			message, _ := msg.Payload["message"].(string)
-			logger.Info("worker", "shutting down gracefully", logger.F{"worker_id": session.WorkerID, "reason": reason})
+			session.GracefulShutdown.Store(true)
+			logger.InfoCtx(ctx, "worker", "shutting down gracefully", logger.F{"worker_id": session.WorkerID, "reason": reason})
 			writeWorkerLifecycleLogs(session.WorkerID, "worker_shutdown", message)
 			adminHub.BroadcastJSON(map[string]any{
 				"type":      "worker_shutdown",
@@ -310,7 +384,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 		case socket.MsgWorkerCrash:
 			goroutine, _ := msg.Payload["goroutine"].(string)
 			panicMsg, _ := msg.Payload["panic"].(string)
-			logger.Error("worker", "crash detected", logger.F{"worker_id": session.WorkerID, "goroutine": goroutine, "panic": panicMsg})
+			logger.ErrorCtx(ctx, "worker", "crash detected", logger.F{"worker_id": session.WorkerID, "goroutine": goroutine, "panic": panicMsg})
 			crashMsg := fmt.Sprintf("worker crashed: %s (goroutine: %s)", panicMsg, goroutine)
 			writeWorkerLifecycleLogs(session.WorkerID, "worker_crash", crashMsg)
 			adminHub.BroadcastJSON(map[string]any{
@@ -360,7 +434,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
-			safeGo("db-status", func() { handleDbStatus(session.WorkerID, msg.Payload) })
+			safeGo("db-status", func() { handleDbStatus(ctx, session.WorkerID, msg.Payload) })
 
 		case socket.MsgDbHealthStatus:
 			adminHub.BroadcastJSON(map[string]any{
@@ -384,13 +458,13 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
-			safeGo("db-mirror", func() { handleMirrorStatus(msg.Payload) })
+			safeGo("db-mirror", func() { handleMirrorStatus(ctx, msg.Payload) })
 
 		case socket.MsgDbSync:
 			// Full per-worker report of observed database containers. This is
 			// the level-triggered input the reconciler diffs against desired
 			// state, so a lost db_status can no longer strand an instance.
-			safeGo("db-sync", func() { handleDbSync(session.WorkerID, msg.Payload) })
+			safeGo("db-sync", func() { handleDbSync(ctx, session.WorkerID, msg.Payload) })
 
 		case socket.MsgDbSnapshotProgress:
 			adminHub.BroadcastJSON(map[string]any{
@@ -415,7 +489,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 					instanceID := payloadInt(msg.Payload, socket.PayloadDbInstanceID)
 					filename, _ := msg.Payload[socket.PayloadFilename].(string)
 					if instanceID == 0 || filename == "" {
-						logger.Warn("database", "snapshot status with neither snapshot_id nor (instance,filename) — dropping", logger.F{
+						logger.WarnCtx(ctx, "database", "snapshot status with neither snapshot_id nor (instance,filename) — dropping", logger.F{
 							"worker_id": session.WorkerID,
 							"status":    status,
 						})
@@ -423,7 +497,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 					}
 					snapshot, err := ensureScheduledSnapshotRow(instanceID, filename)
 					if err != nil {
-						logger.Error("database", "failed to adopt scheduled snapshot", logger.F{
+						logger.ErrorCtx(ctx, "database", "failed to adopt scheduled snapshot", logger.F{
 							"database_instance_id": instanceID, "filename": filename, "error": err,
 						})
 						return
@@ -440,7 +514,7 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 					errMsg = &em
 				}
 				if err := query.UpdateSnapshotStatus(db.DB, snapshotID, status, sizeBytes, errMsg); err != nil {
-					logger.Error("database", "failed to update snapshot status", logger.F{
+					logger.ErrorCtx(ctx, "database", "failed to update snapshot status", logger.F{
 						"snapshot_id": snapshotID, "status": status, "error": err,
 					})
 					return
@@ -460,11 +534,11 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				// Close the scheduled run this snapshot belongs to, if any. A run
 				// left open blocks every later slot via skip-on-overrun.
 				if status == "completed" || status == "failed" {
-					closeRunForSnapshot(snapshotID, status == "completed")
+					closeRunForSnapshot(ctx, snapshotID, status == "completed")
 				}
 
 				if status == "completed" {
-					recordPrimaryReplicaAndMirror(snapshotID, sizeBytes, wh.Hub)
+					recordPrimaryReplicaAndMirror(ctx, snapshotID, sizeBytes, wh.Hub)
 				}
 
 				if instanceID != 0 && status == "completed" {
@@ -473,8 +547,8 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 					// Retention is skipped in that case: the instance is on its
 					// way out, and expiring an old copy while destroying the
 					// database would be exactly the wrong moment.
-					if !finaliseDeleteAfterSnapshot(instanceID, wh.Hub) {
-						applySnapshotRetention(instanceID, wh.Hub)
+					if !finaliseDeleteAfterSnapshot(ctx, instanceID, wh.Hub) {
+						applySnapshotRetention(ctx, instanceID, wh.Hub)
 					}
 				}
 			})
@@ -518,8 +592,10 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				// issued; a failure here means the remote file outlived it.
 				if status == "failed" || status == "error" {
 					detail, _ := msg.Payload["message"].(string)
-					logger.Warn("database", "worker failed to delete snapshot file", logger.F{
-						"snapshot_id": snapshotID, "message": detail,
+					// Not retried: the row is already gone, so nothing will ask
+					// again and the remote file is orphaned. That makes it an error.
+					logger.ErrorCtx(ctx, "database", "worker failed to delete snapshot file", logger.F{
+						"snapshot_id": snapshotID, "worker_id": session.WorkerID, "detail": detail,
 					})
 				}
 			})
@@ -603,7 +679,7 @@ func configureAdminHandler(ah *socket.AdminHandler, workerHub *socket.WorkerHub)
 			// Gate it to editor+ (reject viewer/pending). The session role is
 			// captured from the authenticated user at connect time.
 			if session.Role != "admin" && session.Role != "editor" {
-				logger.Warn("socket", "rejected exec relay for insufficient role", logger.F{"session_id": session.ID, "role": session.Role, "type": msg.Type})
+				logger.WarnCtx(context.Background(), "socket", "rejected exec relay for insufficient role", logger.F{"session_id": session.ID, "role": session.Role, "type": msg.Type})
 				return
 			}
 			workerIDFloat, _ := msg.Payload["worker_id"].(float64)
@@ -611,12 +687,15 @@ func configureAdminHandler(ah *socket.AdminHandler, workerHub *socket.WorkerHub)
 			if workerID == 0 {
 				return
 			}
-			if err := workerHub.SendJSONToWorker(workerID, socket.Envelope{
-				Type:      msg.Type,
-				CommandID: msg.CommandID,
-				Payload:   msg.Payload,
-			}); err != nil {
-				logger.Warn("socket", "exec relay to worker failed", logger.F{"worker_id": workerID, "type": msg.Type, "error": err})
+			// The browser's command_id is passed through unchanged: the exec
+			// session is keyed by it end to end. NewCommand only mints one when
+			// the browser sent none.
+			cmd := socket.NewCommand(msg.Context(context.Background()), msg.Type, msg.Payload)
+			if msg.CommandID != "" {
+				cmd.CommandID = msg.CommandID
+			}
+			if err := workerHub.SendJSONToWorker(workerID, cmd); err != nil {
+				logger.WarnCtx(context.Background(), "socket", "exec relay to worker failed", logger.F{"worker_id": workerID, "type": msg.Type, "error": err})
 			}
 		}
 	}

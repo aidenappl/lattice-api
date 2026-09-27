@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -58,8 +59,10 @@ func dbActor(r *http.Request) string {
 // dbEvent appends an entry to an instance's history. Failures are logged, never
 // surfaced — losing an audit line must not fail the operation that produced it.
 func dbEvent(instanceID int, kind, message string, r *http.Request) {
+	ctx := context.Background()
 	var actor *string
 	if r != nil {
+		ctx = r.Context()
 		if user, _ := middleware.GetUserFromContext(r.Context()); user != nil {
 			name := user.Email
 			actor = &name
@@ -71,7 +74,7 @@ func dbEvent(instanceID int, kind, message string, r *http.Request) {
 		Message:            message,
 		Actor:              actor,
 	}); err != nil {
-		logger.Error("database", "failed to record instance event", logger.F{"instance_id": instanceID, "kind": kind, "error": err})
+		logger.ErrorCtx(ctx, "database", "failed to record instance event", logger.F{"instance_id": instanceID, "kind": kind, "error": err})
 	}
 }
 
@@ -343,7 +346,7 @@ func (h *DatabaseHandler) HandleCreateDatabaseInstance(w http.ResponseWriter, r 
 	if body.RootPassword == "" {
 		b := make([]byte, 12)
 		if _, err := rand.Read(b); err != nil {
-			responder.SendError(w, http.StatusInternalServerError, "failed to generate root password")
+			responder.SendError(w, http.StatusInternalServerError, "failed to generate root password", err)
 			return
 		}
 		body.RootPassword = hex.EncodeToString(b)
@@ -351,7 +354,7 @@ func (h *DatabaseHandler) HandleCreateDatabaseInstance(w http.ResponseWriter, r 
 	if body.Password == "" {
 		b := make([]byte, 12)
 		if _, err := rand.Read(b); err != nil {
-			responder.SendError(w, http.StatusInternalServerError, "failed to generate password")
+			responder.SendError(w, http.StatusInternalServerError, "failed to generate password", err)
 			return
 		}
 		body.Password = hex.EncodeToString(b)
@@ -418,30 +421,30 @@ func (h *DatabaseHandler) HandleCreateDatabaseInstance(w http.ResponseWriter, r 
 		payload["memory_limit"] = int64(*body.MemoryLimit) * 1024 * 1024
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(body.WorkerID, socket.Envelope{
-		Type:    socket.MsgDbCreate,
-		Payload: payload,
-	}); err != nil {
+	if err := h.WorkerHub.SendJSONToWorker(body.WorkerID, socket.NewCommand(r.Context(), socket.MsgDbCreate, payload)); err != nil {
 		// The row exists but the worker never heard about it. Record that
 		// plainly instead of leaving it to sit in pending forever.
 		msg := fmt.Sprintf("failed to send create command to worker: %v", err)
 		failed := string(structs.DBStatusError)
-		_, _ = query.UpdateDatabaseInstance(db.DB, instance.ID, query.UpdateDatabaseInstanceRequest{
+		if _, uerr := query.UpdateDatabaseInstance(db.DB, instance.ID, query.UpdateDatabaseInstanceRequest{
 			Status: &failed,
 			LastError: &structs.DatabaseError{
 				Code:      structs.DBErrCodeWorkerOffline,
 				Message:   msg,
 				Retryable: true,
 			},
-		})
+		}); uerr != nil {
+			// The instance is left in pending with no record of why.
+			logger.ErrorCtx(r.Context(), "database", "could not record create dispatch failure", logger.F{"database_instance_id": instance.ID, "error": uerr})
+		}
 		dbEvent(instance.ID, structs.DBEventFailed, msg, r)
-		responder.SendError(w, http.StatusInternalServerError, msg)
+		responder.SendError(w, http.StatusInternalServerError, msg, err)
 		return
 	}
 
 	// Register the snapshot schedule with the worker immediately. Without this,
 	// a schedule set at create time waited for the next worker reconnect.
-	PushDbSchedule(h.WorkerHub, instance)
+	PushDbSchedule(r.Context(), h.WorkerHub, instance)
 
 	logAudit(r, "create", "database_instance", intPtr(instance.ID), strPtr(instance.Name))
 	responder.NewCreated(w, instance, "database instance created")
@@ -474,7 +477,7 @@ func (h *DatabaseHandler) beginDeleteWithFinalSnapshot(w http.ResponseWriter, r 
 		return
 	}
 
-	snapshot, err := h.StartSnapshot(instance, "final")
+	snapshot, err := h.StartSnapshot(r.Context(), instance, "final")
 	if err != nil {
 		responder.QueryError(w, err, "failed to start the final snapshot")
 		return
@@ -669,7 +672,7 @@ func (h *DatabaseHandler) HandleUpdateDatabaseInstance(w http.ResponseWriter, r 
 	// A schedule change has to reach the runner now. The only sender used to be
 	// the worker-reconnect sync, so editing a schedule updated a row and changed
 	// nothing until the worker happened to reconnect.
-	PushDbSchedule(h.WorkerHub, instance)
+	PushDbSchedule(r.Context(), h.WorkerHub, instance)
 
 	logAudit(r, "update", "database_instance", intPtr(id), nil)
 	responder.New(w, instance, "database instance updated")
@@ -725,7 +728,7 @@ func (h *DatabaseHandler) HandleDeleteDatabaseInstance(w http.ResponseWriter, r 
 			return
 		}
 
-		logger.Warn("database", "instance delete forced while worker offline; container and volume left in place", logger.F{"instance_id": id, "worker_id": instance.WorkerID, "container": instance.ContainerName, "volume": instance.VolumeName})
+		logger.WarnCtx(r.Context(), "database", "instance delete forced while worker offline; container and volume left in place", logger.F{"instance_id": id, "worker_id": instance.WorkerID, "container": instance.ContainerName, "volume": instance.VolumeName})
 		dbEvent(id, structs.DBEventRequested, fmt.Sprintf(
 			"delete forced while worker %d was offline — container %s and data volume %s abandoned on the worker",
 			instance.WorkerID, instance.ContainerName, instance.VolumeName), r)
@@ -747,12 +750,9 @@ func (h *DatabaseHandler) HandleDeleteDatabaseInstance(w http.ResponseWriter, r 
 	// it. The worker retires the row for us when it confirms.
 	payload["remove_volume"] = true
 
-	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
-		Type:    socket.MsgDbRemove,
-		Payload: payload,
-	}); err != nil {
+	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.NewCommand(r.Context(), socket.MsgDbRemove, payload)); err != nil {
 		responder.SendError(w, http.StatusInternalServerError,
-			fmt.Sprintf("failed to send delete command to worker %d: %v", instance.WorkerID, err))
+			fmt.Sprintf("failed to send delete command to worker %d: %v", instance.WorkerID, err), err)
 		return
 	}
 
@@ -810,11 +810,8 @@ func (h *DatabaseHandler) HandleDatabaseAction(w http.ResponseWriter, r *http.Re
 		payload["volume_name"] = instance.VolumeName
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.Envelope{
-		Type:    msgType,
-		Payload: payload,
-	}); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send %s command: %v", action, err))
+	if err := h.WorkerHub.SendJSONToWorker(instance.WorkerID, socket.NewCommand(r.Context(), msgType, payload)); err != nil {
+		sendDispatchError(w, action, err)
 		return
 	}
 

@@ -2,6 +2,8 @@ package routers
 
 import (
 	"crypto/subtle"
+	"database/sql"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -61,7 +63,7 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	// return errors without a valid state parameter)
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
 		desc := r.URL.Query().Get("error_description")
-		logger.Error("sso", "provider returned error", logger.F{"error": errParam, "description": desc})
+		logger.WarnCtx(r.Context(), "sso", "provider returned error", logger.F{"error": errParam, "description": desc})
 		http.Redirect(w, r, loginErrorURL("sso_denied"), http.StatusFound)
 		return
 	}
@@ -82,7 +84,7 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, cfg.PostLoginRedirectURL(), http.StatusFound)
 			return
 		}
-		logger.Error("sso", "state cookie missing or does not match callback state")
+		logger.WarnCtx(r.Context(), "sso", "state cookie missing or does not match callback state")
 		http.Redirect(w, r, loginErrorURL("sso_state_expired"), http.StatusFound)
 		return
 	}
@@ -96,14 +98,14 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, cfg.PostLoginRedirectURL(), http.StatusFound)
 			return
 		}
-		logger.Error("sso", "invalid, expired or already-consumed state")
+		logger.WarnCtx(r.Context(), "sso", "invalid, expired or already-consumed state")
 		http.Redirect(w, r, loginErrorURL("sso_state_expired"), http.StatusFound)
 		return
 	}
 
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		logger.Error("sso", "callback missing authorization code")
+		logger.WarnCtx(r.Context(), "sso", "callback missing authorization code")
 		http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
 		return
 	}
@@ -111,7 +113,7 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	provider := cfg.Provider()
 	adapter, err := ssolib.NewAdapter(r.Context(), provider)
 	if err != nil {
-		logger.Error("sso", "adapter build failed", logger.F{"error": err})
+		logger.ErrorCtx(r.Context(), "sso", "adapter build failed", logger.F{"error": err})
 		http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
 		return
 	}
@@ -128,18 +130,18 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		// A double-callback lands here now that the code is genuinely single-use.
 		// If the browser already holds a session from the first leg, send it on.
 		if hasSession() {
-			logger.Info("sso", "exchange failed but browser already has a session, continuing")
+			logger.InfoCtx(r.Context(), "sso", "exchange failed but browser already has a session, continuing")
 			http.Redirect(w, r, cfg.PostLoginRedirectURL(), http.StatusFound)
 			return
 		}
-		logger.Error("sso", "token exchange failed", logger.F{"error": err})
+		logger.ErrorCtx(r.Context(), "sso", "token exchange failed", logger.F{"error": err})
 		http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
 		return
 	}
 
 	email := identity.Email
 	if email == "" {
-		logger.Error("sso", "no email in identity")
+		logger.ErrorCtx(r.Context(), "sso", "no email in identity")
 		http.Redirect(w, r, loginErrorURL("sso_no_email"), http.StatusFound)
 		return
 	}
@@ -163,18 +165,38 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Find user: try sso_subject first (stable), then email+auth_type=sso
 	// This allows the same email to have separate local and SSO accounts.
+	//
+	// Only "no such row" means no user. Any other lookup error must stop the
+	// login: read as "not found" it would auto-provision a second account for a
+	// person who already has one.
 	var user *structs.User
 	if subject != "" {
-		user, _ = query.GetUserBySSOSubject(db.DB, subject)
+		u, lerr := query.GetUserBySSOSubject(db.DB, subject)
+		if lerr != nil && !errors.Is(lerr, sql.ErrNoRows) {
+			logger.ErrorCtx(r.Context(), "sso", "user lookup by subject failed", logger.F{"error": lerr})
+			http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
+			return
+		}
+		if lerr == nil {
+			user = u
+		}
 	}
 	if user == nil {
 		// Look for an existing SSO account with this email (not local accounts)
-		user, _ = query.GetUserByEmailAndAuthType(db.DB, email, "sso")
+		u, lerr := query.GetUserByEmailAndAuthType(db.DB, email, "sso")
+		if lerr != nil && !errors.Is(lerr, sql.ErrNoRows) {
+			logger.ErrorCtx(r.Context(), "sso", "user lookup by email failed", logger.F{"error": lerr})
+			http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
+			return
+		}
+		if lerr == nil {
+			user = u
+		}
 	}
 
 	if user == nil {
 		if !cfg.AutoProvision {
-			logger.Info("sso", "user not found and auto-provisioning disabled", logger.F{"email": email})
+			logger.InfoCtx(r.Context(), "sso", "user not found and auto-provisioning disabled", logger.F{"email": email})
 			http.Redirect(w, r, loginErrorURL("sso_no_account"), http.StatusFound)
 			return
 		}
@@ -188,11 +210,11 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 			Role:            "pending",
 		})
 		if err != nil {
-			logger.Error("sso", "failed to create user", logger.F{"email": email, "error": err})
+			logger.ErrorCtx(r.Context(), "sso", "failed to create user", logger.F{"email": email, "error": err})
 			http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
 			return
 		}
-		logger.Info("sso", "auto-provisioned user", logger.F{"email": email, "user_id": user.ID, "sso_subject": subject})
+		logger.InfoCtx(r.Context(), "sso", "auto-provisioned user", logger.F{"email": email, "user_id": user.ID, "sso_subject": subject})
 	} else if subject != "" && (user.SSOSubject == nil || sso.LooksLikeEmail(*user.SSOSubject)) {
 		// ── Heal the stored subject ──────────────────────────────────────────
 		//
@@ -222,16 +244,19 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := query.UpdateUserSSOSubject(db.DB, user.ID, subject); err != nil {
 			// Non-fatal: the login proceeds. The heal is retried on the next login.
-			logger.Error("sso", "failed to heal sso_subject", logger.F{"user_id": user.ID, "error": err})
+			logger.ErrorCtx(r.Context(), "sso", "failed to heal sso_subject", logger.F{"user_id": user.ID, "error": err})
 		} else {
-			logger.Info("sso", "healed sso_subject to the real OIDC sub",
+			logger.InfoCtx(r.Context(), "sso", "healed sso_subject to the real OIDC sub",
 				logger.F{"user_id": user.ID, "previous": previous, "sso_subject": subject})
 		}
 	}
 
 	// Update profile image on each login (it might change at the provider)
 	if picture != "" {
-		_, _ = query.UpdateUser(db.DB, user.ID, query.UpdateUserRequest{ProfileImageURL: &picture})
+		if _, err := query.UpdateUser(db.DB, user.ID, query.UpdateUserRequest{ProfileImageURL: &picture}); err != nil && !errors.Is(err, query.ErrNoChanges) {
+			// Cosmetic: the login proceeds with the old picture.
+			logger.WarnCtx(r.Context(), "sso", "could not update profile image", logger.F{"user_id": user.ID, "error": err})
+		}
 	}
 
 	if !user.Active {
@@ -263,19 +288,19 @@ func HandleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		// Non-fatal: the login has succeeded and the user gets their session. The cost
 		// is that this session is not checkpointed until the next login.
-		logger.Error("sso", "failed to persist sso session", logger.F{"error": err, "user_id": user.ID})
+		logger.ErrorCtx(r.Context(), "sso", "failed to persist sso session", logger.F{"error": err, "user_id": user.ID})
 	}
 
 	// Issue Lattice JWT tokens
 	accessToken, accessExpiry, err := jwt.NewAccessToken(user.ID)
 	if err != nil {
-		logger.Error("sso", "failed to create access token", logger.F{"error": err})
+		logger.ErrorCtx(r.Context(), "sso", "failed to create access token", logger.F{"error": err})
 		http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
 		return
 	}
 	refreshToken, refreshExpiry, err := jwt.NewRefreshToken(user.ID)
 	if err != nil {
-		logger.Error("sso", "failed to create refresh token", logger.F{"error": err})
+		logger.ErrorCtx(r.Context(), "sso", "failed to create refresh token", logger.F{"error": err})
 		http.Redirect(w, r, loginErrorURL("sso_failed"), http.StatusFound)
 		return
 	}

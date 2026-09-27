@@ -109,7 +109,7 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 	// Begin transaction — if container creation fails, the stack is rolled back too
 	tx, err := db.BeginTx()
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction")
+		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction", err)
 		return
 	}
 	defer tx.Rollback() // no-op if committed
@@ -262,16 +262,19 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 			if name == "" {
 				name = key
 			}
-			_ = query.CreateNetwork(tx, query.CreateNetworkRequest{
+			if err := query.CreateNetwork(tx, query.CreateNetworkRequest{
 				StackID: stack.ID,
 				Name:    name,
 				Driver:  driver,
-			})
+			}); err != nil {
+				responder.SendError(w, http.StatusInternalServerError, "failed to create stack network", err)
+				return
+			}
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to commit transaction")
+		responder.SendError(w, http.StatusInternalServerError, "failed to commit transaction", err)
 		return
 	}
 

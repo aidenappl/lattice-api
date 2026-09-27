@@ -29,26 +29,23 @@ func (h *ContainerActionHandler) HandleDeleteStack(w http.ResponseWriter, r *htt
 	// Fetch all containers on the stack and remove them from the worker
 	containers, err := query.ListContainersByStack(db.DB, id)
 	if err != nil {
-		logger.Error("stack", "delete: failed to list containers", logger.F{"stack_id": id, "error": err})
+		logger.ErrorCtx(r.Context(), "stack", "delete: failed to list containers", logger.F{"stack_id": id, "error": err})
 	} else if containers != nil && stack.WorkerID != nil && h.WorkerHub.IsConnected(*stack.WorkerID) {
 		for _, c := range *containers {
-			if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.Envelope{
-				Type: socket.MsgRemove,
-				Payload: map[string]any{
-					"container_name": c.Name,
-					"container_id":   c.ID,
-				},
-			}); err != nil {
-				logger.Warn("stack", "delete: failed to send remove for container", logger.F{"stack_id": id, "container": c.Name, "error": err})
+			if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.NewCommand(r.Context(), socket.MsgRemove, map[string]any{
+				"container_name": c.Name,
+				"container_id":   c.ID,
+			})); err != nil {
+				logger.ErrorCtx(r.Context(), "stack", "delete: failed to send remove for container", logger.F{"stack_id": id, "container": c.Name, "error": err})
 			} else {
-				logger.Info("stack", "delete: sent remove for container", logger.F{"stack_id": id, "container": c.Name, "worker_id": *stack.WorkerID})
+				logger.InfoCtx(r.Context(), "stack", "delete: sent remove for container", logger.F{"stack_id": id, "container": c.Name, "worker_id": *stack.WorkerID})
 			}
 		}
 	}
 
 	tx, txErr := db.BeginTx()
 	if txErr != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction")
+		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction", txErr)
 		return
 	}
 	defer tx.Rollback()
@@ -65,7 +62,7 @@ func (h *ContainerActionHandler) HandleDeleteStack(w http.ResponseWriter, r *htt
 	}
 
 	if err := tx.Commit(); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to commit delete")
+		responder.SendError(w, http.StatusInternalServerError, "failed to commit delete", err)
 		return
 	}
 

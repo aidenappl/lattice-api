@@ -1,11 +1,13 @@
 package mailer
 
 import (
+	"context"
 	"fmt"
 	"html"
 	"net/smtp"
 	"strings"
 
+	monitor "github.com/aidenappl/go-monitor"
 	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/logger"
@@ -115,10 +117,11 @@ func SendSync(subject, body string) error {
 func Send(subject, body string) {
 	go func() {
 		defer logger.Recover("mailer.send", logger.F{"subject": subject})
+		ctx := monitor.WithJobID(context.Background(), monitor.NewJobID())
 		if err := doSend(subject, renderEmail(subject, body)); err != nil {
-			logger.Error("mailer", "failed to send email", logger.F{"error": err, "subject": subject})
+			logger.ErrorCtx(ctx, "mailer", "failed to send email", logger.F{"error": err, "subject": subject})
 		} else {
-			logger.Info("mailer", "email sent", logger.F{"subject": subject})
+			logger.InfoCtx(ctx, "mailer", "email sent", logger.F{"subject": subject})
 		}
 	}()
 }

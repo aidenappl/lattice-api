@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"time"
 
+	monitor "github.com/aidenappl/go-monitor"
 	"github.com/aidenappl/lattice-api/cron"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
@@ -66,7 +67,7 @@ var ErrSlotClaimed = errors.New("schedule slot already claimed")
 // routers.ContainerActionHandler implements it, so an automation sends exactly
 // the command the dashboard's Recreate button sends.
 type ContainerRedeployer interface {
-	RecreateContainer(container *structs.Container, workerID int) error
+	RecreateContainer(ctx context.Context, container *structs.Container, workerID int) error
 }
 
 // Executor fires automations and records every firing as a run.
@@ -183,7 +184,10 @@ func RedactActions(actions []structs.AutomationAction) []structs.AutomationActio
 // An unknown, rotated or deleted token returns ErrInvalidToken having written
 // NOTHING — not a touch, not a run row, not a claim. Only a token that resolves
 // to a live automation stamps webhook_last_used_at.
-func (e *Executor) FireWebhook(token string, f Firing) (*Outcome, error) {
+//
+// ctx is the triggering request's: the run logs with its request_id and
+// trace_id, but outlives its cancellation.
+func (e *Executor) FireWebhook(ctx context.Context, token string, f Firing) (*Outcome, error) {
 	if token == "" {
 		return nil, ErrInvalidToken
 	}
@@ -198,15 +202,29 @@ func (e *Executor) FireWebhook(token string, f Firing) (*Outcome, error) {
 		return nil, ErrInvalidToken
 	}
 
+	ctx = newRunContext(ctx)
 	if err := e.store.TouchWebhook(a.ID); err != nil {
-		logger.Warn("automation", "failed to touch webhook last_used_at", logger.F{"automation_id": a.ID, "error": err})
+		logger.WarnCtx(ctx, "automation", "failed to touch webhook last_used_at", logger.F{"automation_id": a.ID, "error": err})
 	}
-	return e.Fire(a, f)
+	return e.fire(ctx, a, f)
+}
+
+// newRunContext is the context one firing logs with: a fresh job_id ties its
+// claim, steps and outcome together, and the parent's ids (the HTTP request
+// that triggered it, if any) stay on it. It is detached from the parent's
+// cancellation so a client that hangs up does not cut a run short.
+func newRunContext(parent context.Context) context.Context {
+	return monitor.WithJobID(context.WithoutCancel(parent), monitor.NewJobID())
 }
 
 // Fire runs an automation synchronously and returns its outcome. Used by the
-// webhook and by "run now", whose callers wait for the verdict.
-func (e *Executor) Fire(a *structs.Automation, f Firing) (*Outcome, error) {
+// webhook and by "run now", whose callers wait for the verdict. ctx is the
+// triggering request's; see FireWebhook.
+func (e *Executor) Fire(ctx context.Context, a *structs.Automation, f Firing) (*Outcome, error) {
+	return e.fire(newRunContext(ctx), a, f)
+}
+
+func (e *Executor) fire(ctx context.Context, a *structs.Automation, f Firing) (*Outcome, error) {
 	run, won, err := e.createRun(a, f)
 	if err != nil {
 		return nil, err
@@ -216,14 +234,14 @@ func (e *Executor) Fire(a *structs.Automation, f Firing) (*Outcome, error) {
 	}
 
 	if !a.Enabled {
-		return e.skip(run, "automation is disabled; nothing was run", ResultDisabled), nil
+		return e.skip(ctx, run, "automation is disabled; nothing was run", ResultDisabled), nil
 	}
 	if !e.tryAcquireSlot() {
-		return e.skip(run, e.slotsBusyReason(), ResultSkipped), nil
+		return e.skip(ctx, run, e.slotsBusyReason(), ResultSkipped), nil
 	}
 	defer e.releaseSlot()
 
-	return e.execute(a, run, f), nil
+	return e.execute(ctx, a, run, f), nil
 }
 
 // FireScheduled claims one schedule slot and, if this caller won it, runs the
@@ -242,9 +260,10 @@ func (e *Executor) FireScheduled(a *structs.Automation, slot time.Time, skipReas
 		ScheduledAt: &slot,
 	}
 
+	ctx := newRunContext(context.Background())
 	run, won, err := e.createRun(a, f)
 	if err != nil {
-		logger.Error("automation", "failed to claim schedule slot", logger.F{
+		logger.ErrorCtx(ctx, "automation", "failed to claim schedule slot", logger.F{
 			"automation_id": a.ID, "scheduled_at": slot, "error": err,
 		})
 		close(done)
@@ -257,16 +276,16 @@ func (e *Executor) FireScheduled(a *structs.Automation, slot time.Time, skipReas
 
 	switch {
 	case skipReason != "":
-		e.skip(run, skipReason, ResultSkipped)
+		e.skip(ctx, run, skipReason, ResultSkipped)
 	case !a.Enabled:
-		e.skip(run, "automation is disabled; nothing was run", ResultDisabled)
+		e.skip(ctx, run, "automation is disabled; nothing was run", ResultDisabled)
 	case !e.tryAcquireSlot():
-		e.skip(run, e.slotsBusyReason(), ResultSkipped)
+		e.skip(ctx, run, e.slotsBusyReason(), ResultSkipped)
 	default:
 		go func() {
 			defer close(done)
 			defer e.releaseSlot()
-			e.execute(a, run, f)
+			e.execute(ctx, a, run, f)
 		}()
 		return done
 	}
@@ -279,9 +298,10 @@ func (e *Executor) FireScheduled(a *structs.Automation, slot time.Time, skipReas
 //
 // Without this, a crash would leave a run reading "in progress" forever, which is
 // indistinguishable from one that is genuinely still going.
-func (e *Executor) FailStuckRuns() {
+func (e *Executor) FailStuckRuns(ctx context.Context) {
 	runs, err := e.store.ListStuckRuns(e.now().UTC().Add(-CLAIM_STALE_AFTER))
 	if err != nil {
+		logger.ErrorCtx(ctx, "automation", "could not list stuck automation runs", logger.F{"error": err})
 		return
 	}
 	for _, run := range runs {
@@ -289,11 +309,21 @@ func (e *Executor) FailStuckRuns() {
 			"Steps marked succeeded did take effect; the audit log has the rest", CLAIM_STALE_AFTER)
 		steps := finishPending(run.Steps, 0, "not run: the run was interrupted")
 		status := structs.AutomationRunFailed
-		_ = e.store.UpdateRun(run.ID, query.UpdateAutomationRunRequest{
+		if err := e.store.UpdateRun(run.ID, query.UpdateAutomationRunRequest{
 			Status: &status, Error: &msg, Steps: &steps, Finished: true,
-		})
-		_ = e.store.ReleaseAutomation(run.AutomationID, run.ID)
-		logger.Warn("automation", "stuck automation run failed", logger.F{
+		}); err != nil {
+			// The run keeps reading "in progress"; the next sweep retries it.
+			logger.ErrorCtx(ctx, "automation", "could not fail stuck automation run", logger.F{
+				"automation_id": run.AutomationID, "run_id": run.ID, "error": err,
+			})
+		}
+		if err := e.store.ReleaseAutomation(run.AutomationID, run.ID); err != nil {
+			// The automation stays guarded and will not fire until released.
+			logger.ErrorCtx(ctx, "automation", "could not release stuck automation run guard", logger.F{
+				"automation_id": run.AutomationID, "run_id": run.ID, "error": err,
+			})
+		}
+		logger.ErrorCtx(ctx, "automation", "stuck automation run failed", logger.F{
 			"automation_id": run.AutomationID, "run_id": run.ID,
 		})
 	}
@@ -322,12 +352,12 @@ func (e *Executor) createRun(a *structs.Automation, f Firing) (*structs.Automati
 }
 
 // execute is the one executor loop: authorise, then each step in order.
-func (e *Executor) execute(a *structs.Automation, run *structs.AutomationRun, f Firing) (out *Outcome) {
+func (e *Executor) execute(ctx context.Context, a *structs.Automation, run *structs.AutomationRun, f Firing) (out *Outcome) {
 	defer func() {
 		if r := recover(); r != nil {
 			msg := fmt.Sprintf("internal error: %v", r)
 			logger.Panic("automation-run", r, logger.F{"run_id": run.ID, "automation_id": a.ID})
-			out = e.finish(run, finishPending(run.Steps, 0, "not run: the run crashed"), nil, &msg)
+			out = e.finish(ctx, run, finishPending(run.Steps, 0, "not run: the run crashed"), nil, &msg)
 		}
 	}()
 
@@ -337,14 +367,14 @@ func (e *Executor) execute(a *structs.Automation, run *structs.AutomationRun, f 
 	claimed, err := e.store.ClaimAutomation(a.ID, run.ID, e.now().UTC().Add(-CLAIM_STALE_AFTER))
 	if err != nil {
 		msg := "could not take the automation's run guard: " + err.Error()
-		return e.finish(run, finishPending(run.Steps, 0, "not run: the run guard could not be taken"), nil, &msg)
+		return e.finish(ctx, run, finishPending(run.Steps, 0, "not run: the run guard could not be taken"), nil, &msg)
 	}
 	if !claimed {
-		return e.skip(run, e.overlapReason(a.ID), ResultSkipped)
+		return e.skip(ctx, run, e.overlapReason(a.ID), ResultSkipped)
 	}
 	defer func() {
 		if err := e.store.ReleaseAutomation(a.ID, run.ID); err != nil {
-			logger.Error("automation", "failed to release run guard", logger.F{"automation_id": a.ID, "run_id": run.ID, "error": err})
+			logger.ErrorCtx(ctx, "automation", "failed to release run guard", logger.F{"automation_id": a.ID, "run_id": run.ID, "error": err})
 		}
 	}()
 
@@ -359,10 +389,10 @@ func (e *Executor) execute(a *structs.Automation, run *structs.AutomationRun, f 
 	}
 	if authErr != nil {
 		msg := "refused before any step ran: " + authErr.Error()
-		return e.finish(run, finishPending(run.Steps, 0, "not run: the run was not authorised"), nil, &msg)
+		return e.finish(ctx, run, finishPending(run.Steps, 0, "not run: the run was not authorised"), nil, &msg)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), e.runBudget)
+	runCtx, cancel := context.WithTimeout(ctx, e.runBudget)
 	defer cancel()
 
 	steps := append([]structs.AutomationStepResult(nil), run.Steps...)
@@ -377,7 +407,7 @@ func (e *Executor) execute(a *structs.Automation, run *structs.AutomationRun, f 
 	for i, action := range a.Actions {
 		// The run budget always halts, whatever continue_on_error says: it is the
 		// bound that keeps one hung action from pinning a runner slot forever.
-		if ctx.Err() != nil {
+		if runCtx.Err() != nil {
 			msg := fmt.Sprintf("the run budget of %s was exhausted before step %d could start", e.runBudget, i+1)
 			steps[i].Status = structs.AutomationStepFailed
 			steps[i].Summary = "not started: run budget exhausted"
@@ -388,8 +418,8 @@ func (e *Executor) execute(a *structs.Automation, run *structs.AutomationRun, f 
 			break
 		}
 
-		steps[i] = e.runStep(ctx, a, run, user, f, i, action)
-		e.persistSteps(run.ID, steps)
+		steps[i] = e.runStep(runCtx, a, run, user, f, i, action)
+		e.persistSteps(ctx, run.ID, steps)
 
 		if steps[i].Status == structs.AutomationStepFailed {
 			fail(i + 1)
@@ -400,7 +430,7 @@ func (e *Executor) execute(a *structs.Automation, run *structs.AutomationRun, f 
 		}
 	}
 
-	return e.finish(run, steps, failedStep, runErr)
+	return e.finish(ctx, run, steps, failedStep, runErr)
 }
 
 func (e *Executor) runStep(ctx context.Context, a *structs.Automation, run *structs.AutomationRun, user *structs.User,
@@ -437,7 +467,7 @@ func (e *Executor) runStep(ctx context.Context, a *structs.Automation, run *stru
 		result.Status = structs.AutomationStepSucceeded
 	}
 
-	if auditErr := e.audit(a, run, user, f, i, effect, err); auditErr != nil {
+	if auditErr := e.audit(ctx, a, run, user, f, i, effect, err); auditErr != nil {
 		result.Summary += " (audit record could not be written)"
 	}
 	return result
@@ -447,7 +477,7 @@ func (e *Executor) runStep(ctx context.Context, a *structs.Automation, run *stru
 // automation run): the user_id says whose authority was used, and
 // automation_run_id says the call arrived via an automation — without it an
 // automated redeploy reads exactly like that person clicking Recreate.
-func (e *Executor) audit(a *structs.Automation, run *structs.AutomationRun, user *structs.User,
+func (e *Executor) audit(ctx context.Context, a *structs.Automation, run *structs.AutomationRun, user *structs.User,
 	f Firing, i int, effect stepEffect, stepErr error) error {
 
 	if effect.auditAction == "" {
@@ -481,20 +511,20 @@ func (e *Executor) audit(a *structs.Automation, run *structs.AutomationRun, user
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	logger.Error("automation", "audit record could not be written", logger.F{"run_id": run.ID, "step": i + 1, "error": err})
+	logger.ErrorCtx(ctx, "automation", "audit record could not be written", logger.F{"automation_id": a.ID, "run_id": run.ID, "step": i + 1, "error": err})
 	return err
 }
 
-func (e *Executor) persistSteps(runID int, steps []structs.AutomationStepResult) {
+func (e *Executor) persistSteps(ctx context.Context, runID int, steps []structs.AutomationStepResult) {
 	if err := e.store.UpdateRun(runID, query.UpdateAutomationRunRequest{Steps: &steps}); err != nil {
-		logger.Warn("automation", "failed to persist step progress", logger.F{"run_id": runID, "error": err})
+		logger.ErrorCtx(ctx, "automation", "failed to persist step progress", logger.F{"run_id": runID, "error": err})
 	}
 }
 
 // finish records a run's terminal status. Any failed step, or a run-level
 // error, fails the run — continue_on_error decides whether later steps run, not
 // whether a failure counts.
-func (e *Executor) finish(run *structs.AutomationRun, steps []structs.AutomationStepResult, failedStep *int, runErr *string) *Outcome {
+func (e *Executor) finish(ctx context.Context, run *structs.AutomationRun, steps []structs.AutomationStepResult, failedStep *int, runErr *string) *Outcome {
 	status := structs.AutomationRunSucceeded
 	result := ResultSucceeded
 	if failedStep != nil || runErr != nil {
@@ -505,7 +535,7 @@ func (e *Executor) finish(run *structs.AutomationRun, steps []structs.Automation
 	if err := e.store.UpdateRun(run.ID, query.UpdateAutomationRunRequest{
 		Status: &status, FailedStep: failedStep, Error: runErr, Steps: &steps, Finished: true,
 	}); err != nil {
-		logger.Error("automation", "failed to record run outcome", logger.F{"run_id": run.ID, "error": err})
+		logger.ErrorCtx(ctx, "automation", "failed to record run outcome", logger.F{"run_id": run.ID, "error": err})
 	}
 
 	finished := e.now().UTC()
@@ -515,7 +545,7 @@ func (e *Executor) finish(run *structs.AutomationRun, steps []structs.Automation
 	run.Steps = steps
 	run.FinishedAt = &finished
 
-	logger.Info("automation", "automation run finished", logger.F{
+	logger.InfoCtx(ctx, "automation", "automation run finished", logger.F{
 		"automation_id": run.AutomationID, "run_id": run.ID, "status": status, "source": run.TriggerSource,
 	})
 	return &Outcome{Result: result, Run: run}
@@ -524,7 +554,7 @@ func (e *Executor) finish(run *structs.AutomationRun, steps []structs.Automation
 // skip records a firing that deliberately did not run. It is a row, not a log
 // line: a skip recorded only in logs is how "my automation quietly stopped"
 // becomes a genre of incident.
-func (e *Executor) skip(run *structs.AutomationRun, reason string, result Result) *Outcome {
+func (e *Executor) skip(ctx context.Context, run *structs.AutomationRun, reason string, result Result) *Outcome {
 	reason = truncate(reason, maxSkipReasonLen-3)
 	status := structs.AutomationRunSkipped
 	steps := finishPending(run.Steps, 0, "not run: "+reason)
@@ -532,7 +562,7 @@ func (e *Executor) skip(run *structs.AutomationRun, reason string, result Result
 	if err := e.store.UpdateRun(run.ID, query.UpdateAutomationRunRequest{
 		Status: &status, SkipReason: &reason, Steps: &steps, Finished: true,
 	}); err != nil {
-		logger.Error("automation", "failed to record skipped run", logger.F{"run_id": run.ID, "error": err})
+		logger.ErrorCtx(ctx, "automation", "failed to record skipped run", logger.F{"run_id": run.ID, "error": err})
 	}
 
 	finished := e.now().UTC()
@@ -541,7 +571,7 @@ func (e *Executor) skip(run *structs.AutomationRun, reason string, result Result
 	run.Steps = steps
 	run.FinishedAt = &finished
 
-	logger.Warn("automation", "automation firing skipped", logger.F{
+	logger.WarnCtx(ctx, "automation", "automation firing skipped", logger.F{
 		"automation_id": run.AutomationID, "run_id": run.ID, "reason": reason,
 	})
 	return &Outcome{Result: result, Run: run}

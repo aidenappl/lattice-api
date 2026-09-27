@@ -3,12 +3,15 @@ package socket
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/aidenappl/lattice-api/logger"
+	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/structs"
 	"github.com/gorilla/websocket"
 )
@@ -109,7 +112,7 @@ func (h *AdminHub) Register(session *AdminSession) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if len(h.sessions) >= MaxAdminSessions {
-		logger.Warn("socket", "admin connection rejected, max sessions reached", logger.F{"max": MaxAdminSessions})
+		logger.WarnCtx(context.Background(), "socket", "admin connection rejected, max sessions reached", logger.F{"max": MaxAdminSessions})
 		return fmt.Errorf("maximum admin connections reached (%d)", MaxAdminSessions)
 	}
 	h.sessions[session.ID] = session
@@ -144,7 +147,7 @@ func (h *AdminHub) Broadcast(payload []byte) {
 		case <-session.done:
 			// session is shutting down — skip it
 		default:
-			logger.Warn("socket", "admin broadcast queue full", logger.F{"session_id": session.ID})
+			logger.WarnCtx(context.Background(), "socket", "admin broadcast queue full", logger.F{"session_id": session.ID, "message_type": messageType(payload)})
 		}
 	}
 }
@@ -153,7 +156,7 @@ func (h *AdminHub) Broadcast(payload []byte) {
 func (h *AdminHub) BroadcastJSON(v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		logger.Error("socket", "failed to marshal admin broadcast", logger.F{"error": err})
+		logger.ErrorCtx(context.Background(), "socket", "failed to marshal admin broadcast", logger.F{"error": err})
 		return
 	}
 	h.Broadcast(b)
@@ -174,7 +177,7 @@ func (h *AdminHub) BroadcastFiltered(payload []byte, topics []string) {
 		case <-session.done:
 			// session is shutting down — skip it
 		default:
-			logger.Warn("socket", "admin broadcast queue full", logger.F{"session_id": session.ID})
+			logger.WarnCtx(context.Background(), "socket", "admin broadcast queue full", logger.F{"session_id": session.ID, "message_type": messageType(payload)})
 		}
 	}
 }
@@ -183,7 +186,7 @@ func (h *AdminHub) BroadcastFiltered(payload []byte, topics []string) {
 func (h *AdminHub) BroadcastFilteredJSON(v any, topics []string) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		logger.Error("socket", "failed to marshal admin broadcast", logger.F{"error": err})
+		logger.ErrorCtx(context.Background(), "socket", "failed to marshal admin broadcast", logger.F{"error": err})
 		return
 	}
 	h.BroadcastFiltered(b, topics)
@@ -217,7 +220,7 @@ func NewAdminHandler(hub *AdminHub) *AdminHandler {
 
 func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.AuthFunc == nil {
-		http.Error(w, "auth not configured", http.StatusInternalServerError)
+		responder.SendError(w, http.StatusInternalServerError, "auth not configured", errors.New("admin websocket AuthFunc is not set"))
 		return
 	}
 
@@ -229,7 +232,7 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := h.Upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		logger.Error("socket", "admin upgrade failed", logger.F{"error": err})
+		logger.ErrorCtx(r.Context(), "socket", "admin upgrade failed", logger.F{"error": err})
 		return
 	}
 
@@ -251,7 +254,7 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Hub.Register(session); err != nil {
-		logger.Warn("socket", "admin connection rejected", logger.F{"session_id": id, "error": err})
+		logger.WarnCtx(r.Context(), "socket", "admin connection rejected", logger.F{"session_id": id, "error": err})
 		_ = conn.WriteControl(
 			websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "max connections reached"),
@@ -262,13 +265,31 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logger.DebugCtx(r.Context(), "socket", "admin connected", logger.F{"session_id": id, "user_id": user.ID, "role": user.Role})
+
 	go h.writePump(ctx, session)
 	go h.readPump(ctx, session)
 
 	go func() {
 		<-ctx.Done()
 		h.Hub.removeIfMatch(session)
+		logger.DebugCtx(context.Background(), "socket", "admin disconnected", logger.F{
+			"session_id":    id,
+			"connected_for": time.Since(session.ConnectedAt).Round(time.Second).String(),
+		})
 	}()
+}
+
+// logAdminWriteErr records a failed write to an admin client. A write to a
+// connection already closed is the normal end of a browser tab; anything else
+// is worth a warning.
+func logAdminWriteErr(ctx context.Context, session *AdminSession, op string, err error) {
+	fields := logger.F{"session_id": session.ID, "op": op, "error": err}
+	if errors.Is(err, net.ErrClosed) || errors.Is(err, websocket.ErrCloseSent) {
+		logger.DebugCtx(ctx, "socket", "admin write failed", fields)
+		return
+	}
+	logger.WarnCtx(ctx, "socket", "admin write failed", fields)
 }
 
 func (h *AdminHandler) writePump(ctx context.Context, session *AdminSession) {
@@ -288,12 +309,14 @@ func (h *AdminHandler) writePump(ctx context.Context, session *AdminSession) {
 				return
 			}
 			if err := session.Conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				logAdminWriteErr(ctx, session, "message", err)
 				return
 			}
 
 		case <-ticker.C:
 			_ = session.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := session.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				logAdminWriteErr(ctx, session, "ping", err)
 				return
 			}
 		}
@@ -320,6 +343,14 @@ func (h *AdminHandler) readPump(ctx context.Context, session *AdminSession) {
 
 		_, payload, err := session.Conn.ReadMessage()
 		if err != nil {
+			// Closing a tab, navigating away or a sleeping laptop all end here;
+			// only a close code no browser sends on its own is a warning.
+			fields := logger.F{"session_id": session.ID, "error": err}
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived, websocket.CloseAbnormalClosure) {
+				logger.WarnCtx(ctx, "socket", "admin read error", fields)
+			} else {
+				logger.DebugCtx(ctx, "socket", "admin read error", fields)
+			}
 			return
 		}
 
@@ -327,6 +358,7 @@ func (h *AdminHandler) readPump(ctx context.Context, session *AdminSession) {
 			var msg IncomingMessage
 			msg.Raw = json.RawMessage(payload)
 			if err := json.Unmarshal(payload, &msg); err != nil {
+				logger.WarnCtx(ctx, "socket", "invalid JSON from admin client", logger.F{"session_id": session.ID, "error": err})
 				continue
 			}
 			h.dispatch(session, msg)

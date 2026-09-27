@@ -1,13 +1,15 @@
 package versions
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/aidenappl/lattice-api/logger"
-	"log"
 	"net/http"
 	"sync"
 	"time"
+
+	monitor "github.com/aidenappl/go-monitor"
 )
 
 const (
@@ -58,10 +60,11 @@ func safeRefresh() {
 
 // Refresh fetches the latest release for all repos and updates the cache.
 func Refresh() {
+	ctx := monitor.WithJobID(context.Background(), monitor.NewJobID())
 	for _, repo := range repos {
 		tag, err := fetchLatestRelease(repo)
 		if err != nil {
-			logger.Warn("versions", "failed to fetch latest release", logger.F{"repo": repo, "error": err})
+			logger.WarnCtx(ctx, "versions", "failed to fetch latest release", logger.F{"repo": repo, "error": err})
 			continue
 		}
 		cache.mu.Lock()
@@ -71,11 +74,11 @@ func Refresh() {
 	cache.mu.Lock()
 	cache.checked = time.Now()
 	cache.mu.Unlock()
-	log.Printf("versions: refreshed — api=%s web=%s runner=%s",
-		Get("aidenappl/lattice-api"),
-		Get("aidenappl/lattice-web"),
-		Get("aidenappl/lattice-runner"),
-	)
+	logger.InfoCtx(ctx, "versions", "latest releases refreshed", logger.F{
+		"api":    Get("aidenappl/lattice-api"),
+		"web":    Get("aidenappl/lattice-web"),
+		"runner": Get("aidenappl/lattice-runner"),
+	})
 }
 
 // Get returns the cached latest release tag for a repo, or "" if unknown.

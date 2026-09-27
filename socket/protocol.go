@@ -1,8 +1,11 @@
 package socket
 
 import (
+	"context"
 	"encoding/json"
 	"time"
+
+	monitor "github.com/aidenappl/go-monitor"
 )
 
 // Worker -> Orchestrator message types
@@ -186,20 +189,79 @@ const (
 )
 
 // Envelope is the standard message sent orchestrator -> worker.
+//
+// Every command is built with NewCommand, which gives it a CommandID and the
+// request_id / trace_id of the work that caused it. The runner echoes all three
+// on every reply that relates to the command, so a deploy started from the
+// browser is one trace across lattice-web, the API and the runner. The fields
+// are additive: an older runner ignores them.
 type Envelope struct {
 	Type      string         `json:"type"`
 	CommandID string         `json:"command_id,omitempty"`
+	RequestID string         `json:"request_id,omitempty"`
+	TraceID   string         `json:"trace_id,omitempty"`
 	WorkerID  string         `json:"worker_id,omitempty"`
 	IssuedAt  *time.Time     `json:"issued_at,omitempty"`
 	Payload   map[string]any `json:"payload,omitempty"`
 }
 
+// NewCommand builds an orchestrator -> worker command. CommandID is always a
+// fresh monitor request id; RequestID and TraceID come from ctx (the HTTP
+// request, or the background job that issued the command) and are left empty
+// when ctx carries none, or carries one Monitor would reject.
+func NewCommand(ctx context.Context, msgType string, payload map[string]any) Envelope {
+	env := Envelope{
+		Type:      msgType,
+		CommandID: monitor.NewRequestID(),
+		Payload:   payload,
+	}
+	if ctx == nil {
+		return env
+	}
+	if id := monitor.RequestID(ctx); id != "" && monitor.ValidCorrelationID(id) {
+		env.RequestID = id
+	}
+	if id := monitor.TraceID(ctx); id != "" && monitor.ValidCorrelationID(id) {
+		env.TraceID = id
+	}
+	return env
+}
+
 // IncomingMessage is a message from worker -> orchestrator.
+//
+// Replies to a command echo its CommandID, RequestID and TraceID. Unsolicited
+// messages (heartbeat, container_sync, metrics, logs) carry none, and older
+// runners never set them, so every consumer must tolerate their absence.
 type IncomingMessage struct {
 	Type      string          `json:"type"`
 	CommandID string          `json:"command_id,omitempty"`
+	RequestID string          `json:"request_id,omitempty"`
+	TraceID   string          `json:"trace_id,omitempty"`
 	WorkerID  string          `json:"worker_id,omitempty"`
 	Status    string          `json:"status,omitempty"`
 	Payload   map[string]any  `json:"payload,omitempty"`
 	Raw       json.RawMessage `json:"-"`
+}
+
+// Context returns a context carrying the ids of the command this message
+// replies to, so its handler's log events join the originating request's
+// trace. RequestID falls back to CommandID when a runner echoed only that.
+// Ids Monitor would reject are dropped. A message with no ids yields parent
+// unchanged.
+func (m IncomingMessage) Context(parent context.Context) context.Context {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx := parent
+	requestID := m.RequestID
+	if requestID == "" || !monitor.ValidCorrelationID(requestID) {
+		requestID = m.CommandID
+	}
+	if requestID != "" && monitor.ValidCorrelationID(requestID) {
+		ctx = monitor.WithRequestID(ctx, requestID)
+	}
+	if m.TraceID != "" && monitor.ValidCorrelationID(m.TraceID) {
+		ctx = monitor.WithTraceID(ctx, m.TraceID)
+	}
+	return ctx
 }

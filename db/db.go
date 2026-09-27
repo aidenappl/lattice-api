@@ -5,11 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"github.com/aidenappl/lattice-api/env"
+	"github.com/aidenappl/lattice-api/logger"
 	"github.com/go-sql-driver/mysql"
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -40,7 +40,10 @@ func migrate(db *sql.DB, stmt string) {
 			return
 		}
 	}
-	log.Printf("migration warning: %v\n  stmt: %.200s", err, stmt)
+	if len(stmt) > 200 {
+		stmt = stmt[:200]
+	}
+	logger.WarnCtx(context.Background(), "database", "startup migration statement failed", logger.F{"error": err, "stmt": stmt})
 }
 
 func PingDB(db *sql.DB) error {

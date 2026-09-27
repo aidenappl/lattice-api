@@ -1,7 +1,7 @@
 package routers
 
 import (
-	"log"
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -33,6 +33,9 @@ func logAudit(r *http.Request, action, resourceType string, resourceID *int, det
 	}
 	monitor.Info(r.Context(), resourceType+"."+strings.ReplaceAll(action, " ", "_")+".success", fields)
 
+	// The goroutine outlives the request, so it keeps the request's ids but not
+	// its cancellation.
+	ctx := context.WithoutCancel(r.Context())
 	go func() {
 		defer logger.Recover("audit", logger.F{"action": action, "resource_type": resourceType})
 		req := query.CreateAuditLogRequest{
@@ -49,14 +52,14 @@ func logAudit(r *http.Request, action, resourceType string, resourceID *int, det
 			if err == nil {
 				return
 			}
-			log.Printf("audit log error (attempt %d/3): %v", attempt+1, err)
+			logger.WarnCtx(ctx, "audit", "audit log write failed, retrying", logger.F{"attempt": attempt + 1, "max_attempts": 3, "action": action, "resource_type": resourceType, "error": err})
 			time.Sleep(500 * time.Millisecond)
 		}
 		failed := logger.F{"action": action, "resource_type": resourceType, "error": err}
 		if resourceID != nil {
 			failed["resource_id"] = *resourceID
 		}
-		logger.Error("audit", "audit log write failed after 3 attempts", failed)
+		logger.ErrorCtx(ctx, "audit", "audit log write failed after 3 attempts", failed)
 	}()
 }
 

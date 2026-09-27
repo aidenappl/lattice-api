@@ -11,6 +11,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	monitor "github.com/aidenappl/go-monitor"
+
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/structs"
 	"github.com/aidenappl/lattice-api/tools"
@@ -272,7 +274,7 @@ type fakeRedeployer struct {
 	release chan struct{}
 }
 
-func (f *fakeRedeployer) RecreateContainer(c *structs.Container, workerID int) error {
+func (f *fakeRedeployer) RecreateContainer(_ context.Context, c *structs.Container, workerID int) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, redeployCall{containerID: c.ID, workerID: workerID, name: c.Name})
 	err := f.failFor[c.Name]
@@ -452,7 +454,7 @@ func TestStepFailureHandling(t *testing.T) {
 			}
 			a := s.add(webhookAutomation(tt.actions...))
 
-			out, err := e.Fire(a, manual())
+			out, err := e.Fire(context.Background(), a, manual())
 			if err != nil {
 				t.Fatalf("Fire: %v", err)
 			}
@@ -513,7 +515,7 @@ func TestUnknownActionTypeFailsLoudly(t *testing.T) {
 		s, r, e := fixture()
 		a := s.add(webhookAutomation(redeploy(1, "a", false), bogus))
 
-		out, err := e.Fire(a, manual())
+		out, err := e.Fire(context.Background(), a, manual())
 		if err != nil {
 			t.Fatalf("Fire: %v", err)
 		}
@@ -538,14 +540,14 @@ func TestDisabledAutomationDoesNotExecute(t *testing.T) {
 	const token = "disabled-automation-token"
 	fire := map[string]func(e *Executor, a *structs.Automation) structs.AutomationRun{
 		"manual": func(e *Executor, a *structs.Automation) structs.AutomationRun {
-			out, err := e.Fire(a, manual())
+			out, err := e.Fire(context.Background(), a, manual())
 			if err != nil || out.Result != ResultDisabled {
 				t.Fatalf("Fire = %+v, %v; want result disabled", out, err)
 			}
 			return *out.Run
 		},
 		"webhook": func(e *Executor, a *structs.Automation) structs.AutomationRun {
-			out, err := e.FireWebhook(token, Firing{Source: structs.AutomationSourceWebhook})
+			out, err := e.FireWebhook(context.Background(), token, Firing{Source: structs.AutomationSourceWebhook})
 			if err != nil || out.Result != ResultDisabled {
 				t.Fatalf("FireWebhook = %+v, %v; want result disabled", out, err)
 			}
@@ -598,12 +600,12 @@ func TestConcurrencyGuard(t *testing.T) {
 
 		first := make(chan *Outcome, 1)
 		go func() {
-			out, _ := e.Fire(a, manual())
+			out, _ := e.Fire(context.Background(), a, manual())
 			first <- out
 		}()
 		<-r.entered // the first run is now inside its step, holding the guard
 
-		second, err := e.Fire(a, manual())
+		second, err := e.Fire(context.Background(), a, manual())
 		if err != nil {
 			t.Fatalf("second Fire: %v", err)
 		}
@@ -625,7 +627,7 @@ func TestConcurrencyGuard(t *testing.T) {
 		}
 
 		// And the guard is free again once the first run ends.
-		third, _ := e.Fire(a, manual())
+		third, _ := e.Fire(context.Background(), a, manual())
 		if third.Result != ResultSucceeded {
 			t.Errorf("a firing after the first finished = %s, want succeeded", third.Result)
 		}
@@ -637,7 +639,7 @@ func TestConcurrencyGuard(t *testing.T) {
 		holder, since := 999, time.Now().UTC().Add(-5*time.Second)
 		s.automations[a.ID].RunningRunID, s.automations[a.ID].RunningSince = &holder, &since
 
-		out, _ := e.Fire(a, manual())
+		out, _ := e.Fire(context.Background(), a, manual())
 		if out.Result != ResultSkipped || !strings.Contains(*out.Run.SkipReason, "run #999") {
 			t.Errorf("result = %s (%v), want skipped naming run #999", out.Result, out.Run.SkipReason)
 		}
@@ -652,7 +654,7 @@ func TestConcurrencyGuard(t *testing.T) {
 		holder, since := 999, time.Now().UTC().Add(-CLAIM_STALE_AFTER-time.Minute)
 		s.automations[a.ID].RunningRunID, s.automations[a.ID].RunningSince = &holder, &since
 
-		if out, _ := e.Fire(a, manual()); out.Result != ResultSucceeded {
+		if out, _ := e.Fire(context.Background(), a, manual()); out.Result != ResultSucceeded {
 			t.Errorf("result = %s, want succeeded over a stale claim", out.Result)
 		}
 	})
@@ -663,7 +665,7 @@ func TestConcurrencyGuard(t *testing.T) {
 		e.slots <- struct{}{} // every slot busy
 		a := s.add(webhookAutomation(redeploy(1, "a", false)))
 
-		out, _ := e.Fire(a, manual())
+		out, _ := e.Fire(context.Background(), a, manual())
 		if out.Result != ResultSkipped || !strings.Contains(*out.Run.SkipReason, "slots are busy") {
 			t.Errorf("result = %s (%v), want skipped because the slots are busy", out.Result, out.Run.SkipReason)
 		}
@@ -704,7 +706,7 @@ func TestInvalidWebhookTokenIsRejectedWithoutSideEffects(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, err := e.FireWebhook(tt.token, Firing{Source: structs.AutomationSourceWebhook})
+			out, err := e.FireWebhook(context.Background(), tt.token, Firing{Source: structs.AutomationSourceWebhook})
 			if !errors.Is(err, ErrInvalidToken) {
 				t.Fatalf("FireWebhook(%q) error = %v, want ErrInvalidToken", tt.token, err)
 			}
@@ -721,7 +723,7 @@ func TestInvalidWebhookTokenIsRejectedWithoutSideEffects(t *testing.T) {
 	}
 
 	t.Run("the live token does fire, and only it touches last_used_at", func(t *testing.T) {
-		out, err := e.FireWebhook("live-token", Firing{Source: structs.AutomationSourceWebhook})
+		out, err := e.FireWebhook(context.Background(), "live-token", Firing{Source: structs.AutomationSourceWebhook})
 		if err != nil || out.Result != ResultSucceeded {
 			t.Fatalf("FireWebhook(live) = %+v, %v; want succeeded", out, err)
 		}
@@ -739,7 +741,7 @@ func TestCrossStackRedeployResolvesEachContainerIndependently(t *testing.T) {
 		s, r, e := fixture()
 		a := s.add(webhookAutomation(redeploy(1, "monitor-core", false), redeploy(2, "monitor-core", false)))
 
-		out, err := e.Fire(a, manual())
+		out, err := e.Fire(context.Background(), a, manual())
 		if err != nil || out.Result != ResultSucceeded {
 			t.Fatalf("Fire = %+v, %v; want succeeded", out, err)
 		}
@@ -766,7 +768,7 @@ func TestCrossStackRedeployResolvesEachContainerIndependently(t *testing.T) {
 			redeploy(2, "not-deployed", false), // no such container in zone 2
 		))
 
-		out, _ := e.Fire(a, manual())
+		out, _ := e.Fire(context.Background(), a, manual())
 		steps := out.Run.Steps
 		if steps[1].Error == nil || !strings.Contains(*steps[1].Error, "no worker") {
 			t.Errorf("step 2 error = %v, want the stack's missing worker named", steps[1].Error)
@@ -857,7 +859,7 @@ func TestRunTimeAuthorisation(t *testing.T) {
 				tt.mutate(s)
 			}
 
-			out, err := e.Fire(a, manual())
+			out, err := e.Fire(context.Background(), a, manual())
 			if err != nil {
 				t.Fatalf("Fire: %v", err)
 			}
@@ -926,7 +928,7 @@ func TestEveryActionIsAudited(t *testing.T) {
 	))
 
 	ip := "203.0.113.9"
-	out, _ := e.Fire(a, Firing{Source: structs.AutomationSourceWebhook, IP: &ip})
+	out, _ := e.Fire(context.Background(), a, Firing{Source: structs.AutomationSourceWebhook, IP: &ip})
 
 	audits := s.auditLog()
 	if len(audits) != 3 {
@@ -969,7 +971,7 @@ func TestHungActionIsBoundedByTheRunBudget(t *testing.T) {
 	a := s.add(webhookAutomation(httpCall("https://hangs.example.com", true), redeploy(1, "a", false)))
 
 	started := time.Now()
-	out, _ := e.Fire(a, manual())
+	out, _ := e.Fire(context.Background(), a, manual())
 	if elapsed := time.Since(started); elapsed > 3*time.Second {
 		t.Fatalf("a hung action held the run for %s — the budget did not bound it", elapsed)
 	}
@@ -1044,7 +1046,7 @@ func TestFailStuckRunsReleasesTheGuard(t *testing.T) {
 	since := run.StartedAt
 	s.automations[a.ID].RunningRunID, s.automations[a.ID].RunningSince = &run.ID, &since
 
-	e.FailStuckRuns()
+	e.FailStuckRuns(context.Background())
 
 	stuck := s.run(run.ID)
 	if stuck.Status != structs.AutomationRunFailed || stuck.Error == nil || !strings.Contains(*stuck.Error, "restarted") {
@@ -1058,7 +1060,7 @@ func TestFailStuckRunsReleasesTheGuard(t *testing.T) {
 	if s.guard(a.ID) != nil {
 		t.Fatal("the stuck run's guard was not released")
 	}
-	if out, _ := e.Fire(a, manual()); out.Result != ResultSucceeded {
+	if out, _ := e.Fire(context.Background(), a, manual()); out.Result != ResultSucceeded {
 		t.Errorf("the automation did not fire again after the sweep: %s", out.Result)
 	}
 }
@@ -1186,5 +1188,30 @@ func TestRedactActions(t *testing.T) {
 	}
 	if !strings.Contains(string(actions[1].Config), "s3cr3t") {
 		t.Error("RedactActions mutated its input")
+	}
+}
+
+// A run triggered over HTTP keeps the request's ids, gets its own job_id, and
+// is not cancelled when the request is.
+func TestRunContextKeepsRequestIDs(t *testing.T) {
+	parent, cancel := context.WithCancel(monitor.WithRequestID(context.Background(), "req-1"))
+	parent = monitor.WithTraceID(parent, "trace-1")
+	ctx := newRunContext(parent)
+	cancel()
+
+	if got := monitor.RequestID(ctx); got != "req-1" {
+		t.Errorf("request_id = %q, want req-1", got)
+	}
+	if got := monitor.TraceID(ctx); got != "trace-1" {
+		t.Errorf("trace_id = %q, want trace-1", got)
+	}
+	if monitor.JobID(ctx) == "" {
+		t.Error("no job_id")
+	}
+	if ctx.Err() != nil {
+		t.Errorf("run context was cancelled with its request: %v", ctx.Err())
+	}
+	if other := newRunContext(parent); monitor.JobID(other) == monitor.JobID(ctx) {
+		t.Error("two runs share a job_id")
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/middleware"
@@ -73,6 +72,16 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		return
 	}
 
+	// The stack is now claimed. Release the claim on every path that does not
+	// hand the rollback to the worker or set a terminal status itself, so an
+	// early return can't strand the stack in "deploying" for the claim window.
+	deploySettled := false
+	defer func() {
+		if !deploySettled {
+			releaseStackClaim(r.Context(), stack.ID)
+		}
+	}()
+
 	// Find the most recent successfully-deployed deployment before the target.
 	prev, err := query.GetPreviousDeployment(db.DB, target.StackID, targetID)
 	if err != nil {
@@ -87,29 +96,12 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Load global env vars and merge as base layer (same as deploy path).
-	globalVars, _ := query.ListGlobalEnvVars(db.DB)
-	globalEnvMap := make(map[string]any)
-	if globalVars != nil {
-		for _, gv := range *globalVars {
-			decrypted, _ := crypto.Decrypt(gv.EncryptedValue)
-			globalEnvMap[gv.Key] = decrypted
-		}
-	}
-
-	// Stack-level env vars.
-	stackEnvVars := map[string]any{}
-	if stack.EnvVars != nil {
-		_ = json.Unmarshal([]byte(*stack.EnvVars), &stackEnvVars)
-	}
-
-	// Merge: global -> stack (stack wins)
-	mergedEnvVars := make(map[string]any)
-	for k, v := range globalEnvMap {
-		mergedEnvVars[k] = v
-	}
-	for k, v := range stackEnvVars {
-		mergedEnvVars[k] = v
+	// Global env vars as the base layer, the stack's own on top (stack wins).
+	// A deploy that cannot read either fails rather than shipping without them.
+	mergedEnvVars, envErr := loadDeployEnv(stack.EnvVars)
+	if envErr != nil {
+		responder.SendError(w, http.StatusInternalServerError, envErr.message, envErr.err)
+		return
 	}
 
 	allRegistries, _ := query.ListRegistries(db.DB)
@@ -120,7 +112,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 	for _, dc := range *prevContainers {
 		c, err := query.GetContainerByID(db.DB, dc.ContainerID)
 		if err != nil {
-			logger.Warn("deploy", "rollback: container not found, skipping", logger.F{"container_id": dc.ContainerID, "error": err})
+			logger.WarnCtx(r.Context(), "deploy", "rollback: container not found, skipping", logger.F{"container_id": dc.ContainerID, "error": err})
 			continue
 		}
 
@@ -136,7 +128,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		if c.PortMappings != nil {
 			var pm []any
 			if err := json.Unmarshal([]byte(*c.PortMappings), &pm); err != nil {
-				logger.Warn("deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "port_mappings", "error": err})
+				logger.WarnCtx(r.Context(), "deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "port_mappings", "error": err})
 			} else {
 				// Resolve environment variable references in port mappings
 				resolved := resolveVarsInValue(pm, mergedEnvVars)
@@ -144,31 +136,31 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 			}
 		}
 
-		if c.EnvVars != nil {
-			var ev map[string]any
-			if err := json.Unmarshal([]byte(*c.EnvVars), &ev); err != nil {
-				logger.Warn("deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "env_vars", "error": err})
-			} else {
-				// Preserve compose semantics: only include env keys explicitly defined
-				// for the service, but resolve ${VAR} references from stack-level env.
-				merged := make(map[string]any, len(ev))
-				for k, v := range ev {
-					if s, ok := v.(string); ok {
-						if resolved, ok := resolveEnvRef(s, mergedEnvVars); ok {
-							merged[k] = resolved
-							continue
-						}
+		ev, err := parseContainerEnvVars(c.EnvVars)
+		if err != nil {
+			responder.SendError(w, http.StatusInternalServerError, "container env vars could not be read", fmt.Errorf("container %s: %w", c.Name, err))
+			return
+		}
+		if ev != nil {
+			// Preserve compose semantics: only include env keys explicitly defined
+			// for the service, but resolve ${VAR} references from stack-level env.
+			merged := make(map[string]any, len(ev))
+			for k, v := range ev {
+				if s, ok := v.(string); ok {
+					if resolved, ok := resolveEnvRef(s, mergedEnvVars); ok {
+						merged[k] = resolved
+						continue
 					}
-					merged[k] = v
 				}
-				spec["env_vars"] = merged
+				merged[k] = v
 			}
+			spec["env_vars"] = merged
 		}
 
 		if c.Volumes != nil {
 			var vol map[string]any
 			if err := json.Unmarshal([]byte(*c.Volumes), &vol); err != nil {
-				logger.Warn("deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "volumes", "error": err})
+				logger.WarnCtx(r.Context(), "deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "volumes", "error": err})
 			} else {
 				// Resolve environment variable references in volumes
 				resolved := resolveVarsInValue(vol, mergedEnvVars)
@@ -186,7 +178,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		if c.Command != nil {
 			var cmd []string
 			if err := json.Unmarshal([]byte(*c.Command), &cmd); err != nil {
-				logger.Warn("deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "command", "error": err})
+				logger.WarnCtx(r.Context(), "deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "command", "error": err})
 			} else {
 				spec["command"] = cmd
 			}
@@ -195,7 +187,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		if c.Entrypoint != nil {
 			var ep []string
 			if err := json.Unmarshal([]byte(*c.Entrypoint), &ep); err != nil {
-				logger.Warn("deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "entrypoint", "error": err})
+				logger.WarnCtx(r.Context(), "deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "entrypoint", "error": err})
 			} else {
 				spec["entrypoint"] = ep
 			}
@@ -204,7 +196,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		if c.HealthCheck != nil {
 			var hc map[string]any
 			if err := json.Unmarshal([]byte(*c.HealthCheck), &hc); err != nil {
-				logger.Warn("deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "health_check", "error": err})
+				logger.WarnCtx(r.Context(), "deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "health_check", "error": err})
 			} else {
 				// Resolve environment variable references in health check (e.g., ${PORT_FOO} in test command)
 				resolved := resolveVarsInValue(hc, mergedEnvVars)
@@ -258,7 +250,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 	// Create rollback deployment and container records in a transaction.
 	tx, txErr := db.BeginTx()
 	if txErr != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction")
+		responder.SendError(w, http.StatusInternalServerError, "failed to start transaction", txErr)
 		return
 	}
 	defer tx.Rollback()
@@ -287,11 +279,11 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 	}
 
 	if err := tx.Commit(); err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to commit rollback deployment")
+		responder.SendError(w, http.StatusInternalServerError, "failed to commit rollback deployment", err)
 		return
 	}
 
-	_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+	writeDeploymentLog(r.Context(), query.CreateDeploymentLogRequest{
 		DeploymentID: rollbackDeployment.ID,
 		Level:        "info",
 		Message:      fmt.Sprintf("Rollback initiated by user %d for stack '%s': reverting deployment %d → %d (%d containers)", user.ID, stack.Name, targetID, prev.ID, len(containerSpecs)),
@@ -330,33 +322,35 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		payload["volumes"] = volSpecs
 	}
 
-	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.Envelope{
-		Type:    socket.MsgDeploy,
-		Payload: payload,
-	}); err != nil {
-		logger.Error("deploy", "rollback: failed to send to worker", logger.F{"worker_id": *stack.WorkerID, "deployment_id": rollbackDeployment.ID, "error": err})
-		_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+	if err := h.WorkerHub.SendJSONToWorker(*stack.WorkerID, socket.NewCommand(r.Context(), socket.MsgDeploy, payload)); err != nil {
+		writeDeploymentLog(r.Context(), query.CreateDeploymentLogRequest{
 			DeploymentID: rollbackDeployment.ID,
 			Level:        "error",
 			Message:      fmt.Sprintf("Failed to send rollback command to worker %d: %v", *stack.WorkerID, err),
 		})
-		failedStatus := "failed"
-		_, _ = query.UpdateStack(db.DB, stack.ID, query.UpdateStackRequest{Status: &failedStatus})
-		_ = query.UpdateDeploymentStatus(db.DB, rollbackDeployment.ID, "failed")
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send rollback command: %v", err))
+		failDeployment(r.Context(), rollbackDeployment.ID, stack.ID, "dispatch_failed", err)
+		// failDeployment set a terminal status; don't let the deferred release
+		// reset it to active.
+		deploySettled = true
+		sendDispatchError(w, "rollback", err)
 		return
 	}
 
-	// Mark the original deployment as rolled back now that the command is dispatched.
-	_ = query.UpdateDeploymentStatus(db.DB, targetID, "rolled_back")
+	// Handed off to the worker; the deployment monitor now owns the stack status.
+	deploySettled = true
 
-	_ = query.CreateDeploymentLog(db.DB, query.CreateDeploymentLogRequest{
+	// Mark the original deployment as rolled back now that the command is dispatched.
+	if err := query.UpdateDeploymentStatus(db.DB, targetID, "rolled_back"); err != nil {
+		logger.ErrorCtx(r.Context(), "deploy", "could not mark deployment rolled back", logger.F{"deployment_id": targetID, "rollback_deployment_id": rollbackDeployment.ID, "error": err})
+	}
+
+	writeDeploymentLog(r.Context(), query.CreateDeploymentLogRequest{
 		DeploymentID: rollbackDeployment.ID,
 		Level:        "info",
 		Message:      fmt.Sprintf("Rollback command sent to worker %d via WebSocket", *stack.WorkerID),
 	})
 
-	h.startDeploymentMonitor(rollbackDeployment.ID, stack.ID, *stack.WorkerID, payload)
+	h.startDeploymentMonitor(r.Context(), rollbackDeployment.ID, stack.ID, *stack.WorkerID, payload)
 
 	logAudit(r, "rollback", "deployment", intPtr(targetID), nil)
 	responder.NewCreated(w, rollbackDeployment, "rollback deployment created and sent to worker")

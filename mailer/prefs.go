@@ -1,6 +1,7 @@
 package mailer
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -46,7 +47,7 @@ func LoadPreferences() EventPreferences {
 	}
 	var stored EventPreferences
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		logger.Error("mailer", "failed to parse notification prefs", logger.F{"error": err})
+		logger.ErrorCtx(context.Background(), "mailer", "failed to parse notification prefs", logger.F{"error": err})
 		return prefs
 	}
 	// Merge stored values over defaults
@@ -228,7 +229,7 @@ func CancelDisconnectAlert(workerID int) {
 	if t, ok := graceTimers[workerID]; ok {
 		t.Stop()
 		delete(graceTimers, workerID)
-		logger.Info("mailer", "disconnect alert cancelled (worker reconnected)", logger.F{"worker_id": workerID})
+		logger.InfoCtx(context.Background(), "mailer", "disconnect alert cancelled (worker reconnected)", logger.F{"worker_id": workerID})
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -24,9 +25,9 @@ const automationScheduleLookback = staleBackupLookback
 // scheduled_at) exactly as database_snapshot_runs is keyed (instance,
 // scheduled_at). A second scheduler would be a second implementation of all four.
 func (s *databaseScheduler) StartAutomations(ex *automations.Executor) {
-	go s.runLoop("automation-scheduler", schedulerTick, func() { s.dispatchDueAutomations(ex) })
-	go s.runLoop("automation-run-timeout", time.Minute, ex.FailStuckRuns)
-	logger.Info("automation", "automation scheduler started", logger.F{
+	go s.runLoop("automation-scheduler", schedulerTick, func(ctx context.Context) { s.dispatchDueAutomations(ctx, ex) })
+	go s.runLoop("automation-run-timeout", time.Minute, func(ctx context.Context) { ex.FailStuckRuns(ctx) })
+	logger.InfoCtx(context.Background(), "automation", "automation scheduler started", logger.F{
 		"tick":                schedulerTick.String(),
 		"run_budget":          automations.RUN_BUDGET.String(),
 		"max_concurrent_runs": automations.MAX_CONCURRENT_RUNS,
@@ -36,10 +37,10 @@ func (s *databaseScheduler) StartAutomations(ex *automations.Executor) {
 // dispatchDueAutomations fires every enabled schedule-triggered automation whose
 // slot is due. Claiming a slot is the insert of its run row, so the many ticks
 // that see the same slot fire it once.
-func (s *databaseScheduler) dispatchDueAutomations(ex *automations.Executor) {
+func (s *databaseScheduler) dispatchDueAutomations(ctx context.Context, ex *automations.Executor) {
 	scheduled, err := query.ListScheduledAutomations(db.DB)
 	if err != nil {
-		logger.Error("automation", "failed to list scheduled automations", logger.F{"error": err})
+		logger.ErrorCtx(ctx, "automation", "failed to list scheduled automations", logger.F{"error": err})
 		return
 	}
 

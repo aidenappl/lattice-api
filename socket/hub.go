@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aidenappl/lattice-api/logger"
@@ -28,6 +28,14 @@ type WorkerSession struct {
 	LastSeenAt  time.Time
 	ConnectedAt time.Time
 	Send        chan []byte
+
+	// RemoteIP is the client address the connection came from, as resolved by
+	// WorkerHandler.ClientIP.
+	RemoteIP string
+
+	// GracefulShutdown is set when the worker announced worker_shutdown before
+	// its connection ended, so the disconnect that follows is a planned stop.
+	GracefulShutdown atomic.Bool
 
 	cancel context.CancelFunc
 	once   sync.Once
@@ -92,12 +100,13 @@ func (h *WorkerHub) Register(session *WorkerSession) error {
 		old.setCloseCause(errors.New("replaced by a new connection from the same worker"))
 		old.Close()
 	} else if len(h.sessions) >= MaxWorkerSessions {
-		logger.Warn("socket", "worker rejected, max connections reached", logger.F{"worker_id": session.WorkerID, "max": MaxWorkerSessions})
+		logger.WarnCtx(context.Background(), "socket", "worker rejected, max connections reached", logger.F{"worker_id": session.WorkerID, "max": MaxWorkerSessions})
 		return ErrMaxConnections
 	}
 
 	h.sessions[session.WorkerID] = session
-	log.Printf("socket: worker=%d registered (total=%d)", session.WorkerID, len(h.sessions))
+	// Debug: worker.connected, logged by OnConnect, is the lifecycle event.
+	logger.DebugCtx(context.Background(), "socket", "worker session registered", logger.F{"worker_id": session.WorkerID, "total": len(h.sessions)})
 	return nil
 }
 
@@ -108,7 +117,7 @@ func (h *WorkerHub) Unregister(workerID int) {
 	if s, ok := h.sessions[workerID]; ok {
 		delete(h.sessions, workerID)
 		s.Close()
-		log.Printf("socket: worker=%d unregistered (total=%d)", workerID, len(h.sessions))
+		logger.DebugCtx(context.Background(), "socket", "worker session unregistered", logger.F{"worker_id": workerID, "total": len(h.sessions)})
 	}
 }
 
@@ -191,6 +200,9 @@ func (h *WorkerHub) SendJSONToWorker(workerID int, v any) error {
 	return h.SendToWorker(workerID, b)
 }
 
+// BroadcastAll queues payload for every connected worker. A worker whose queue
+// is full misses it; the warning names the message type so a flood of drops can
+// be traced to what was being sent.
 func (h *WorkerHub) BroadcastAll(payload []byte) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -201,7 +213,19 @@ func (h *WorkerHub) BroadcastAll(payload []byte) {
 		case <-session.done:
 			// session is shutting down — skip it
 		default:
-			logger.Warn("socket", "broadcast queue full, message dropped", logger.F{"worker_id": session.WorkerID})
+			logger.WarnCtx(context.Background(), "socket", "broadcast queue full, message dropped", logger.F{"worker_id": session.WorkerID, "message_type": messageType(payload)})
 		}
 	}
+}
+
+// messageType reads the "type" of a JSON message for logging, or "" when it has
+// none. It only runs on the drop path, so the decode costs nothing normally.
+func messageType(payload []byte) string {
+	var m struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(payload, &m) != nil {
+		return ""
+	}
+	return m.Type
 }

@@ -53,17 +53,26 @@ func main() {
 		_ = json.NewEncoder(w).Encode(body)
 	}).Methods(http.MethodGet)
 
-	// Global middleware
-	r.Use(middleware.RequestIDMiddleware)
-	r.Use(middleware.LoggingMiddleware)
-	r.Use(middleware.RecoverMiddleware)
-	// Inside logging, so a 429 is recorded like any other response — with the
-	// request id the client was given.
-	r.Use(middleware.RateLimitMiddleware)
-	r.Use(middleware.MuxHeaderMiddleware)
-	r.Use(middleware.SecurityHeadersMiddleware)
-	r.Use(middleware.CSRFMiddleware)
-	r.Use(middleware.MaxBodySize(1 << 20)) // 1MB default body limit
+	// Global middleware, outermost first.
+	global := []mux.MiddlewareFunc{
+		middleware.RequestIDMiddleware,
+		middleware.LoggingMiddleware,
+		middleware.RecoverMiddleware,
+		// Inside logging, so a 429 is recorded like any other response — with
+		// the request id the client was given.
+		middleware.RateLimitMiddleware,
+		middleware.MuxHeaderMiddleware,
+		middleware.SecurityHeadersMiddleware,
+		middleware.CSRFMiddleware,
+		middleware.MaxBodySize(1 << 20), // 1MB default body limit
+	}
+	r.Use(global...)
+
+	// r.Use only wraps matched routes, so a 404 or 405 would otherwise produce
+	// no event at all. These get the same chain, and are recorded under the
+	// route "(unmatched)" rather than the caller's path.
+	r.NotFoundHandler = middleware.Wrap(middleware.UnmatchedHandler(http.StatusNotFound), global...)
+	r.MethodNotAllowedHandler = middleware.Wrap(middleware.UnmatchedHandler(http.StatusMethodNotAllowed), global...)
 
 	// Public routes
 	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
