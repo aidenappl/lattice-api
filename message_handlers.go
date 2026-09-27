@@ -780,9 +780,10 @@ func handleContainerLog(workerID int, payload map[string]any) {
 	// Resolve container_name to container_id and always store the name
 	if name, ok := payload["container_name"].(string); ok && name != "" {
 		req.ContainerName = &name
-		if c, err := containerNameCache.GetContainerByName(name); err == nil {
+		// A remembered miss is an unmanaged container already warned about.
+		if c, err := containerNameCache.LookupForLog(name); err == nil {
 			req.ContainerID = &c.ID
-		} else {
+		} else if !errors.Is(err, errUnmanagedContainer) {
 			logger.WarnCtx(context.Background(), "container", "could not resolve container name to ID", logger.F{"container_name": name, "error": err})
 		}
 	}
