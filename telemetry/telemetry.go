@@ -63,6 +63,12 @@ func InstallSinks() {
 }
 
 func emitRecord(r logger.Record) {
+	// monitor.Emit skips the SDK's Debug gate, which only monitor.Debug
+	// enforces; without this every debug line would ship. Stdout is unaffected:
+	// logger.emit prints independently of the sink, gated only by LOG_LEVEL.
+	if r.Level == logger.LevelDebug && !env.MonitorDebug {
+		return
+	}
 	component := r.Component
 	if component == "" {
 		component = "app"

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	monitor "github.com/aidenappl/go-monitor"
+	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/logger"
 )
 
@@ -81,5 +82,39 @@ func TestPanicsBecomePanicRecoveredWithTheirStack(t *testing.T) {
 	}
 	if n := len(rec.Named("panic.log.error")); n != 0 {
 		t.Errorf("a panic was reported twice (%d extra panic.log.error events)", n)
+	}
+}
+
+func TestDebugLinesShipOnlyWithMonitorDebug(t *testing.T) {
+	tests := []struct {
+		name         string
+		monitorDebug bool
+		want         int
+	}{
+		{name: "MONITOR_DEBUG off drops debug", monitorDebug: false, want: 0},
+		{name: "MONITOR_DEBUG on ships debug", monitorDebug: true, want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prev := env.MonitorDebug
+			env.MonitorDebug = tt.monitorDebug
+			t.Cleanup(func() { env.MonitorDebug = prev })
+			rec := record(t)
+
+			logger.Debug("container", "health status updated (unchanged)")
+			// Other levels are never gated.
+			logger.Info("container", "status updated")
+
+			evs := rec.Named("container.log.debug")
+			if len(evs) != tt.want {
+				t.Fatalf("recorded %d container.log.debug events, want %d", len(evs), tt.want)
+			}
+			if tt.want == 1 && evs[0].Level != monitor.LevelDebug {
+				t.Errorf("level = %q, want debug", evs[0].Level)
+			}
+			if n := len(rec.Named("container.log.info")); n != 1 {
+				t.Errorf("recorded %d container.log.info events, want 1", n)
+			}
+		})
 	}
 }

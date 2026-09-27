@@ -533,6 +533,12 @@ func handleContainerHealthStatus(payload map[string]any) {
 		return
 	}
 
+	// Runners report health on every probe; only a change needs a write.
+	if c.HealthStatus == healthStatus {
+		logContainerTransition("health_status", containerName, c.HealthStatus, healthStatus)
+		return
+	}
+
 	if _, err := query.UpdateContainer(db.DB, c.ID, query.UpdateContainerRequest{HealthStatus: &healthStatus}); err != nil {
 		logger.Error("container", "failed to update health status", logger.F{"container_name": containerName, "health_status": healthStatus, "error": err})
 	} else {
