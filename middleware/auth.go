@@ -321,10 +321,56 @@ var ssoCheckpointer = &ssolib.Checkpointer{
 	},
 	Interval: ssoCheckpointTTL,
 	Grace:    ssoCheckpointGrace,
-	Logf: func(format string, args ...any) {
+	// Correlation forwards this request's ids on the introspection call, so a
+	// checkpoint shows up in forta-api's logs under the same request_id as the
+	// lattice-api request that triggered it. Only works because Check is given the
+	// request ctx (checkpointSSOGrant).
+	Correlation: ssoCorrelation,
+	LogfCtx: func(ctx context.Context, format string, args ...any) {
 		// The library's text varies per call, so it is data, not the message.
-		logger.WarnCtx(context.Background(), "auth", "sso checkpoint warning", logger.F{"detail": fmt.Sprintf(format, args...)})
+		// Never contains a token (go-forta guarantees user id + provider slug only).
+		logger.WarnCtx(ctx, "sso", "sso checkpoint warning", logger.F{"detail": fmt.Sprintf(format, args...)})
 	},
+	OnResult: logCheckpointResult,
+}
+
+// ssoCorrelation returns the go-monitor request and trace ids that
+// RequestIDMiddleware stored on ctx. go-forta forwards them as X-Request-ID /
+// X-Trace-ID / traceparent (only when they are ids Monitor would accept).
+func ssoCorrelation(ctx context.Context) (string, string) {
+	return monitor.RequestID(ctx), monitor.TraceID(ctx)
+}
+
+// checkpointResultLevel is the level policy for OnResult. A pass with a cause is
+// a grace-window pass (the IdP did not answer) or a session-store failure —
+// degraded but handled, so warn. Unavailable is warn too: the session is denied
+// because the IdP could not be reached, not because of anything the user did.
+// Everything else (confirmed live, revoked) is debug here; checkpointSSOGrant
+// already logs the revocation at info.
+func checkpointResultLevel(r ssolib.CheckpointResult, cause error) logger.Level {
+	switch {
+	case r == ssolib.CheckpointUnavailable:
+		return logger.LevelWarn
+	case r == ssolib.CheckpointOK && cause != nil:
+		return logger.LevelWarn
+	default:
+		return logger.LevelDebug
+	}
+}
+
+// logCheckpointResult is the Checkpointer's OnResult hook. The message is fixed;
+// the result and its cause ride in fields. Never logs a token — cause is a
+// transport / store / provider-lookup error.
+func logCheckpointResult(ctx context.Context, userID int64, r ssolib.CheckpointResult, cause error) {
+	f := logger.F{"user_id": userID, "result": r.String(), "grace": r == ssolib.CheckpointOK && cause != nil}
+	if cause != nil {
+		f["cause"] = cause.Error()
+	}
+	if checkpointResultLevel(r, cause) == logger.LevelWarn {
+		logger.WarnCtx(ctx, "sso", "sso checkpoint degraded", f)
+		return
+	}
+	logger.DebugCtx(ctx, "sso", "sso checkpoint result", f)
 }
 
 // checkpointSSOGrant re-validates the user's grant against the IdP on a TTL.
@@ -348,7 +394,9 @@ var ssoCheckpointer = &ssolib.Checkpointer{
 // this hook to carry a status is the fix; until then this comment is the record of
 // what is lost.
 func checkpointSSOGrant(ctx context.Context, userID int64) bool {
-	switch ssoCheckpointer.Check(context.Background(), userID) {
+	// The request ctx, not context.Background(): it carries the go-monitor ids that
+	// Correlation forwards to the IdP and that LogfCtx/OnResult log under.
+	switch ssoCheckpointer.Check(ctx, userID) {
 	case ssolib.CheckpointRevoked:
 		logger.InfoCtx(ctx, "auth", "checkpoint: upstream grant revoked, session terminated", logger.F{"user_id": userID})
 		return false

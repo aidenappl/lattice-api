@@ -82,8 +82,8 @@ rows in this database.
 - **Telemetry:** `github.com/aidenappl/go-monitor` (pseudo-version of commit `17017e5` until it
   is tagged) — Monitor events, redaction, and the durable on-disk spool that keeps Monitor off
   the boot path. Used only through `telemetry/` and the logger sinks.
-- **SSO:** `github.com/aidenappl/go-forta/sso` **v1.6.0** — the shared relying-party SSO
-  implementation. Brings `coreos/go-oidc/v3` and `golang.org/x/oauth2` transitively.
+- **SSO:** `github.com/aidenappl/go-forta/sso` **v1.11.0** (module `go-forta`) — the shared
+  relying-party SSO implementation. Brings `coreos/go-oidc/v3` and `golang.org/x/oauth2` transitively.
 
 **Internal SDKs:** `go-monitor` (telemetry, above) and `go-forta/sso` — and ⚠️ importing
 `go-forta/sso` is **NOT the same as importing `go-forta`
@@ -383,6 +383,18 @@ Lattice JWT, so they authenticate exactly like local users. The one extra step i
 stored refresh token against the IdP at most every **5 minutes** (`ssoCheckpointTTL`). The policy
 itself lives in `go-forta/sso`'s `Checkpointer`; this repo supplies the stores and maps the result
 onto the middleware's bool.
+
+**Correlation (go-forta v1.11.0).** `checkpointSSOGrant` passes the **request ctx** into
+`Checkpointer.Check` (never `context.Background()`), and the Checkpointer's `Correlation` hook
+(`ssoCorrelation`) returns go-monitor's `RequestID`/`TraceID`, so every introspection call carries
+`X-Request-ID` / `X-Trace-ID` / `traceparent` to forta-api (or whichever IdP) — one `request_id`
+across lattice-api's `http.request.end` and the IdP's logs. Concurrent checks for one user share
+one introspection, carrying the first request's ids. The library's log lines go through `LogfCtx`
+→ `logger.WarnCtx(ctx, "sso", "sso checkpoint warning", {detail})`, and `OnResult`
+(`logCheckpointResult`) logs `sso checkpoint degraded` at **warn** for a grace-window pass (OK with
+a cause) or `unavailable`, with `result`/`grace`/`cause` fields, and debug otherwise. Never a token.
+lattice-api does not use go-forta's root `forta` package, so `Config.Correlation` /
+`OnAuthFailure` do not apply here.
 
 ⚠️ **This had NEVER RUN before 2026-07-30, and the reason is worth remembering.** The logic below
 was correct in outline, but it opened with `if err != nil { return true }` on the session lookup,
