@@ -1,11 +1,14 @@
 package versions
 
 import (
+	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/aidenappl/lattice-api/logger"
+	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,11 +25,6 @@ var repos = []string{
 	"aidenappl/lattice-api",
 	"aidenappl/lattice-web",
 	"aidenappl/lattice-runner",
-}
-
-// githubRelease is the subset of the GitHub releases API response we care about.
-type githubRelease struct {
-	TagName string `json:"tag_name"`
 }
 
 // Cache holds the latest release tag for each repo.
@@ -62,7 +60,7 @@ func safeRefresh() {
 func Refresh() {
 	ctx := monitor.WithJobID(context.Background(), monitor.NewJobID())
 	for _, repo := range repos {
-		tag, err := fetchLatestRelease(repo)
+		tag, err := fetchLatestTag(repo)
 		if err != nil {
 			logger.WarnCtx(ctx, "versions", "failed to fetch latest release", logger.F{"repo": repo, "error": err})
 			continue
@@ -104,15 +102,20 @@ func LatestWeb() string { return Get("aidenappl/lattice-web") }
 // LatestRunner returns the latest release tag for lattice-runner.
 func LatestRunner() string { return Get("aidenappl/lattice-runner") }
 
-func fetchLatestRelease(repo string) (string, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
+// fetchLatestTag returns the highest vX.Y.Z tag of a public GitHub repo. It
+// reads the git smart-HTTP ref advertisement (what `git ls-remote` uses) rather
+// than api.github.com: the REST API allows 60 unauthenticated calls per hour per
+// IP, which this control plane shares with the workers, and a 403 left the
+// "latest" versions blank. Every CI release pushes a vX.Y.Z tag, so the newest
+// tag is the newest release.
+func fetchLatestTag(repo string) (string, error) {
+	url := fmt.Sprintf("https://github.com/%s.git/info/refs?service=git-upload-pack", repo)
 	client := &http.Client{Timeout: httpTimeout}
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "lattice-api")
 
 	resp, err := client.Do(req)
@@ -121,21 +124,54 @@ func fetchLatestRelease(repo string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 404 {
-		return "", fmt.Errorf("no releases found for %s", repo)
-	}
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("GitHub API returned %d for %s", resp.StatusCode, repo)
+		return "", fmt.Errorf("GitHub returned %d for %s refs", resp.StatusCode, repo)
 	}
 
-	var release githubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
+	tag := latestSemverTag(io.LimitReader(resp.Body, 4<<20))
+	if tag == "" {
+		return "", fmt.Errorf("no vX.Y.Z tags found for %s", repo)
 	}
+	return tag, nil
+}
 
-	if release.TagName == "" {
-		return "", fmt.Errorf("empty tag_name in release for %s", repo)
+// latestSemverTag scans a ref advertisement for refs/tags/vX.Y.Z and returns the
+// highest by numeric comparison. Peeled entries (^{}) and other tags are ignored.
+func latestSemverTag(r io.Reader) string {
+	best, bestV := "", [3]int{-1, -1, -1}
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64*1024), 64*1024)
+	for sc.Scan() {
+		_, ref, ok := strings.Cut(sc.Text(), " refs/tags/")
+		if !ok {
+			continue
+		}
+		ref, _, _ = strings.Cut(ref, "\x00")
+		v, ok := parseSemver(ref)
+		if ok && (v[0] > bestV[0] || v[0] == bestV[0] && (v[1] > bestV[1] || v[1] == bestV[1] && v[2] > bestV[2])) {
+			best, bestV = ref, v
+		}
 	}
+	return best
+}
 
-	return release.TagName, nil
+// parseSemver parses exactly vMAJOR.MINOR.PATCH.
+func parseSemver(tag string) ([3]int, bool) {
+	var v [3]int
+	rest, ok := strings.CutPrefix(tag, "v")
+	if !ok {
+		return v, false
+	}
+	parts := strings.Split(rest, ".")
+	if len(parts) != 3 {
+		return v, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 || strconv.Itoa(n) != p {
+			return v, false
+		}
+		v[i] = n
+	}
+	return v, true
 }

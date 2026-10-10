@@ -140,7 +140,7 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `automations/` | The automation executor — the repo's one service layer (see *How code is written here*). `executor.go` (the single run loop, `Fire`/`FireWebhook`/`FireScheduled`/`FailStuckRuns`, run records, budgets), `actions.go` (`kindFor` — THE switch over action types — plus `redeploy_container` and `http_request`), `authorize.go` (the authorisation model, with its reasoning), `store.go` (`Store` interface + `DBStore`, a thin pass-through to `query`). |
 | `cron/cron.go` | The control plane's one 5-field cron evaluator: `Matches`, `PreviousFires`, and `Validate` (same term parser; additionally rejects out-of-range values that would parse and never fire). Moved out of package `main` so automations can validate with it; `cron.go` at the root keeps `cronPreviousFires`/`cronMatches` as wrappers for the existing call sites. |
 | `automation_scheduler.go` | `databaseScheduler.StartAutomations` — schedule-triggered automations on the snapshot scheduler's loop (one scheduler, not two). |
-| `versions/versions.go` | Polls GitHub `releases/latest` for api/web/runner every 30 min; in-memory cache. |
+| `versions/versions.go` | Every 30 min, reads the newest `vX.Y.Z` tag for api/web/runner from GitHub's git smart-HTTP ref advertisement (`<repo>.git/info/refs`, what `git ls-remote` uses) — **not** `api.github.com`, whose 60 unauthenticated calls/hour/IP (shared with the workers) left "latest" blank. In-memory cache; a failed poll keeps the previous value. |
 | `mailer/` | `mailer.go` (SMTP send + HTML template, config from `settings`), `prefs.go` (notification prefs, cooldowns, grace timers, unhealthy thresholds). |
 | `bootstrap/admin.go` | First-run: creates the local admin user from `LATTICE_ADMIN_EMAIL`/`_PASSWORD` if no users exist. |
 | `tools/` | `password.tool.go` (bcrypt cost 12), `token.tool.go` (opaque token gen + SHA-256 hash-at-rest), `validate.go` (name/email/password/YAML-size validators; `ValidateExternalURL` SSRF guard — HTTPS-only, blocks private/reserved/CGNAT IPs, **fails closed** on DNS failure; `NewSafeHTTPClient` pins the dialer to public IPs at connect time to defeat DNS-rebinding). Outbound clients for user/admin-configured URLs (webhooks, registry) use `NewSafeHTTPClient`. |
@@ -1223,7 +1223,7 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
   pushes the image; it does not deploy** — rollout happens via Lattice's own self-update path.
 - **Database:** MariaDB, schema `lattice`. Schema is owned by the in-code `migrate()` calls in
   `db.Init()` (no external migration runner). Pool: 25 open / 10 idle / 5-min lifetime.
-- **Background jobs** (all started in `initApp`): `versions` (GitHub poll, 30m), `retention`
+- **Background jobs** (all started in `initApp`): `versions` (GitHub tag poll via git refs, 30m), `retention`
   (log/metric purge, hourly; windows: container_logs 7d, lifecycle 14d, worker_metrics 30d,
   container_metrics 7d, deployment_logs 90d, audit_log 180d, database_instance_events 180d,
   automation_runs 90d), `watcher` (registry digest poll, 5m), `healthscan` (worker-vs-DB
