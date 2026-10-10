@@ -1364,9 +1364,10 @@ are logged as scheme + host only, because a chat webhook's path is its credentia
   identity, and never queue an overlapping firing. `/api/automations/{token}` stays public,
   CSRF-exempt and rate-limited beside `/api/deploy/{token}`, and must never move behind
   `DualAuthMiddleware`. Keep `RUN_BUDGET` under the server `WriteTimeout`.
-- **Follow the global git/deploy guardrails:** never push (except when explicitly authorized —
-  as for this doc task), never amend/rebase/force, never trigger a remote deploy or touch
-  production infra, never create/modify `.env`, never commit secrets or the `certs/*.pem` files.
+- **Follow the global git/deploy guardrails:** commit, push, merge and deploy **only after asking
+  Aiden and getting an explicit yes** for that specific action (see `~/CLAUDE.md` *Ask-first
+  actions*); **never** amend/rebase/force-push or run destructive git ops, never create/modify
+  `.env`, never commit secrets or the `certs/*.pem` files.
 
 ---
 
