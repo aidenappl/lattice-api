@@ -55,6 +55,18 @@ func TestInstallScriptRunnerUnit(t *testing.T) {
 			t.Error("install/runner.sh no longer migrates an existing Requires=docker.service unit on upgrade")
 		}
 	})
+
+	// The REST API allows 60 unauthenticated calls per hour per IP, so a fleet
+	// upgrade from workers sharing a public IP 403s partway through and the
+	// upgrade silently does nothing. Tags must come from git ls-remote.
+	t.Run("latest tag resolved without the GitHub REST API", func(t *testing.T) {
+		if strings.Contains(script, "curl -fsSL \"https://api.github.com/") {
+			t.Error("install/runner.sh calls api.github.com; use git ls-remote --tags instead")
+		}
+		if !strings.Contains(script, "git ls-remote --tags --refs") {
+			t.Error("install/runner.sh no longer resolves LATEST_TAG with git ls-remote")
+		}
+	})
 }
 
 // unitHeredocs returns the body of every <<SVCEOF heredoc in the script.
