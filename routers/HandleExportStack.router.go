@@ -26,6 +26,7 @@ type containerExportData struct {
 	Command       *string  `json:"command"`
 	Entrypoint    *string  `json:"entrypoint"`
 	HealthCheck   *string  `json:"health_check"`
+	Ulimits       *string  `json:"ulimits,omitempty"`
 	RegistryID    *int     `json:"registry_id"`
 	DependsOn     *string  `json:"depends_on"`
 }
@@ -47,6 +48,7 @@ func formatContainersForExport(containers []structs.Container) []containerExport
 			Command:       c.Command,
 			Entrypoint:    c.Entrypoint,
 			HealthCheck:   c.HealthCheck,
+			Ulimits:       blankToNil(c.Ulimits),
 			RegistryID:    c.RegistryID,
 			DependsOn:     c.DependsOn,
 		})

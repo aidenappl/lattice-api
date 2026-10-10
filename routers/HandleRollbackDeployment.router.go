@@ -1,11 +1,9 @@
 package routers
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/logger"
@@ -104,10 +102,9 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		return
 	}
 
-	allRegistries, _ := query.ListRegistries(db.DB)
-
 	// Build container specs: image/tag from the previous deployment, everything
 	// else (env vars, ports, volumes, health check …) from the live container record.
+	sb := newSpecBuilder(r.Context(), stack.ID, stack.ComposeYAML, mergedEnvVars, true)
 	containerSpecs := make([]map[string]any, 0, len(*prevContainers))
 	for _, dc := range *prevContainers {
 		c, err := query.GetContainerByID(db.DB, dc.ContainerID)
@@ -116,129 +113,11 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 			continue
 		}
 
-		spec := map[string]any{
-			"id":             c.ID,
-			"name":           c.Name,
-			"image":          dc.Image,
-			"tag":            dc.Tag,
-			"replicas":       c.Replicas,
-			"restart_policy": c.RestartPolicy,
-		}
-
-		if c.PortMappings != nil {
-			var pm []any
-			if err := json.Unmarshal([]byte(*c.PortMappings), &pm); err != nil {
-				logger.WarnCtx(r.Context(), "deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "port_mappings", "error": err})
-			} else {
-				// Resolve environment variable references in port mappings
-				resolved := resolveVarsInValue(pm, mergedEnvVars)
-				spec["port_mappings"] = resolved
-			}
-		}
-
-		ev, err := parseContainerEnvVars(c.EnvVars)
-		if err != nil {
-			responder.SendError(w, http.StatusInternalServerError, "container env vars could not be read", fmt.Errorf("container %s: %w", c.Name, err))
+		spec, specErr := sb.build(*c, dc.Image, dc.Tag)
+		if specErr != nil {
+			responder.SendError(w, http.StatusInternalServerError, specErr.message, specErr.err)
 			return
 		}
-		if ev != nil {
-			// Preserve compose semantics: only include env keys explicitly defined
-			// for the service, but resolve ${VAR} references from stack-level env.
-			merged := make(map[string]any, len(ev))
-			for k, v := range ev {
-				if s, ok := v.(string); ok {
-					if resolved, ok := resolveEnvRef(s, mergedEnvVars); ok {
-						merged[k] = resolved
-						continue
-					}
-				}
-				merged[k] = v
-			}
-			spec["env_vars"] = merged
-		}
-
-		if c.Volumes != nil {
-			var vol map[string]any
-			if err := json.Unmarshal([]byte(*c.Volumes), &vol); err != nil {
-				logger.WarnCtx(r.Context(), "deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "volumes", "error": err})
-			} else {
-				// Resolve environment variable references in volumes
-				resolved := resolveVarsInValue(vol, mergedEnvVars)
-				spec["volumes"] = resolved
-			}
-		}
-
-		if c.CPULimit != nil {
-			spec["cpu_limit"] = *c.CPULimit
-		}
-		if c.MemoryLimit != nil {
-			spec["memory_limit"] = int64(*c.MemoryLimit) * 1024 * 1024
-		}
-
-		if c.Command != nil {
-			var cmd []string
-			if err := json.Unmarshal([]byte(*c.Command), &cmd); err != nil {
-				logger.WarnCtx(r.Context(), "deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "command", "error": err})
-			} else {
-				spec["command"] = cmd
-			}
-		}
-
-		if c.Entrypoint != nil {
-			var ep []string
-			if err := json.Unmarshal([]byte(*c.Entrypoint), &ep); err != nil {
-				logger.WarnCtx(r.Context(), "deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "entrypoint", "error": err})
-			} else {
-				spec["entrypoint"] = ep
-			}
-		}
-
-		if c.HealthCheck != nil {
-			var hc map[string]any
-			if err := json.Unmarshal([]byte(*c.HealthCheck), &hc); err != nil {
-				logger.WarnCtx(r.Context(), "deploy", "rollback: skipped an unparseable container field", logger.F{"container": c.Name, "field": "health_check", "error": err})
-			} else {
-				// Resolve environment variable references in health check (e.g., ${PORT_FOO} in test command)
-				resolved := resolveVarsInValue(hc, mergedEnvVars)
-				spec["health_check"] = resolved
-			}
-		}
-
-		// Resolve registry credentials.
-		if c.RegistryID != nil {
-			reg, err := query.GetRegistryByID(db.DB, *c.RegistryID)
-			if err == nil && reg != nil {
-				auth := map[string]string{}
-				if reg.Username != nil {
-					auth["username"] = *reg.Username
-				}
-				if reg.Password != nil {
-					auth["password"] = *reg.Password
-				}
-				if len(auth) > 0 {
-					spec["registry_auth"] = auth
-				}
-			}
-		} else if allRegistries != nil {
-			for _, reg := range *allRegistries {
-				regHost := strings.TrimPrefix(strings.TrimPrefix(reg.URL, "https://"), "http://")
-				regHost = strings.TrimSuffix(regHost, "/")
-				if strings.HasPrefix(dc.Image, regHost+"/") || dc.Image == regHost {
-					auth := map[string]string{}
-					if reg.Username != nil {
-						auth["username"] = *reg.Username
-					}
-					if reg.Password != nil {
-						auth["password"] = *reg.Password
-					}
-					if len(auth) > 0 {
-						spec["registry_auth"] = auth
-					}
-					break
-				}
-			}
-		}
-
 		containerSpecs = append(containerSpecs, spec)
 	}
 

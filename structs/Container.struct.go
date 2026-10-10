@@ -19,6 +19,7 @@ type Container struct {
 	Command        *string    `json:"command"`
 	Entrypoint     *string    `json:"entrypoint"`
 	HealthCheck    *string    `json:"health_check"`
+	Ulimits        *string    `json:"ulimits"`
 	HealthStatus   string     `json:"health_status"`
 	RegistryID     *int       `json:"registry_id"`
 	DependsOn      *string    `json:"depends_on"`

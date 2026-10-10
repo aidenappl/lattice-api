@@ -26,6 +26,7 @@ var containerColumns = []string{
 	"containers.command",
 	"containers.entrypoint",
 	"containers.health_check",
+	"containers.ulimits",
 	"containers.health_status",
 	"containers.registry_id",
 	"containers.depends_on",
@@ -55,6 +56,7 @@ func scanContainer(row scanner) (*structs.Container, error) {
 		&c.Command,
 		&c.Entrypoint,
 		&c.HealthCheck,
+		&c.Ulimits,
 		&c.HealthStatus,
 		&c.RegistryID,
 		&c.DependsOn,
@@ -193,6 +195,7 @@ type CreateContainerRequest struct {
 	Command        *string
 	Entrypoint     *string
 	HealthCheck    *string
+	Ulimits        *string
 	RegistryID     *int
 	DependsOn      *string
 	NetworkAliases *string
@@ -201,9 +204,9 @@ type CreateContainerRequest struct {
 func CreateContainer(engine db.Queryable, req CreateContainerRequest) (*structs.Container, error) {
 	q := sq.Insert("containers").
 		Columns("stack_id", "name", "image", "tag", "port_mappings", "env_vars", "volumes",
-			"cpu_limit", "memory_limit", "replicas", "restart_policy", "command", "entrypoint", "health_check", "registry_id", "depends_on", "network_aliases").
+			"cpu_limit", "memory_limit", "replicas", "restart_policy", "command", "entrypoint", "health_check", "ulimits", "registry_id", "depends_on", "network_aliases").
 		Values(req.StackID, req.Name, req.Image, req.Tag, req.PortMappings, req.EnvVars, req.Volumes,
-			req.CPULimit, req.MemoryLimit, req.Replicas, req.RestartPolicy, req.Command, req.Entrypoint, req.HealthCheck, req.RegistryID, req.DependsOn, req.NetworkAliases)
+			req.CPULimit, req.MemoryLimit, req.Replicas, req.RestartPolicy, req.Command, req.Entrypoint, req.HealthCheck, req.Ulimits, req.RegistryID, req.DependsOn, req.NetworkAliases)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
@@ -238,6 +241,7 @@ type UpdateContainerRequest struct {
 	Command        *string
 	Entrypoint     *string
 	HealthCheck    *string
+	Ulimits        *string
 	HealthStatus   *string
 	RegistryID     *int
 	DependsOn      *string
@@ -304,6 +308,10 @@ func UpdateContainer(engine db.Queryable, id int, req UpdateContainerRequest) (*
 	}
 	if req.HealthCheck != nil {
 		q = q.Set("health_check", *req.HealthCheck)
+		hasUpdate = true
+	}
+	if req.Ulimits != nil {
+		q = q.Set("ulimits", *req.Ulimits)
 		hasUpdate = true
 	}
 	if req.HealthStatus != nil {

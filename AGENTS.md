@@ -244,6 +244,20 @@ This repo follows the global Go standards. Specifics and deviations:
   `global_env_vars` (decrypted, base layer) then stack-level env vars (override). See
   `resolveEnvRef` / `resolveVarsInValue` in `HandleDeployStack.router.go`. Memory limits are
   stored in MB and converted to bytes (`*1024*1024`) before being sent to the runner.
+- **One deploy-spec builder.** Dashboard deploys, CI-token deploys and rollbacks all build runner
+  specs through `specBuilder` (`routers/deploy_spec.go`). **Add a new container field there and
+  only there**: before it existed each path had its own copy, and CI deploys and rollbacks had
+  silently stopped sending `networks`/`network_aliases` (fixed Oct 2026). Unreadable env vars or
+  aliases fail the deploy; other unreadable fields are skipped (error log, or warn on rollback).
+  `TestSpecBuilderSameSpecForEveryPath` pins it. Single-container recreates
+  (`recreateContainerPayload`) send only image/tag/auth — the runner rebuilds from `docker inspect`.
+- **Container `ulimits`** (migration `019`). Stored as JSON normalized to
+  `{"nofile":{"soft":n,"hard":n}}`; accepted in compose (`ulimits:` integer or `{soft, hard}`, per
+  the compose spec) and as a JSON string in container create/update and stack import bodies.
+  `normalizeUlimits` rejects unknown names, negatives other than -1, and soft > hard; a bad compose
+  value rejects the whole file (400 naming the service) before anything is written. Sync clears
+  ulimits removed from the compose file; the update-compose fingerprint includes them. Sent to the
+  runner as `ulimits: [{name, soft, hard}]` (sorted); runners older than v1.3.2 ignore it.
 - **Secrets at rest.** These fields are AES-256-GCM encrypted via `crypto.Encrypt` when
   `ENCRYPTION_KEY` is set: `registries.password`, `global_env_vars.encrypted_value`,
   `database_instances.root_password`/`.password`, `backup_destinations.config`, and the

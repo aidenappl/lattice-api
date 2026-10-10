@@ -35,6 +35,7 @@ type composeService struct {
 	Deploy        *composeDeploy `yaml:"deploy"`
 	Labels        any            `yaml:"labels"`
 	Healthcheck   *composeHealth `yaml:"healthcheck"`
+	Ulimits       any            `yaml:"ulimits"`
 	Networks      any            `yaml:"networks"`
 }
 
@@ -95,6 +96,12 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 
 	if len(compose.Services) == 0 {
 		responder.SendError(w, http.StatusBadRequest, "no services found in compose file")
+		return
+	}
+
+	ulimitsBySvc, err := composeUlimits(compose)
+	if err != nil {
+		responder.SendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -221,6 +228,10 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 			b, _ := json.Marshal(svc.Healthcheck)
 			s := string(b)
 			req.HealthCheck = &s
+		}
+
+		if u := ulimitsBySvc[name]; u != "" {
+			req.Ulimits = &u
 		}
 
 		// Deploy config

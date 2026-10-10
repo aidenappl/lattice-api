@@ -2,6 +2,7 @@ package routers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/aidenappl/lattice-api/db"
@@ -36,6 +37,7 @@ func HandleImportStackExport(w http.ResponseWriter, r *http.Request) {
 			Command       *string  `json:"command"`
 			Entrypoint    *string  `json:"entrypoint"`
 			HealthCheck   *string  `json:"health_check"`
+			Ulimits       *string  `json:"ulimits"`
 			RegistryID    *int     `json:"registry_id"`
 			DependsOn     *string  `json:"depends_on"`
 		} `json:"containers"`
@@ -97,7 +99,12 @@ func HandleImportStackExport(w http.ResponseWriter, r *http.Request) {
 		if replicas <= 0 {
 			replicas = 1
 		}
-		_, err := query.CreateContainer(tx, query.CreateContainerRequest{
+		ulimits, err := ulimitsFromBody(c.Ulimits)
+		if err != nil {
+			responder.SendError(w, http.StatusBadRequest, fmt.Sprintf("container %s: %v", c.Name, err))
+			return
+		}
+		_, err = query.CreateContainer(tx, query.CreateContainerRequest{
 			StackID:       stack.ID,
 			Name:          c.Name,
 			Image:         c.Image,
@@ -112,6 +119,7 @@ func HandleImportStackExport(w http.ResponseWriter, r *http.Request) {
 			Command:       c.Command,
 			Entrypoint:    c.Entrypoint,
 			HealthCheck:   c.HealthCheck,
+			Ulimits:       ulimits,
 			RegistryID:    c.RegistryID,
 			DependsOn:     c.DependsOn,
 		})

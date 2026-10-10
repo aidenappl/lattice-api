@@ -33,6 +33,7 @@ func containerConfigFingerprint(c structs.Container) string {
 		Command        *string  `json:"cmd"`
 		Entrypoint     *string  `json:"ep"`
 		HealthCheck    *string  `json:"hc"`
+		Ulimits        *string  `json:"ul,omitempty"`
 		DependsOn      *string  `json:"do"`
 		NetworkAliases *string  `json:"na"`
 	}
@@ -41,7 +42,7 @@ func containerConfigFingerprint(c structs.Container) string {
 		PortMappings: c.PortMappings, EnvVars: c.EnvVars,
 		Volumes: c.Volumes, CPULimit: c.CPULimit, MemoryLimit: c.MemoryLimit,
 		Replicas: c.Replicas, RestartPolicy: c.RestartPolicy,
-		Command: c.Command, Entrypoint: c.Entrypoint, HealthCheck: c.HealthCheck,
+		Command: c.Command, Entrypoint: c.Entrypoint, HealthCheck: c.HealthCheck, Ulimits: blankToNil(c.Ulimits),
 		DependsOn: c.DependsOn, NetworkAliases: c.NetworkAliases,
 	})
 	return string(b)
@@ -77,6 +78,12 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(compose.Services) == 0 {
 		responder.SendError(w, http.StatusBadRequest, "no services found in compose file")
+		return
+	}
+
+	ulimitsBySvc, err := composeUlimits(compose)
+	if err != nil {
+		responder.SendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -196,6 +203,10 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 			b, _ := json.Marshal(svc.Healthcheck)
 			s := string(b)
 			req.HealthCheck = &s
+		}
+
+		if u := ulimitsBySvc[name]; u != "" {
+			req.Ulimits = &u
 		}
 
 		if svc.Deploy != nil {

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/logger"
@@ -115,134 +114,15 @@ func (h *DeployHandler) HandlePublicDeploy(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Load all registries for auto-matching by image hostname
-	allRegistries, _ := query.ListRegistries(db.DB)
-
 	// Build container specs with registry auth resolved
+	sb := newSpecBuilder(r.Context(), stack.ID, stack.ComposeYAML, mergedEnvVars, false)
 	containerSpecs := make([]map[string]any, 0, len(*containers))
 	for _, c := range *containers {
-		spec := map[string]any{
-			"id":             c.ID,
-			"name":           c.Name,
-			"image":          c.Image,
-			"tag":            c.Tag,
-			"replicas":       c.Replicas,
-			"restart_policy": c.RestartPolicy,
-		}
-
-		if c.PortMappings != nil {
-			var pm []any
-			if err := json.Unmarshal([]byte(*c.PortMappings), &pm); err != nil {
-				logger.ErrorCtx(r.Context(), "deploy", "invalid port_mappings JSON", logger.F{"container": c.Name, "error": err})
-			} else {
-				resolved := resolveVarsInValue(pm, mergedEnvVars)
-				spec["port_mappings"] = resolved
-			}
-		}
-		ev, err := parseContainerEnvVars(c.EnvVars)
-		if err != nil {
-			responder.SendError(w, http.StatusInternalServerError, "container env vars could not be read", fmt.Errorf("container %s: %w", c.Name, err))
+		spec, specErr := sb.build(c, c.Image, c.Tag)
+		if specErr != nil {
+			responder.SendError(w, http.StatusInternalServerError, specErr.message, specErr.err)
 			return
 		}
-		if ev != nil {
-			merged := make(map[string]any, len(ev))
-			for k, v := range ev {
-				if s, ok := v.(string); ok {
-					if resolved, ok := resolveEnvRef(s, mergedEnvVars); ok {
-						merged[k] = resolved
-						continue
-					}
-				}
-				merged[k] = v
-			}
-			spec["env_vars"] = merged
-		}
-		if c.Volumes != nil {
-			var vol map[string]any
-			if err := json.Unmarshal([]byte(*c.Volumes), &vol); err != nil {
-				logger.ErrorCtx(r.Context(), "deploy", "invalid volumes JSON", logger.F{"container": c.Name, "error": err})
-			} else {
-				resolved := resolveVarsInValue(vol, mergedEnvVars)
-				spec["volumes"] = resolved
-			}
-		}
-		if c.CPULimit != nil {
-			spec["cpu_limit"] = *c.CPULimit
-		}
-		if c.MemoryLimit != nil {
-			spec["memory_limit"] = int64(*c.MemoryLimit) * 1024 * 1024
-		}
-		if c.Command != nil {
-			var cmd []string
-			if err := json.Unmarshal([]byte(*c.Command), &cmd); err != nil {
-				logger.ErrorCtx(r.Context(), "deploy", "invalid command JSON", logger.F{"container": c.Name, "error": err})
-			} else {
-				spec["command"] = cmd
-			}
-		}
-		if c.Entrypoint != nil {
-			var ep []string
-			if err := json.Unmarshal([]byte(*c.Entrypoint), &ep); err != nil {
-				logger.ErrorCtx(r.Context(), "deploy", "invalid entrypoint JSON", logger.F{"container": c.Name, "error": err})
-			} else {
-				spec["entrypoint"] = ep
-			}
-		}
-		if c.HealthCheck != nil {
-			var hc map[string]any
-			if err := json.Unmarshal([]byte(*c.HealthCheck), &hc); err != nil {
-				logger.ErrorCtx(r.Context(), "deploy", "invalid health_check JSON", logger.F{"container": c.Name, "error": err})
-			} else {
-				allEnvVars := make(map[string]any, len(mergedEnvVars))
-				for k, v := range mergedEnvVars {
-					allEnvVars[k] = v
-				}
-				if containerEnvs, ok := spec["env_vars"].(map[string]any); ok {
-					for k, v := range containerEnvs {
-						allEnvVars[k] = v
-					}
-				}
-				resolved := resolveVarsInValue(hc, allEnvVars)
-				spec["health_check"] = resolved
-			}
-		}
-
-		// Resolve registry credentials
-		if c.RegistryID != nil {
-			reg, err := query.GetRegistryByID(db.DB, *c.RegistryID)
-			if err == nil && reg != nil {
-				auth := map[string]string{}
-				if reg.Username != nil {
-					auth["username"] = *reg.Username
-				}
-				if reg.Password != nil {
-					auth["password"] = *reg.Password
-				}
-				if len(auth) > 0 {
-					spec["registry_auth"] = auth
-				}
-			}
-		} else if allRegistries != nil {
-			for _, reg := range *allRegistries {
-				regHost := strings.TrimPrefix(strings.TrimPrefix(reg.URL, "https://"), "http://")
-				regHost = strings.TrimSuffix(regHost, "/")
-				if strings.HasPrefix(c.Image, regHost+"/") || c.Image == regHost {
-					auth := map[string]string{}
-					if reg.Username != nil {
-						auth["username"] = *reg.Username
-					}
-					if reg.Password != nil {
-						auth["password"] = *reg.Password
-					}
-					if len(auth) > 0 {
-						spec["registry_auth"] = auth
-						logger.InfoCtx(r.Context(), "deploy", "auto-matched registry", logger.F{"registry": reg.Name, "image": c.Image})
-					}
-					break
-				}
-			}
-		}
-
 		containerSpecs = append(containerSpecs, spec)
 	}
 

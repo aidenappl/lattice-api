@@ -45,6 +45,12 @@ func HandleSyncCompose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ulimitsBySvc, err := composeUlimits(compose)
+	if err != nil {
+		responder.SendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	existing, err := query.ListContainersByStack(db.DB, stackID)
 	if err != nil {
 		responder.QueryError(w, err, "failed to list containers")
@@ -103,6 +109,10 @@ func HandleSyncCompose(w http.ResponseWriter, r *http.Request) {
 			empty := ""
 			req.HealthCheck = &empty
 		}
+
+		// Always set: removing ulimits from the compose file must clear them.
+		ul := ulimitsBySvc[svcKey]
+		req.Ulimits = &ul
 
 		// Restart policy
 		if svc.Restart != "" {

@@ -33,6 +33,7 @@ func HandleCreateContainer(w http.ResponseWriter, r *http.Request) {
 		Command       *string  `json:"command"`
 		Entrypoint    *string  `json:"entrypoint"`
 		HealthCheck   *string  `json:"health_check"`
+		Ulimits       *string  `json:"ulimits"`
 		RegistryID    *int     `json:"registry_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -66,6 +67,12 @@ func HandleCreateContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ulimits, err := ulimitsFromBody(body.Ulimits)
+	if err != nil {
+		responder.SendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	container, err := query.CreateContainer(db.DB, query.CreateContainerRequest{
 		StackID:       stackID,
 		Name:          body.Name,
@@ -81,6 +88,7 @@ func HandleCreateContainer(w http.ResponseWriter, r *http.Request) {
 		Command:       body.Command,
 		Entrypoint:    body.Entrypoint,
 		HealthCheck:   body.HealthCheck,
+		Ulimits:       ulimits,
 		RegistryID:    body.RegistryID,
 	})
 	if err != nil {

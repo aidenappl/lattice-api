@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/aidenappl/lattice-api/db"
-	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/mailer"
 	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/query"
@@ -17,7 +16,6 @@ import (
 	"github.com/aidenappl/lattice-api/socket"
 	"github.com/aidenappl/lattice-api/structs"
 	"github.com/gorilla/mux"
-	"gopkg.in/yaml.v3"
 )
 
 type DeployHandler struct {
@@ -139,15 +137,6 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		containers = &filtered
 	}
 
-	// Fetch stack-level networks — assigned to every container so Docker DNS works
-	stackNetworks, _ := query.ListNetworksByStack(db.DB, stack.ID)
-	var networkNames []string
-	if stackNetworks != nil {
-		for _, n := range *stackNetworks {
-			networkNames = append(networkNames, n.Name)
-		}
-	}
-
 	// Global env vars as the base layer, the stack's own on top (stack wins).
 	// A deploy that cannot read either fails rather than shipping without them.
 	mergedEnvVars, envErr := loadDeployEnv(stack.EnvVars)
@@ -156,194 +145,15 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Load all registries for auto-matching by image hostname
-	allRegistries, _ := query.ListRegistries(db.DB)
-
-	// Build a compose-derived alias map so containers created before the
-	// network_aliases column was added still get the correct DNS aliases.
-	// Maps container name -> []string of compose service keys.
-	composeAliases := make(map[string][]string)
-	if stack.ComposeYAML != nil && *stack.ComposeYAML != "" {
-		var compose composeFile
-		if yaml.Unmarshal([]byte(*stack.ComposeYAML), &compose) == nil {
-			for svcKey, svc := range compose.Services {
-				cName := svcKey
-				if svc.ContainerName != "" {
-					cName = svc.ContainerName
-				}
-				// If the container name differs from the service key, the service
-				// key needs to be a DNS alias (docker-compose does this automatically).
-				if cName != svcKey {
-					composeAliases[cName] = append(composeAliases[cName], svcKey)
-				}
-			}
-		}
-	}
-
 	// Build container specs with registry auth resolved
+	sb := newSpecBuilder(r.Context(), stack.ID, stack.ComposeYAML, mergedEnvVars, false)
 	containerSpecs := make([]map[string]any, 0, len(*containers))
 	for _, c := range *containers {
-		spec := map[string]any{
-			"id":             c.ID,
-			"name":           c.Name,
-			"image":          c.Image,
-			"tag":            c.Tag,
-			"replicas":       c.Replicas,
-			"restart_policy": c.RestartPolicy,
-		}
-
-		// Assign all stack-level networks to every container so Docker DNS resolves
-		if len(networkNames) > 0 {
-			spec["networks"] = networkNames
-		}
-
-		// Network aliases — merge from DB column and compose-derived map.
-		// This ensures containers get their compose service names as DNS aliases
-		// even if they were imported before the network_aliases column existed.
-		aliases, err := parseNetworkAliases(c.NetworkAliases)
-		if err != nil {
-			responder.SendError(w, http.StatusInternalServerError, "network aliases could not be read", fmt.Errorf("container %s: %w", c.Name, err))
+		spec, specErr := sb.build(c, c.Image, c.Tag)
+		if specErr != nil {
+			responder.SendError(w, http.StatusInternalServerError, specErr.message, specErr.err)
 			return
 		}
-		if composeAlias, ok := composeAliases[c.Name]; ok {
-			for _, a := range composeAlias {
-				found := false
-				for _, existing := range aliases {
-					if existing == a {
-						found = true
-						break
-					}
-				}
-				if !found {
-					aliases = append(aliases, a)
-				}
-			}
-		}
-		if len(aliases) > 0 {
-			spec["network_aliases"] = aliases
-		}
-
-		if c.PortMappings != nil {
-			var pm []any
-			if err := json.Unmarshal([]byte(*c.PortMappings), &pm); err != nil {
-				logger.ErrorCtx(r.Context(), "deploy", "invalid port_mappings JSON", logger.F{"container": c.Name, "error": err})
-			} else {
-				// Resolve environment variable references in port mappings
-				resolved := resolveVarsInValue(pm, mergedEnvVars)
-				spec["port_mappings"] = resolved
-			}
-		}
-		ev, err := parseContainerEnvVars(c.EnvVars)
-		if err != nil {
-			responder.SendError(w, http.StatusInternalServerError, "container env vars could not be read", fmt.Errorf("container %s: %w", c.Name, err))
-			return
-		}
-		if ev != nil {
-			// Preserve compose semantics: only include env keys explicitly defined
-			// for the service, but resolve ${VAR} references from stack-level env.
-			merged := make(map[string]any, len(ev))
-			for k, v := range ev {
-				if s, ok := v.(string); ok {
-					if resolved, ok := resolveEnvRef(s, mergedEnvVars); ok {
-						merged[k] = resolved
-						continue
-					}
-				}
-				merged[k] = v
-			}
-			spec["env_vars"] = merged
-		}
-		if c.Volumes != nil {
-			var vol map[string]any
-			if err := json.Unmarshal([]byte(*c.Volumes), &vol); err != nil {
-				logger.ErrorCtx(r.Context(), "deploy", "invalid volumes JSON", logger.F{"container": c.Name, "error": err})
-			} else {
-				// Resolve environment variable references in volumes
-				resolved := resolveVarsInValue(vol, mergedEnvVars)
-				spec["volumes"] = resolved
-			}
-		}
-		if c.CPULimit != nil {
-			spec["cpu_limit"] = *c.CPULimit
-		}
-		if c.MemoryLimit != nil {
-			spec["memory_limit"] = int64(*c.MemoryLimit) * 1024 * 1024 // convert MB to bytes for Docker
-		}
-		if c.Command != nil {
-			var cmd []string
-			if err := json.Unmarshal([]byte(*c.Command), &cmd); err != nil {
-				logger.ErrorCtx(r.Context(), "deploy", "invalid command JSON", logger.F{"container": c.Name, "error": err})
-			} else {
-				spec["command"] = cmd
-			}
-		}
-		if c.Entrypoint != nil {
-			var ep []string
-			if err := json.Unmarshal([]byte(*c.Entrypoint), &ep); err != nil {
-				logger.ErrorCtx(r.Context(), "deploy", "invalid entrypoint JSON", logger.F{"container": c.Name, "error": err})
-			} else {
-				spec["entrypoint"] = ep
-			}
-		}
-		if c.HealthCheck != nil {
-			var hc map[string]any
-			if err := json.Unmarshal([]byte(*c.HealthCheck), &hc); err != nil {
-				logger.ErrorCtx(r.Context(), "deploy", "invalid health_check JSON", logger.F{"container": c.Name, "error": err})
-			} else {
-				// Resolve env var references in health check against both stack-level
-				// and container-level env vars (container vars take precedence).
-				allEnvVars := make(map[string]any, len(mergedEnvVars))
-				for k, v := range mergedEnvVars {
-					allEnvVars[k] = v
-				}
-				// Merge container-level env vars on top
-				if containerEnvs, ok := spec["env_vars"].(map[string]any); ok {
-					for k, v := range containerEnvs {
-						allEnvVars[k] = v
-					}
-				}
-				resolved := resolveVarsInValue(hc, allEnvVars)
-				spec["health_check"] = resolved
-			}
-		}
-
-		// Resolve registry credentials
-		if c.RegistryID != nil {
-			reg, err := query.GetRegistryByID(db.DB, *c.RegistryID)
-			if err == nil && reg != nil {
-				auth := map[string]string{}
-				if reg.Username != nil {
-					auth["username"] = *reg.Username
-				}
-				if reg.Password != nil {
-					auth["password"] = *reg.Password
-				}
-				if len(auth) > 0 {
-					spec["registry_auth"] = auth
-				}
-			}
-		} else if allRegistries != nil {
-			// Auto-match registry by image hostname
-			for _, reg := range *allRegistries {
-				regHost := strings.TrimPrefix(strings.TrimPrefix(reg.URL, "https://"), "http://")
-				regHost = strings.TrimSuffix(regHost, "/")
-				if strings.HasPrefix(c.Image, regHost+"/") || c.Image == regHost {
-					auth := map[string]string{}
-					if reg.Username != nil {
-						auth["username"] = *reg.Username
-					}
-					if reg.Password != nil {
-						auth["password"] = *reg.Password
-					}
-					if len(auth) > 0 {
-						spec["registry_auth"] = auth
-						logger.InfoCtx(r.Context(), "deploy", "auto-matched registry", logger.F{"registry": reg.Name, "image": c.Image})
-					}
-					break
-				}
-			}
-		}
-
 		containerSpecs = append(containerSpecs, spec)
 	}
 
