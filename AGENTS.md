@@ -1194,6 +1194,13 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
   call with an older tag. Omitting `version` follows whatever the file already resolves to —
   `:latest` when the variable is unset.
 
+  **The compose directory must be mounted read-write** (`- /opt/lattice:/compose`, never `:ro`):
+  the rewrite stages a temp file beside `.env`. It was `:ro` from April to October 2026, so every
+  version pin since the feature shipped failed with `read-only file system`. Now: boot logs a
+  `self-update` warning when `DOCKER_COMPOSE_DIR` isn't writable, an unwritable env file is a
+  **500** naming the mount (`errComposeNotWritable`), request mistakes stay 400, and every failed
+  attempt writes an `update_failed` audit row (not `update`, which Monitor mirrors as `.success`).
+
   The env file is rewritten atomically (temp file + rename); `upsertEnvVar` replaces an existing
   assignment in place and leaves comments, blanks and prefix-sharing keys alone. Requesting a version
   when the compose file does not interpolate the variable is a 400 rather than a silent no-op —

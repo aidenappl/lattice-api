@@ -58,6 +58,7 @@ func initApp() *appContext {
 	routers.APIVersion = Version
 
 	env.ValidateSecurityDefaults()
+	routers.WarnIfComposeDirReadOnly(context.Background())
 	versions.Start()
 
 	db.Init()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -150,6 +151,22 @@ func pinnedTagHint(ref string) string {
 			"edit the image tag in %s and recreate.", ref, composeFilePath())
 }
 
+// serviceTagHint is pinnedTagHint for a service whose tag may come from tagVar.
+// When the compose file interpolates that variable, the tag is a deliberate pin
+// set through this endpoint, so the hint says how to move it rather than telling
+// the operator to hand-edit a file the endpoint already manages.
+func serviceTagHint(ref, tagVar string) string {
+	hint := pinnedTagHint(ref)
+	if hint == "" || strings.Contains(ref, "@") {
+		return hint
+	}
+	if interpolated, err := composeInterpolatesVar(tagVar); err == nil && interpolated {
+		return fmt.Sprintf(" Pinned to %q via %s in %s; pass a version to move it (or to roll back).",
+			ref, tagVar, composeEnvFilePath())
+	}
+	return hint
+}
+
 // safeImageTag bounds what may be written into the compose env file and then
 // interpolated into an image reference.
 var safeImageTag = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -220,6 +237,69 @@ func upsertEnvVar(contents []byte, key, value string) []byte {
 	return []byte(strings.Join(lines, "\n"))
 }
 
+// errComposeNotWritable marks a self-update failure caused by the host, not the
+// request: the compose directory is mounted read-only (or otherwise unwritable),
+// so the version pin cannot be recorded. Handlers report it as a 500.
+var errComposeNotWritable = errors.New("compose directory is not writable")
+
+// composeNotWritableHint is appended to every errComposeNotWritable reply.
+const composeNotWritableHint = ". The compose directory must be mounted read-write into lattice-api " +
+	"(DOCKER_COMPOSE_DIR, e.g. `- /opt/lattice:/compose`, not `:ro`); the env-file rewrite stages a temp file beside .env"
+
+// ComposeDirWritable reports whether dir accepts new files, which is what the
+// env-file rewrite needs (temp file + rename in the same directory).
+func ComposeDirWritable(dir string) error {
+	f, err := os.CreateTemp(dir, ".lattice-writecheck-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	f.Close()
+	return os.Remove(name)
+}
+
+// WarnIfComposeDirReadOnly logs at boot when self-update is configured but the
+// compose directory cannot be written. Version pins and rollbacks through
+// /admin/update/* fail in that state, and before this check nothing said so
+// until someone tried one.
+func WarnIfComposeDirReadOnly(ctx context.Context) {
+	if env.DockerComposeDir == "" {
+		return
+	}
+	if err := ComposeDirWritable(env.DockerComposeDir); err != nil {
+		logger.WarnCtx(ctx, "self-update", "compose directory is not writable; version pins and rollbacks will fail", logger.F{
+			"dir":   env.DockerComposeDir,
+			"error": err.Error(),
+			"fix":   "mount DOCKER_COMPOSE_DIR read-write (drop :ro)",
+		})
+	}
+}
+
+// failUpdate records a failed self-update attempt in the audit log, then replies.
+// The audit log is the durable record of every attempt, failed ones included.
+// The action is "update_failed", not "update": logAudit mirrors every row to
+// Monitor as <resource>.<action>.success, and a failure must not read as one.
+func failUpdate(w http.ResponseWriter, r *http.Request, resource string, status int, msg string, err ...error) {
+	logAudit(r, "update_failed", resource, nil, strPtr(msg))
+	logger.WarnCtx(r.Context(), "self-update", "self-update failed", logger.F{"resource": resource, "status": status, "reason": msg})
+	responder.SendError(w, status, msg, err...)
+}
+
+// versionErrorStatus maps an applyRequestedVersion error to a reply: 500 when the
+// host cannot record the pin, 400 when the request itself was wrong.
+func versionErrorStatus(err error) (int, string) {
+	if errors.Is(err, errComposeNotWritable) {
+		return http.StatusInternalServerError, err.Error() + composeNotWritableHint
+	}
+	return http.StatusBadRequest, err.Error()
+}
+
+// failVersion replies to an applyRequestedVersion error.
+func failVersion(w http.ResponseWriter, r *http.Request, resource string, err error) {
+	status, msg := versionErrorStatus(err)
+	failUpdate(w, r, resource, status, msg, err)
+}
+
 // writeComposeTag records the desired image tag in the compose env file.
 //
 // Written atomically via a temporary file and rename so an interrupted update
@@ -244,7 +324,7 @@ func writeComposeTag(varName, tag string) error {
 
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".env.lattice-*")
 	if err != nil {
-		return fmt.Errorf("failed to stage %s: %w", path, err)
+		return fmt.Errorf("%w: failed to stage %s: %v", errComposeNotWritable, path, err)
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
@@ -260,7 +340,7 @@ func writeComposeTag(varName, tag string) error {
 		return fmt.Errorf("failed to set permissions on %s: %w", path, err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("failed to replace %s: %w", path, err)
+		return fmt.Errorf("%w: failed to replace %s: %v", errComposeNotWritable, path, err)
 	}
 	return nil
 }
@@ -295,17 +375,17 @@ func applyRequestedVersion(r *http.Request, tagVar string) (string, error) {
 
 func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 	if env.DockerComposeDir == "" {
-		responder.SendError(w, http.StatusBadRequest, "self-update not configured: DOCKER_COMPOSE_DIR is not set")
+		failUpdate(w, r, "api", http.StatusBadRequest, "self-update not configured: DOCKER_COMPOSE_DIR is not set")
 		return
 	}
 
 	// Validate service name and compose dir to prevent command injection
 	if !safeServiceName.MatchString(env.APIServiceName) {
-		responder.SendError(w, http.StatusInternalServerError, "invalid API_SERVICE_NAME configuration", fmt.Errorf("API_SERVICE_NAME %q is not a valid service name", env.APIServiceName))
+		failUpdate(w, r, "api", http.StatusInternalServerError, "invalid API_SERVICE_NAME configuration", fmt.Errorf("API_SERVICE_NAME %q is not a valid service name", env.APIServiceName))
 		return
 	}
 	if !filepath.IsAbs(env.DockerComposeDir) {
-		responder.SendError(w, http.StatusInternalServerError, "DOCKER_COMPOSE_DIR must be an absolute path", fmt.Errorf("DOCKER_COMPOSE_DIR %q is not absolute", env.DockerComposeDir))
+		failUpdate(w, r, "api", http.StatusInternalServerError, "DOCKER_COMPOSE_DIR must be an absolute path", fmt.Errorf("DOCKER_COMPOSE_DIR %q is not absolute", env.DockerComposeDir))
 		return
 	}
 
@@ -320,20 +400,20 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 	// older tag.
 	pinnedTo, err := applyRequestedVersion(r, env.APITagEnvVar)
 	if err != nil {
-		responder.SendError(w, http.StatusBadRequest, err.Error())
+		failVersion(w, r, "api", err)
 		return
 	}
 
 	extraEnv, cleanup, err := registryAuthEnv()
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to prepare registry credentials", err)
+		failUpdate(w, r, "api", http.StatusInternalServerError, "failed to prepare registry credentials", err)
 		return
 	}
 	defer cleanup()
 
 	imageRef, err := serviceImageRef(service, extraEnv)
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to resolve service image", err)
+		failUpdate(w, r, "api", http.StatusInternalServerError, "failed to resolve service image", err)
 		return
 	}
 
@@ -345,7 +425,7 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 	pullCmd.Env = append(os.Environ(), extraEnv...)
 	pullOut, err := pullCmd.CombinedOutput()
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to pull API image: %v — %s", err, string(pullOut)), err)
+		failUpdate(w, r, "api", http.StatusInternalServerError, fmt.Sprintf("failed to pull API image: %v — %s", err, string(pullOut)), err)
 		return
 	}
 
@@ -356,6 +436,7 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 	// "pull complete, restarting" either way, so an update that could never
 	// change the version was indistinguishable from one that did — and the
 	// obvious response was to run it again.
+	apiHint := serviceTagHint(imageRef, env.APITagEnvVar)
 	if !force && previousImageID != "" && pulledImageID != "" && previousImageID == pulledImageID {
 		detail := fmt.Sprintf("no-op: already running %s", imageRef)
 		logAudit(r, "update", "api", nil, strPtr(detail))
@@ -365,18 +446,18 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 			"image_id":    pulledImageID,
 			"status":      "already up to date",
 			"recreated":   false,
-			"pinned":      pinnedTagHint(imageRef) != "",
-			"hint":        strings.TrimSpace(pinnedTagHint(imageRef)),
+			"pinned":      apiHint != "",
+			"hint":        strings.TrimSpace(apiHint),
 			"force_param": "append ?force=true to recreate anyway (e.g. after an env change)",
 			"pinned_to":   pinnedTo,
-		}, "API is already running the image this service resolves to — nothing to do."+pinnedTagHint(imageRef))
+		}, "API is already running the image this service resolves to — nothing to do."+apiHint)
 		return
 	}
 
 	// The recreate is delegated to the helper sidecar, so a missing helper means
 	// the recreate silently never runs. Check before claiming success.
 	if !helperContainerRunning() {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf(
+		failUpdate(w, r, "api", http.StatusInternalServerError, fmt.Sprintf(
 			"cannot recreate the API container: helper container %q is not running. "+
 				"The API cannot recreate itself directly, so the new image is pulled but cannot be applied. "+
 				"Start the helper, or recreate manually: cd %s && docker compose up -d --force-recreate %s",
@@ -444,16 +525,16 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 
 func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 	if env.DockerComposeDir == "" {
-		responder.SendError(w, http.StatusBadRequest, "self-update not configured: DOCKER_COMPOSE_DIR is not set")
+		failUpdate(w, r, "web", http.StatusBadRequest, "self-update not configured: DOCKER_COMPOSE_DIR is not set")
 		return
 	}
 
 	if !safeServiceName.MatchString(env.WebServiceName) {
-		responder.SendError(w, http.StatusInternalServerError, "invalid WEB_SERVICE_NAME configuration", fmt.Errorf("WEB_SERVICE_NAME %q is not a valid service name", env.WebServiceName))
+		failUpdate(w, r, "web", http.StatusInternalServerError, "invalid WEB_SERVICE_NAME configuration", fmt.Errorf("WEB_SERVICE_NAME %q is not a valid service name", env.WebServiceName))
 		return
 	}
 	if !filepath.IsAbs(env.DockerComposeDir) {
-		responder.SendError(w, http.StatusInternalServerError, "DOCKER_COMPOSE_DIR must be an absolute path", fmt.Errorf("DOCKER_COMPOSE_DIR %q is not absolute", env.DockerComposeDir))
+		failUpdate(w, r, "web", http.StatusInternalServerError, "DOCKER_COMPOSE_DIR must be an absolute path", fmt.Errorf("DOCKER_COMPOSE_DIR %q is not absolute", env.DockerComposeDir))
 		return
 	}
 
@@ -462,20 +543,20 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 
 	pinnedTo, err := applyRequestedVersion(r, env.WebTagEnvVar)
 	if err != nil {
-		responder.SendError(w, http.StatusBadRequest, err.Error())
+		failVersion(w, r, "web", err)
 		return
 	}
 
 	extraEnv, cleanup, err := registryAuthEnv()
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to prepare registry credentials", err)
+		failUpdate(w, r, "web", http.StatusInternalServerError, "failed to prepare registry credentials", err)
 		return
 	}
 	defer cleanup()
 
 	imageRef, err := serviceImageRef(service, extraEnv)
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to resolve service image", err)
+		failUpdate(w, r, "web", http.StatusInternalServerError, "failed to resolve service image", err)
 		return
 	}
 
@@ -486,12 +567,13 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 	pullCmd.Env = append(os.Environ(), extraEnv...)
 	pullOut, err := pullCmd.CombinedOutput()
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to pull Web image: %v — %s", err, string(pullOut)), err)
+		failUpdate(w, r, "web", http.StatusInternalServerError, fmt.Sprintf("failed to pull Web image: %v — %s", err, string(pullOut)), err)
 		return
 	}
 
 	pulledImageID := localImageID(imageRef, extraEnv)
 
+	webHint := serviceTagHint(imageRef, env.WebTagEnvVar)
 	if !force && previousImageID != "" && pulledImageID != "" && previousImageID == pulledImageID {
 		detail := fmt.Sprintf("no-op: already running %s", imageRef)
 		logAudit(r, "update", "web", nil, strPtr(detail))
@@ -501,10 +583,10 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 			"image_id":  pulledImageID,
 			"status":    "already up to date",
 			"recreated": false,
-			"pinned":    pinnedTagHint(imageRef) != "",
-			"hint":      strings.TrimSpace(pinnedTagHint(imageRef)),
+			"pinned":    webHint != "",
+			"hint":      strings.TrimSpace(webHint),
 			"pinned_to": pinnedTo,
-		}, "Web is already running the image this service resolves to — nothing to do."+pinnedTagHint(imageRef))
+		}, "Web is already running the image this service resolves to — nothing to do."+webHint)
 		return
 	}
 
@@ -514,7 +596,7 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 	upCmd.Env = append(os.Environ(), extraEnv...)
 	upOut, err := upCmd.CombinedOutput()
 	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, fmt.Sprintf("failed to recreate Web container: %v — %s", err, string(upOut)), err)
+		failUpdate(w, r, "web", http.StatusInternalServerError, fmt.Sprintf("failed to recreate Web container: %v — %s", err, string(upOut)), err)
 		return
 	}
 

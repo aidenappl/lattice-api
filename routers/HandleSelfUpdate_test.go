@@ -1,8 +1,14 @@
 package routers
 
 import (
+	"errors"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aidenappl/lattice-api/env"
 )
 
 func TestShortImageID(t *testing.T) {
@@ -233,5 +239,82 @@ services:
 				t.Errorf("imageFromComposeConfig() = %q, %v; want %q, error=%v", got, err, tt.want, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestComposeDirWritable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	rw := t.TempDir()
+	if err := ComposeDirWritable(rw); err != nil {
+		t.Errorf("writable dir reported unwritable: %v", err)
+	}
+	ro := t.TempDir()
+	if err := os.Chmod(ro, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(ro, 0o700) })
+	if err := ComposeDirWritable(ro); err == nil {
+		t.Error("read-only dir reported writable")
+	}
+}
+
+func TestWriteComposeTagReadOnlyDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("LATTICE_API_TAG=v1.0.0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	prev := env.DockerComposeDir
+	env.DockerComposeDir = dir
+	t.Cleanup(func() { env.DockerComposeDir = prev })
+
+	err := writeComposeTag("LATTICE_API_TAG", "v1.2.3")
+	if !errors.Is(err, errComposeNotWritable) {
+		t.Fatalf("writeComposeTag on a read-only dir = %v, want errComposeNotWritable", err)
+	}
+	status, msg := versionErrorStatus(err)
+	if status != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", status)
+	}
+	if !strings.Contains(msg, "read-write") {
+		t.Errorf("message %q does not tell the operator to mount read-write", msg)
+	}
+}
+
+func TestVersionErrorStatusRequestErrors(t *testing.T) {
+	status, _ := versionErrorStatus(errors.New(`invalid version "x y": expected an image tag`))
+	if status != http.StatusBadRequest {
+		t.Errorf("request error status = %d, want 400", status)
+	}
+}
+
+func TestServiceTagHintInterpolatedPin(t *testing.T) {
+	dir := t.TempDir()
+	compose := "services:\n  lattice-api:\n    image: registry.appleby.cloud/lattice-api:${LATTICE_API_TAG:-latest}\n"
+	if err := os.WriteFile(filepath.Join(dir, "docker-compose.yml"), []byte(compose), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := env.DockerComposeDir
+	env.DockerComposeDir = dir
+	t.Cleanup(func() { env.DockerComposeDir = prev })
+
+	ref := "registry.appleby.cloud/lattice-api:v1.4.5"
+	hint := serviceTagHint(ref, "LATTICE_API_TAG")
+	if !strings.Contains(hint, "pass a version") || strings.Contains(hint, "edit the image tag") {
+		t.Errorf("interpolated pin hint = %q, want 'pass a version' guidance", hint)
+	}
+	if got := serviceTagHint(ref, "SOME_OTHER_TAG"); !strings.Contains(got, "edit the image tag") {
+		t.Errorf("hard-pinned hint = %q, want hand-edit guidance", got)
+	}
+	if got := serviceTagHint("registry.appleby.cloud/lattice-api:latest", "LATTICE_API_TAG"); got != "" {
+		t.Errorf("latest hint = %q, want none", got)
 	}
 }

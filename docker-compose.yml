@@ -32,7 +32,8 @@ services:
       DOCKER_COMPOSE_DIR: "/compose"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - .:/compose:ro
+      # Read-write: self-update rewrites .env here to pin/roll back versions.
+      - .:/compose
     depends_on:
       mariadb:
         condition: service_healthy
