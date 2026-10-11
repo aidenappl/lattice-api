@@ -99,6 +99,16 @@ func HandleImportStackExport(w http.ResponseWriter, r *http.Request) {
 		if replicas <= 0 {
 			replicas = 1
 		}
+		command, err := commandFromBody("command", c.Command)
+		if err != nil {
+			responder.SendError(w, http.StatusBadRequest, fmt.Sprintf("container %s: %v", c.Name, err))
+			return
+		}
+		entrypoint, err := commandFromBody("entrypoint", c.Entrypoint)
+		if err != nil {
+			responder.SendError(w, http.StatusBadRequest, fmt.Sprintf("container %s: %v", c.Name, err))
+			return
+		}
 		ulimits, err := ulimitsFromBody(c.Ulimits)
 		if err != nil {
 			responder.SendError(w, http.StatusBadRequest, fmt.Sprintf("container %s: %v", c.Name, err))
@@ -116,8 +126,8 @@ func HandleImportStackExport(w http.ResponseWriter, r *http.Request) {
 			MemoryLimit:   c.MemoryLimit,
 			Replicas:      replicas,
 			RestartPolicy: c.RestartPolicy,
-			Command:       c.Command,
-			Entrypoint:    c.Entrypoint,
+			Command:       command,
+			Entrypoint:    entrypoint,
 			HealthCheck:   c.HealthCheck,
 			Ulimits:       ulimits,
 			RegistryID:    c.RegistryID,

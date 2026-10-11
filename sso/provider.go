@@ -3,7 +3,7 @@ package sso
 import (
 	"strings"
 
-	ssolib "github.com/aidenappl/go-forta/sso"
+	oidcsession "github.com/aidenappl/go-oidc-session"
 )
 
 // ProviderSlug is the single provider identifier this service uses.
@@ -46,8 +46,8 @@ const ProviderSlug = "sso"
 //
 // PKCE applies either way and is enforced by the library, which is what stops a
 // leaked authorization code being redeemable.
-func (c *SSOConfig) Provider() *ssolib.Provider {
-	return &ssolib.Provider{
+func (c *SSOConfig) Provider() *oidcsession.Provider {
+	return &oidcsession.Provider{
 		Slug:        ProviderSlug,
 		DisplayName: c.ButtonLabel,
 		Kind:        c.kind(),
@@ -72,10 +72,9 @@ func (c *SSOConfig) Provider() *ssolib.Provider {
 		// it can only add claims the id_token did not carry.
 		FetchUserInfo: true,
 
-		AuthorizeURL:  c.AuthorizeURL,
-		TokenURL:      c.TokenURL,
-		UserInfoURL:   c.UserInfoURL,
-		IntrospectURL: c.IntrospectURL,
+		AuthorizeURL: c.AuthorizeURL,
+		TokenURL:     c.TokenURL,
+		UserInfoURL:  c.UserInfoURL,
 
 		ClientID:     c.ClientID,
 		ClientSecret: c.ClientSecret,
@@ -129,9 +128,9 @@ func LooksLikeEmail(subject string) bool {
 }
 
 // kind reports which adapter this configuration should use. See Provider.
-func (c *SSOConfig) kind() ssolib.Kind {
+func (c *SSOConfig) kind() oidcsession.Kind {
 	if strings.TrimSpace(c.IssuerURL) != "" {
-		return ssolib.KindOIDC
+		return oidcsession.KindOIDC
 	}
-	return ssolib.KindOAuth2
+	return oidcsession.KindOAuth2
 }

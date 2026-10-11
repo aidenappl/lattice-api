@@ -50,6 +50,10 @@ func HandleSyncCompose(w http.ResponseWriter, r *http.Request) {
 		responder.SendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := validateComposeCommands(compose); err != nil {
+		responder.SendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	existing, err := query.ListContainersByStack(db.DB, stackID)
 	if err != nil {

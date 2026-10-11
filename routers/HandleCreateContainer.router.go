@@ -67,6 +67,16 @@ func HandleCreateContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	command, err := commandFromBody("command", body.Command)
+	if err != nil {
+		responder.SendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	entrypoint, err := commandFromBody("entrypoint", body.Entrypoint)
+	if err != nil {
+		responder.SendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	ulimits, err := ulimitsFromBody(body.Ulimits)
 	if err != nil {
 		responder.SendError(w, http.StatusBadRequest, err.Error())
@@ -85,8 +95,8 @@ func HandleCreateContainer(w http.ResponseWriter, r *http.Request) {
 		MemoryLimit:   body.MemoryLimit,
 		Replicas:      body.Replicas,
 		RestartPolicy: body.RestartPolicy,
-		Command:       body.Command,
-		Entrypoint:    body.Entrypoint,
+		Command:       command,
+		Entrypoint:    entrypoint,
 		HealthCheck:   body.HealthCheck,
 		Ulimits:       ulimits,
 		RegistryID:    body.RegistryID,

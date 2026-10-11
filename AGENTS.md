@@ -251,6 +251,17 @@ This repo follows the global Go standards. Specifics and deviations:
   aliases fail the deploy; other unreadable fields are skipped (error log, or warn on rollback).
   `TestSpecBuilderSameSpecForEveryPath` pins it. Single-container recreates
   (`recreateContainerPayload`) send only image/tag/auth — the runner rebuilds from `docker inspect`.
+- **Command / entrypoint accept a shell string or a JSON array** (`routers/command.go`). Strings
+  are split like a shell by `go-shellwords` (what compose-go uses), so `sh -c "a && b"` keeps
+  `a && b` whole; storage is always a JSON array. An unquoted `&&`, `|`, `;`, `<`, `>` is a **400**:
+  go-shellwords stops there without an error, and Docker runs argv with no shell anyway. Compose files
+  are validated up front (`validateComposeCommands`) and API bodies via `commandFromBody`. Before
+  Oct 2026 bodies only worked as JSON (plain `npm start` was dropped at deploy) and compose strings
+  were split on whitespace, breaking quoted arguments.
+- **`null` clears a number field on container update.** `cpu_limit`, `memory_limit` and
+  `registry_id` decode into `tools.Optional[T]`: absent = unchanged, `null` = set NULL
+  (`ClearCPULimit`/`ClearMemoryLimit`/`ClearRegistryID` on the query request), a value sets it
+  (JSON Merge Patch). Use `Optional` for any other PATCH field that must be clearable.
 - **Cleared container fields are `""`, not NULL.** The deploy builder treats a blank (`jsonBlank`)
   port_mappings/volumes/command/entrypoint/env_vars/ulimits as unset. `PUT /admin/containers/{id}`
   also accepts `depends_on` (the form always sent it; the handler used to drop it).

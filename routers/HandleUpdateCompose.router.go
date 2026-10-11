@@ -86,6 +86,10 @@ func HandleUpdateCompose(w http.ResponseWriter, r *http.Request) {
 		responder.SendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := validateComposeCommands(compose); err != nil {
+		responder.SendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	// Verify stack exists
 	stack, err := query.GetStackByID(db.DB, stackID)

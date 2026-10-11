@@ -49,6 +49,16 @@ func HandleAuthRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SSO users hold a lattice_session instead (see sso.Manager). A refresh
+	// cookie from before that change must not mint a Lattice JWT the auth
+	// middleware would then refuse; 401 sends the browser through a silent SSO
+	// re-authentication instead.
+	if user.AuthType == "sso" {
+		logger.InfoCtx(r.Context(), "auth", "refresh rejected: sso users use the sso session", logger.F{"user_id": user.ID})
+		responder.SendError(w, http.StatusUnauthorized, "sign in with sso")
+		return
+	}
+
 	// Reject refresh tokens issued at or before the revocation timestamp.
 	//
 	// ⚠️ `!After` AND `nil iat` MUST MATCH validateLatticeToken IN

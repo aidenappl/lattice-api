@@ -11,6 +11,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
 	github.com/gorilla/websocket v1.5.3
+	github.com/mattn/go-shellwords v1.0.16
 	github.com/rs/cors v1.11.1
 	golang.org/x/crypto v0.50.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -18,6 +19,7 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
+	github.com/aidenappl/go-oidc-session v0.0.0-00010101000000-000000000000 // indirect
 	github.com/coreos/go-oidc/v3 v3.20.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/lann/builder v0.0.0-20180802200727-47ae307949d0 // indirect
@@ -25,3 +27,5 @@ require (
 	golang.org/x/image v0.44.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 )
+
+replace github.com/aidenappl/go-oidc-session => ../go-oidc-session

@@ -8,31 +8,24 @@ import (
 	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
+	"github.com/aidenappl/lattice-api/sso"
 )
 
 // Swappable in tests.
-var (
-	revokeUserTokens = query.RevokeUserTokens
-	deleteSSOSession = query.DeleteSSOSession
-)
+var revokeUserTokens = query.RevokeUserTokens
 
 func HandleLogout(w http.ResponseWriter, r *http.Request) {
-	// Revoke all tokens for this user so stolen refresh tokens can't be reused.
-	//
-	// The cookies are cleared whatever happens: callers navigate to /login
-	// regardless of the result, so keeping them on a failed revoke would leave
-	// the person signed in (an idle-timeout logout included). A failed revoke
-	// is still reported as a 500, which records it as one error-level event.
+	// An SSO session ends here and, through RP-initiated logout, at the
+	// identity provider too — which back-channels every other application.
+	// The frontend navigates to redirect_url to complete that.
+	redirectURL := ""
+	if c, err := r.Cookie(sso.SessionCookie); err == nil && c.Value != "" {
+		redirectURL = sso.Manager().Logout(w, r)
+	}
+
 	var revokeErr error
 	if user, ok := middleware.GetUserFromContext(r.Context()); ok && user != nil {
-		if err := revokeUserTokens(db.DB, user.ID); err != nil {
-			revokeErr = err
-		} else if user.AuthType == "sso" {
-			// If this is an SSO user, drop the persisted IDP tokens too.
-			if err := deleteSSOSession(db.DB, int64(user.ID)); err != nil {
-				revokeErr = err
-			}
-		}
+		revokeErr = revokeUserTokens(db.DB, user.ID)
 	}
 
 	domain := env.CookieDomain
@@ -64,6 +57,5 @@ func HandleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"success":true,"message":"logged out"}`))
+	responder.New(w, map[string]string{"redirect_url": redirectURL}, "logged out")
 }

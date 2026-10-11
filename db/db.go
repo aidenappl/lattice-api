@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aidenappl/go-oidc-session/sqlstore"
 	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/go-sql-driver/mysql"
@@ -109,33 +110,15 @@ func Init() {
 	// Token revocation: setting this timestamp invalidates all JWTs issued before it
 	migrate(db, "ALTER TABLE users ADD COLUMN tokens_revoked_at DATETIME DEFAULT NULL")
 
-	// ── sso_sessions ──────────────────────────────────────────────────────
+	// ── SSO sessions and login states (go-oidc-session) ───────────────────
 	//
-	// ⚠️ THIS TABLE WAS MISSING, AND ITS ABSENCE SILENTLY DISABLED THE REVOCATION
-	// CHECKPOINT FOR THE ENTIRE LIFE OF THE FEATURE.
-	//
-	// query/sso_sessions.query.go reads and writes it; middleware/auth.go's
-	// checkpoint depends on it. No migration ever created it. So GetSSOSession
-	// failed with MySQL 1146 "table doesn't exist" on every request, and
-	// checkpointSSOGrant caught that as a generic DB error and returned TRUE —
-	// an unbounded fail-open, in a function whose own doc comment promised a
-	// bounded one. Every SSO session was trusted for its full JWT lifetime
-	// regardless of what the identity provider thought, and the only symptom was
-	// a warning line nobody was reading.
-	//
-	// It went unnoticed because AGENTS.md listed sso_sessions among the tables
-	// the schema creates. The documentation asserted it, so nobody checked.
-	//
-	// refresh_token is NULLABLE: a provider that issues no refresh token is
-	// legitimate, and the checkpoint falls back to introspecting the access token.
-	// user_id is the PRIMARY KEY, so a user has at most one SSO session and the
-	// upsert in UpsertSSOSession works as written.
-	migrate(db, "CREATE TABLE IF NOT EXISTS sso_sessions ("+
-		"user_id BIGINT NOT NULL PRIMARY KEY,"+
-		"access_token TEXT NOT NULL,"+
-		"refresh_token TEXT NULL,"+
-		"last_checked_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"+
-		"inserted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+	// oidc_sessions holds one row per signed-in browser, keyed by the SHA-256
+	// of the lattice_session cookie, with the provider's tokens encrypted.
+	// It replaces sso_sessions (one row per user, never refreshed); that table
+	// is left in place, unused, rather than dropped by a migration.
+	for _, stmt := range (&sqlstore.Store{}).Schema() {
+		migrate(db, stmt)
+	}
 
 	// Auto-create global_env_vars table if it doesn't exist
 	migrate(db, "CREATE TABLE IF NOT EXISTS global_env_vars ("+

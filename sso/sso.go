@@ -1,28 +1,14 @@
 package sso
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
-	ssolib "github.com/aidenappl/go-forta/sso"
 	"github.com/aidenappl/lattice-api/crypto"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/env"
-	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
-	"github.com/aidenappl/lattice-api/responder"
 )
-
-// State is stored in the DB via the settings table (so it survives restarts and
-// is single-use) AND bound to the browser via an HttpOnly cookie set at
-// /auth/sso/login, so the callback can prove the request originated from a login
-// this browser started (CSRF defense).
-const SSOStateCookie = "lattice-sso-state"
 
 // SSOConfig holds all SSO configuration values.
 type SSOConfig struct {
@@ -49,7 +35,6 @@ type SSOConfig struct {
 	AuthorizeURL   string
 	TokenURL       string
 	UserInfoURL    string
-	IntrospectURL  string
 	RedirectURL    string
 	LogoutURL      string
 	Scopes         string
@@ -79,7 +64,6 @@ func LoadConfig() *SSOConfig {
 			AuthorizeURL:   env.SSOAuthorizeURL,
 			TokenURL:       env.SSOTokenURL,
 			UserInfoURL:    env.SSOUserInfoURL,
-			IntrospectURL:  env.SSOIntrospectURL,
 			RedirectURL:    env.SSORedirectURL,
 			LogoutURL:      env.SSOLogoutURL,
 			Scopes:         env.SSOScopes,
@@ -97,7 +81,6 @@ func LoadConfig() *SSOConfig {
 		AuthorizeURL:   strings.TrimSpace(settings["sso.authorize_url"]),
 		TokenURL:       strings.TrimSpace(settings["sso.token_url"]),
 		UserInfoURL:    strings.TrimSpace(settings["sso.userinfo_url"]),
-		IntrospectURL:  strings.TrimSpace(or(settings["sso.introspect_url"], env.SSOIntrospectURL)),
 		RedirectURL:    strings.TrimSpace(settings["sso.redirect_url"]),
 		LogoutURL:      strings.TrimSpace(settings["sso.logout_url"]),
 		Scopes:         strings.TrimSpace(or(settings["sso.scopes"], "openid email profile")),
@@ -224,190 +207,3 @@ func Config() map[string]any {
 		}},
 	}
 }
-
-// generateState creates a random state parameter and stores it in the DB for validation.
-// Using the DB (instead of in-memory) ensures states survive API restarts.
-// Returns an error if the OS CSPRNG fails — the caller MUST NOT proceed with a
-// zero/weak state.
-// StateStore implements ssolib.StateStore over the settings table.
-//
-// It replaces the old generateState/ValidateState pair, which stored only an
-// expiry timestamp — there was no nonce and no PKCE verifier to store, because
-// neither existed. The library's record carries both.
-type StateStore struct{}
-
-// NewStateStore returns a StateStore over the package-level DB handle.
-func NewStateStore() *StateStore { return &StateStore{} }
-
-const statePrefix = "sso_state:"
-
-// SaveState persists an in-flight login record and best-effort sweeps dead ones.
-func (s *StateStore) SaveState(ctx context.Context, state string, data []byte, _ time.Time) error {
-	if err := query.SetSetting(db.DB, statePrefix+state, string(data)); err != nil {
-		return fmt.Errorf("sso: persist state: %w", err)
-	}
-	go sweepExpiredStates(context.WithoutCancel(ctx))
-	return nil
-}
-
-// ConsumeState atomically returns and deletes a state record.
-//
-// ─────────────────────────────────────────────────────────────────────────────
-// ⚠️ THIS FIXES A RACE THE OLD ValidateState HAD.
-//
-// The previous implementation did GetSetting, then DeleteSetting, and returned a
-// bool. DeleteSetting reports success whether or not a row was there, so two
-// concurrent callbacks presenting the same state BOTH read it and BOTH proceeded
-// — which is the window an attacker replaying a captured callback URL alongside
-// the real one is aiming at.
-//
-// query.DeleteSettingExisted returns RowsAffected, and MariaDB's row lock
-// guarantees exactly one of N concurrent callers sees true. Winning the DELETE —
-// not having read the row — is what authorises using the record.
-// ─────────────────────────────────────────────────────────────────────────────
-func (s *StateStore) ConsumeState(_ context.Context, state string) ([]byte, error) {
-	key := statePrefix + state
-
-	raw, err := query.GetSetting(db.DB, key)
-	if err != nil || raw == "" {
-		return nil, ssolib.ErrNoState
-	}
-
-	deleted, err := query.DeleteSettingExisted(db.DB, key)
-	if err != nil {
-		return nil, fmt.Errorf("sso: consume state: %w", err)
-	}
-	if !deleted {
-		return nil, ssolib.ErrNoState
-	}
-	return []byte(raw), nil
-}
-
-// sweepExpiredStates prunes expired or unparseable records.
-func sweepExpiredStates(ctx context.Context) {
-	defer logger.Recover("sso.sweep-states")
-	states, err := query.GetSettingsByPrefix(db.DB, statePrefix)
-	if err != nil {
-		logger.WarnCtx(ctx, "sso", "could not sweep expired login states", logger.F{"error": err})
-		return
-	}
-	for k, v := range states {
-		var sd ssolib.StateData
-		if err := json.Unmarshal([]byte(v), &sd); err != nil {
-			// Includes every record written by the OLD format, which stored a bare
-			// RFC3339 timestamp rather than JSON. Those can never be consumed by the
-			// library, so deleting them is strictly better than leaving them.
-			if err := query.DeleteSetting(db.DB, k); err != nil {
-				// One line, not one per record: the next sweep retries them all.
-				logger.WarnCtx(ctx, "sso", "could not delete unreadable login state", logger.F{"error": err})
-				return
-			}
-			continue
-		}
-		if time.Now().After(sd.ExpiresAt) {
-			if err := query.DeleteSetting(db.DB, k); err != nil {
-				logger.WarnCtx(ctx, "sso", "could not delete expired login state", logger.F{"error": err})
-				return
-			}
-		}
-	}
-}
-
-// LoginHandler redirects the user to the provider's authorization URL.
-//
-// It now goes through the library, which means the URL carries a PKCE S256
-// challenge and (for kind=oidc) a nonce — neither of which this service sent
-// before. The verifier and nonce are held SERVER-SIDE in the state record, so the
-// callback validates against values the browser never possessed.
-func LoginHandler(w http.ResponseWriter, r *http.Request) {
-	cfg := LoadConfig()
-	if !cfg.Enabled || cfg.ClientID == "" || cfg.AuthorizeURL == "" {
-		http.Error(w, "SSO not configured", http.StatusNotFound)
-		return
-	}
-
-	provider := cfg.Provider()
-	adapter, err := ssolib.NewAdapter(r.Context(), provider)
-	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "SSO misconfigured", err)
-		return
-	}
-
-	state, nonce, verifier, err := ssolib.GenerateState(r.Context(), NewStateStore(), provider.Slug, "")
-	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to generate login state", err)
-		return
-	}
-
-	authURL, err := adapter.AuthCodeURL(state, nonce, verifier)
-	if err != nil {
-		responder.SendError(w, http.StatusInternalServerError, "failed to build authorize url", err)
-		return
-	}
-
-	// The browser-bound state cookie is KEPT as defence in depth, even though the
-	// state record is now server-side and single-use. It costs nothing and it means
-	// a callback arriving in a different browser than the one that started the login
-	// is rejected before any database work happens. SameSite=Lax so it survives the
-	// top-level GET redirect back from the IdP; Path scoped to /auth/sso so it is
-	// presented on nothing else.
-	http.SetCookie(w, &http.Cookie{
-		Name:     SSOStateCookie,
-		Value:    state,
-		Path:     "/auth/sso",
-		MaxAge:   600,
-		HttpOnly: true,
-		Secure:   env.Environment == "production",
-		SameSite: http.SameSiteLaxMode,
-	})
-
-	http.Redirect(w, r, authURL, http.StatusFound)
-}
-
-// ClearStateCookie writes an expired state cookie to the response, consuming the
-// browser-side binding after a callback (single-use).
-func ClearStateCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     SSOStateCookie,
-		Value:    "",
-		Path:     "/auth/sso",
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   env.Environment == "production",
-		SameSite: http.SameSiteLaxMode,
-	})
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// WHAT USED TO BE HERE, AND WHY IT IS GONE
-//
-// This file previously carried the whole OAuth2 client: ExchangeCode,
-// exchangeWithJSON / exchangeWithBasicAuth / exchangeWithBodyAuth, doTokenRequest,
-// FetchUserInfo, GetUserIdentifier, GetUserName, GetUserPicture, GetUserEmail, and
-// a local Introspect. All of it is now in github.com/aidenappl/go-forta/sso.
-//
-// Three of those were actively harmful and are worth naming so nobody restores
-// them:
-//
-//  1. THE THREE-SHAPE TOKEN EXCHANGE. ExchangeCode tried a JSON body, then HTTP
-//     Basic, then body credentials, in sequence, until one worked. Against an
-//     authorization server that treats codes as single-use — which any conforming
-//     one does, and forta-api now provably does — the FIRST attempt that reaches
-//     the server consumes the code, so the fallbacks can only ever receive
-//     invalid_grant. It was not a compatibility layer; it was a guaranteed wasted
-//     round trip on every login, visible in forta-api's logs as a 400 immediately
-//     followed by a 200.
-//
-//  2. NO PKCE AT ALL. There was no code_challenge and no verifier, so a leaked
-//     authorization code was redeemable by whoever held it.
-//
-//  3. GetUserIdentifier RETURNED AN EMAIL AND IT WAS STORED AS THE SUBJECT. It
-//     read whatever `sso.user_identifier` named — "email" in production — and fell
-//     back to "email" regardless, and the caller wrote that into
-//     users.sso_subject under a comment claiming it was the OIDC `sub`. Identity
-//     keyed on a reassignable address is an account-takeover primitive. The
-//     library returns the real `sub`; see HandleSSOCallback for the one-time heal
-//     of the row this left behind.
-//
-// Do not re-add a local copy of any of it.
-// ─────────────────────────────────────────────────────────────────────────────

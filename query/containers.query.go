@@ -248,6 +248,12 @@ type UpdateContainerRequest struct {
 	NetworkAliases *string
 	StartedAt      *time.Time
 	Active         *bool
+
+	// Clear* write NULL. A nil pointer above means "leave unchanged", so these
+	// are the only way to remove a limit or a registry link once set.
+	ClearCPULimit    bool
+	ClearMemoryLimit bool
+	ClearRegistryID  bool
 }
 
 func UpdateContainer(engine db.Queryable, id int, req UpdateContainerRequest) (*structs.Container, error) {
@@ -285,9 +291,15 @@ func UpdateContainer(engine db.Queryable, id int, req UpdateContainerRequest) (*
 	if req.CPULimit != nil {
 		q = q.Set("cpu_limit", *req.CPULimit)
 		hasUpdate = true
+	} else if req.ClearCPULimit {
+		q = q.Set("cpu_limit", nil)
+		hasUpdate = true
 	}
 	if req.MemoryLimit != nil {
 		q = q.Set("memory_limit", *req.MemoryLimit)
+		hasUpdate = true
+	} else if req.ClearMemoryLimit {
+		q = q.Set("memory_limit", nil)
 		hasUpdate = true
 	}
 	if req.Replicas != nil {
@@ -320,6 +332,9 @@ func UpdateContainer(engine db.Queryable, id int, req UpdateContainerRequest) (*
 	}
 	if req.RegistryID != nil {
 		q = q.Set("registry_id", *req.RegistryID)
+		hasUpdate = true
+	} else if req.ClearRegistryID {
+		q = q.Set("registry_id", nil)
 		hasUpdate = true
 	}
 	if req.DependsOn != nil {

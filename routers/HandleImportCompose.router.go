@@ -104,6 +104,10 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 		responder.SendError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := validateComposeCommands(compose); err != nil {
+		responder.SendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	// Auto-derive stack name from first service if not provided
 	if body.Name == "" {
@@ -359,26 +363,12 @@ func parseComposeEnv(env any) map[string]string {
 	return result
 }
 
+// parseStringOrList reads a compose command/entrypoint (string or list) into
+// argv with compose's shell-style splitting. Callers run validateComposeCommands
+// first, so an error here cannot happen for a file that reached them.
 func parseStringOrList(v any) []string {
-	if v == nil {
-		return nil
-	}
-	switch val := v.(type) {
-	case string:
-		if val == "" {
-			return nil
-		}
-		return strings.Fields(val)
-	case []any:
-		result := make([]string, 0, len(val))
-		for _, item := range val {
-			if s, ok := item.(string); ok {
-				result = append(result, s)
-			}
-		}
-		return result
-	}
-	return nil
+	argv, _ := composeArgv(v)
+	return argv
 }
 
 // normalizeHealthTest converts a healthcheck test value to ["CMD-SHELL", "command"] format.
