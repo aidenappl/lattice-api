@@ -82,7 +82,7 @@ rows in this database.
   the boot path. Used only through `telemetry/` and the logger sinks.
 - **SSO:** `github.com/aidenappl/go-oidc-session` — the shared, provider-agnostic OIDC client
   (BFF pattern, RFC 10017): login with PKCE, server-side SSO sessions whose lifetime is the
-  identity provider's, server-side token refresh, back-channel and RP-initiated logout, and the
+  identity provider's, server-side token refresh, back-channel logout, local sign-out, and the
   MariaDB `sqlstore`. Brings `coreos/go-oidc/v3` and `golang.org/x/oauth2` transitively.
   Pinned at **v0.1.0**; upgrade with `go get github.com/aidenappl/go-oidc-session@vX.Y.Z`.
 
@@ -432,8 +432,10 @@ accepted only on the post-login URL's origin. Callback error codes: `state_expir
 `state_mismatch`, `access_denied`, `provider_unavailable`, `provider_error`, `login_failed`, and the
 resolver's `sso_no_email`, `sso_no_account`, `account_disabled`.
 
-**Logout** (`POST /auth/logout`) returns `data.redirect_url`: the provider's end-session URL
-(RP-initiated logout) when an SSO session was present, `""` otherwise. lattice-web navigates to it.
+**Logout** (`POST /auth/logout`) ends **only Lattice's** session (go-oidc-session ≥ v0.1.2 is
+local by default) and returns `data.redirect_url` — lattice-web's `/login?signed_out=1` when an SSO
+session was present, `""` otherwise. The Forta session and other apps stay signed in; signing out of
+Forta itself (forta-login) is what ends them all, via back-channel logout.
 Register `<frontend>/login?signed_out=1` as a **logout redirect URI** with the provider or it is
 not honoured.
 
