@@ -74,6 +74,10 @@ func Reload() {
 		Insecure:         env.Environment != "production",
 		DefaultReturnURL: frontend,
 		LoginPageURL:     loginPageURL(frontend),
+		// signed_out=1 stops the login page from immediately signing the user
+		// back in silently. Register this exact URL as a logout redirect URI
+		// with the provider, or it will not be honoured.
+		PostLogoutURL: loginPageURL(frontend) + "?signed_out=1",
 		OnLogin: func(_ context.Context, r *http.Request, s *oidcsession.Session, _ oidcsession.Identity) {
 			if OnLogin == nil {
 				return

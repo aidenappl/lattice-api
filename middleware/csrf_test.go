@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/aidenappl/lattice-api/sso"
 )
 
 func dummyHandler() http.Handler {
@@ -91,6 +93,25 @@ func TestCSRFBearerAuthSkips(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("Bearer auth should skip CSRF, got status %d", rr.Code)
+	}
+}
+
+// A bearer header must not exempt a request that also carries a session
+// cookie: a forged cross-site request could add a junk Authorization header
+// and still ride the browser's session.
+func TestCSRFBearerWithSessionCookieIsChecked(t *testing.T) {
+	for _, cookie := range []string{latticeTokenName, sso.SessionCookie} {
+		t.Run(cookie, func(t *testing.T) {
+			handler := CSRFMiddleware(dummyHandler())
+			req := httptest.NewRequest(http.MethodPost, "/admin/stacks", nil)
+			req.Header.Set("Authorization", "Bearer junk")
+			req.AddCookie(&http.Cookie{Name: cookie, Value: "session"})
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("bearer + %s cookie without a CSRF token got %d, want 403", cookie, rr.Code)
+			}
+		})
 	}
 }
 

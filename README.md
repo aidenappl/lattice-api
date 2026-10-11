@@ -29,7 +29,7 @@ Lattice is self-hosting: Forta (SSO), Keyring, Monitor and the rest all run as s
 - **`gorilla/websocket`** — worker hub and admin hub
 - **`squirrel`** (`sq`) — SQL query builder, no ORM
 - **`golang-jwt/jwt/v5`** — local JWT auth (HS512)
-- **Generic OAuth2 / OIDC SSO** — via [`go-forta/sso`](https://github.com/aidenappl/go-forta/tree/main/sso), the shared relying-party implementation (PKCE S256, single-use server-side state, bounded revocation checkpoint). Works with any OIDC provider; Lattice keeps its own users and its own JWTs.
+- **Provider-agnostic SSO** — via [`go-oidc-session`](https://github.com/aidenappl/go-oidc-session): PKCE S256, single-use server-side state, and a server-side SSO session whose lifetime is the identity provider's (tokens refreshed when due; the session ends when the provider refuses or back-channels a logout). lattice-web re-authenticates silently with `prompt=none`. Lattice keeps its own users; local password accounts keep their JWTs.
 - **`rs/cors`** for CORS, `golang.org/x/crypto` (bcrypt) for passwords, AES-256-GCM for secrets at rest
 
 ## Getting started
@@ -87,7 +87,7 @@ container_cache.go   # 60s name→container cache (kills the per-message N+1 loo
 env/  db/  logger/    # Env vars; MariaDB pool + Queryable + in-code migrations; structured logging
 telemetry/           # Monitor wiring — slog handler (Monitor fan-out, warn limiter), panic tee, boot-failure reporting (never a boot requirement)
 middleware/          # DualAuth, RejectPending, RequireAdmin/Editor, WorkerTokenAuth, CSRF, rate limit
-jwt/  crypto/  sso/    # Local JWTs (HS512); AES-256-GCM secrets; OAuth2/OIDC client + introspection
+jwt/  crypto/  sso/    # Local JWTs (HS512); AES-256-GCM secrets; SSO config + go-oidc-session Manager
 routers/             # ~80 Handle<Verb><Entity>.router.go handlers (+ deployment monitor, audit helper)
 query/               # 27 squirrel query files, all taking db.Queryable first
 structs/             # 20 domain types with json tags + pointer nullables

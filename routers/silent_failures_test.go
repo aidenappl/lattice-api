@@ -21,26 +21,23 @@ func logoutRequest(user *structs.User) *http.Request {
 }
 
 func TestLogoutAlwaysClearsCookiesAndReportsRevocationFailure(t *testing.T) {
-	origRevoke, origDelete := revokeUserTokens, deleteSSOSession
-	t.Cleanup(func() { revokeUserTokens, deleteSSOSession = origRevoke, origDelete })
+	origRevoke := revokeUserTokens
+	t.Cleanup(func() { revokeUserTokens = origRevoke })
 
 	dbDown := errors.New("dial tcp 10.0.0.5:3306: connect: connection refused")
 	tests := []struct {
 		name      string
 		authType  string
 		revokeErr error
-		deleteErr error
 		status    int
 	}{
-		{"local user, revoke ok", "local", nil, nil, http.StatusOK},
-		{"local user, revoke fails", "local", dbDown, nil, http.StatusInternalServerError},
-		{"sso user, both ok", "sso", nil, nil, http.StatusOK},
-		{"sso user, sso session delete fails", "sso", nil, dbDown, http.StatusInternalServerError},
+		{"local user, revoke ok", "local", nil, http.StatusOK},
+		{"local user, revoke fails", "local", dbDown, http.StatusInternalServerError},
+		{"sso user without a session cookie, revoke ok", "sso", nil, http.StatusOK},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			revokeUserTokens = func(db.Queryable, int) error { return tt.revokeErr }
-			deleteSSOSession = func(db.Queryable, int64) error { return tt.deleteErr }
 
 			rw := httptest.NewRecorder()
 			HandleLogout(rw, logoutRequest(&structs.User{ID: 7, AuthType: tt.authType}))

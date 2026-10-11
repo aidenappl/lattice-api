@@ -32,14 +32,12 @@ rows in this database.
 - The **data model** — `workers`, `stacks`, `containers`, `deployments`, `deployment_containers`,
   `registries`, `database_instances`, `database_instance_events`, `database_snapshots`, `backup_destinations`, `networks`,
   `volumes`, `global_env_vars`, `templates`, `webhook_configs`, `deploy_tokens`, `api_tokens`,
-  `worker_tokens`, `users`, `sso_sessions`, `audit_log`, `settings`, `automations`,
+  `worker_tokens`, `users`, `oidc_sessions`, `oidc_login_states`, `audit_log`, `settings`, `automations`,
   `automation_runs` (both from `db/migrations/017_automations.sql`), and the log/metric tables.
 
-  ⚠️ **`sso_sessions` was listed here for a long time before any migration created it.** That
-  line is why nobody checked: the docs asserted the table existed, `query/sso_sessions.query.go`
-  read it, and every read failed with *table doesn't exist* — which the checkpoint swallowed as a
-  generic DB error and allowed. The table is now genuinely created in `db.migrate()`. When you
-  add a table to this list, add the `migrate()` call in the same change.
+  ⚠️ **When you add a table to this list, add the `migrate()` call in the same change.**
+  `sso_sessions` was once listed here before any migration created it, and every read of it
+  failed silently. It is now unused (replaced by `oidc_sessions`) and left in place, not dropped.
 - **Command dispatch** — translating REST calls (deploy, restart, rollback, exec, DB actions)
   into `Envelope` messages pushed to the right worker over its WebSocket.
 - **Deployment orchestration bookkeeping** — creating deployment records, resolving env
@@ -82,21 +80,16 @@ rows in this database.
 - **Telemetry:** `github.com/aidenappl/go-monitor` (pseudo-version of commit `17017e5` until it
   is tagged) — Monitor events, redaction, and the durable on-disk spool that keeps Monitor off
   the boot path. Used only through `telemetry/` and the logger sinks.
-- **SSO:** `github.com/aidenappl/go-forta/sso` **v1.11.0** (module `go-forta`) — the shared
-  relying-party SSO implementation. Brings `coreos/go-oidc/v3` and `golang.org/x/oauth2` transitively.
+- **SSO:** `github.com/aidenappl/go-oidc-session` — the shared, provider-agnostic OIDC client
+  (BFF pattern, RFC 10017): login with PKCE, server-side SSO sessions whose lifetime is the
+  identity provider's, server-side token refresh, back-channel and RP-initiated logout, and the
+  MariaDB `sqlstore`. Brings `coreos/go-oidc/v3` and `golang.org/x/oauth2` transitively.
+  Pinned at **v0.1.0**; upgrade with `go get github.com/aidenappl/go-oidc-session@vX.Y.Z`.
 
-**Internal SDKs:** `go-monitor` (telemetry, above) and `go-forta/sso` — and ⚠️ importing
-`go-forta/sso` is **NOT the same as importing `go-forta`
-itself.** The root `forta` package validates Forta's own tokens for a service that has delegated
-identity to Forta; this repo has its own users and its own JWTs, and imports only the `sso`
-subpackage, which runs a login flow against *any* OIDC provider. Forta OAuth-as-identity was
-removed and has not returned.
-
-The `sso/` package used to be a self-contained OAuth2 client. It was replaced because it had
-drifted: no PKCE at all, a three-attempt token exchange that could not work against single-use
-codes, and an identity keyed on email. See *Domain & architecture*. Keyring is used
-only at **CI** time via the `aidenappl/keyring-actions` GitHub Action to inject registry
-credentials for the image build; the running binary reads plain env vars.
+**Internal SDKs:** `go-monitor` (telemetry, above) and `go-oidc-session` (SSO). Lattice keeps its
+own users; Forta is just one OIDC provider it can be pointed at. Keyring is used only at **CI**
+time via the `aidenappl/keyring-actions` GitHub Action to inject registry credentials for the
+image build; the running binary reads plain env vars.
 
 There is **no third-party logging, metrics, or DI framework** — `logger/` is hand-rolled
 structured logging (teed into Monitor by `telemetry/`), and dependencies are wired manually in
@@ -122,11 +115,11 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `db/db.go` | MariaDB pool (IIFE-free lazy `Init()`), `Queryable` interface, `DEFAULT_LIMIT`/`MAX_LIMIT`, `BeginTx`, and **all schema migrations run in-code** via the idempotent `migrate()` helper. |
 | `logger/logger.go` | Structured leveled logger (text/ANSI or JSON). `logger.F` = `map[string]any`. `Request()` picks level by HTTP status. `Debug/Info/Warn/Error` (and the `…Ctx(ctx, …)` variants, which carry the context's request/trace/user/job ids) build a `log/slog` record with the caller's PC and hand it to the slog default handler; `StdoutHandler` prints the historical stdout format gated by `LOG_LEVEL`, and telemetry installs `componentHandler`, which writes each record unchanged to `StdoutHandler` and hands Monitor (`monitor.NewSlogHandler(nil, …)`) a copy, so Monitor events name the true call site. `SetPanicSink` tees every reported panic out of the process; `Request` lines are stdout only — the middleware reports requests itself. `Recover(name, fields)`, deferred directly, is the panic guard for every goroutine; `Panic`/`PanicContext` report a value already recovered. |
 | `telemetry/telemetry.go` | Monitor wiring: `Init(version)` (never fails or blocks — Monitor is a Lattice stack), `InstallSinks(version)` (logger → `<component>.log.<level>` and `panic.recovered` events); `handler.go` is the `componentHandler` fan-out and the warn limiter, `Shutdown`, `Fatal`/`ReportFatal` for boot failures, `CrashGuard` (deferred first in `main`). See *Operations → Monitor telemetry*. |
-| `middleware/` | `middleware.go` (RequestID, Logging + the per-request `http.request.end` Monitor event, Recover, `SetUser`, MuxHeader, SecurityHeaders, MaxBodySize, `statusResponseWriter` with Hijack/Unwrap/`RecordFailure`), `auth.go` (DualAuth, RejectPending, RequireAdmin, RequireEditor, WorkerTokenAuth, SSO checkpoint), `csrf.go` (double-submit), `ratelimit.go` (per-IP token bucket). |
+| `middleware/` | `middleware.go` (RequestID, Logging + the per-request `http.request.end` Monitor event, Recover, `SetUser`, MuxHeader, SecurityHeaders, MaxBodySize, `statusResponseWriter` with Hijack/Unwrap/`RecordFailure`), `auth.go` (DualAuth — including the SSO session via `sso.Manager().Authenticate` — RejectPending, RequireAdmin, RequireEditor, WorkerTokenAuth), `csrf.go` (double-submit), `ratelimit.go` (per-IP token bucket). |
 | `jwt/jwt.go` | HS512 local tokens. 15-min access / 7-day refresh. `Claims{UserID, Type}`. Validation pins the alg to HS512 (`WithValidMethods`), requires an expiry (`WithExpirationRequired`) and the issuer, and rejects a token with no `iat` (so it can't bypass `tokens_revoked_at`). Revocation compare is `!IssuedAt.After(revokedAt)` (a token minted in the same second as revocation is rejected). |
 | `crypto/crypto.go` | AES-256-GCM encrypt/decrypt for secrets at rest. Passthrough (no-op) when `ENCRYPTION_KEY` unset **only in non-production** — `Init()` **panics at boot** if the key is empty and `ENVIRONMENT=production`. `Decrypt` returns a real error on bad base64 / short input / auth failure (no silent plaintext fallthrough); callers propagate it. |
 | `migrate/encrypt.go` | One-off `migrate-encrypt` subcommand logic: encrypts existing plaintext secret values in-place (idempotent, transactional) so the DB can be moved from passthrough to an active `ENCRYPTION_KEY`. Target list must track every encrypted column/setting. |
-| `sso/` | `sso.go` (generic OAuth2/OIDC client, DB-backed config, state handling), `introspect.go` (RFC 7662 introspection used by the auth checkpoint). |
+| `sso/` | `sso.go` (DB-backed `sso.*` config + the public `/auth/sso/config` payload), `provider.go` (config → `oidcsession.Provider`), `session.go` (the `go-oidc-session` `Manager`, rebuilt by `Reload()` when SSO settings are saved; the user resolver; the token `Sealer` over `crypto`). |
 | `responder/` | `responder.go` (success envelope: `New`/`NewCreated`/`NewWithCount`), `errors.go` (`SendError`/`SendErrorWithCode`), `templates.responder.go` (`BadBody`/`MissingBodyFields`/`QueryError`/`NotFound`). |
 | `routers/` | ~80 handler files, `Handle<Verb><Entity>.router.go`. Most are plain funcs; six use struct receivers that hold hub refs (see *Handler types*). Also `deployment_monitor.go` (watchdog), `backfill_networks.go` (startup migration), `audit.go` (`logAudit` helper). |
 | `query/` | 27 query files, `{entity}.query.go`. squirrel builders; every function takes `db.Queryable` first. `errors.go` holds shared query errors. |
@@ -375,12 +368,9 @@ re-login once after the switch.
 
 ### Back-channel logout (`POST /auth/sso/backchannel-logout`)
 
-⚠️ **Deleting the `sso_sessions` row is NOT enough**, for the same reason `RevokeLocalTokens`
-exists: Lattice issues its own access and refresh JWTs, validated locally with no lookup against
-`sso_sessions`, so they outlive the row. `DeleteSessionsBySID`/`BySubject` therefore read the
-affected user ids **before** deleting and stamp `tokens_revoked_at` for each. go-forta's handler
-does not do this and has no way to know it is needed; omitting it reintroduces the exact bug the
-checkpoint path already had, through a new door.
+Handled by `sso.Manager().BackchannelHandler`: it verifies the logout token against the
+provider's JWKS and deletes the `oidc_sessions` rows by `sid` (else `sub`). SSO users hold no
+Lattice JWTs, so deleting the row ends their access at their next request.
 
 ⚠️ **It is exempt from `CSRFMiddleware` and must stay exempt**, and must never move behind
 `DualAuthMiddleware`. The notification is a server-to-server POST with no cookie and no auth
@@ -390,15 +380,18 @@ stays at poll speed. monitor-core shipped that on 2026-08-08 with a *passing* ro
 because the router was never what rejected it.
 
 ⚠️ **It requires `sso.issuer_url`.** Verification needs the provider's JWKS, which only the OIDC
-adapter discovers; with an OAuth2 provider go-forta answers **501** rather than acting on a token
-it cannot verify.
+adapter discovers; with an OAuth2 provider the handler answers **501** rather than acting on a
+token it cannot verify.
 
 `DualAuthMiddleware` (`middleware/auth.go`) authenticates a request by trying, in order:
 
 1. **Local JWT** from `Authorization: Bearer` — HS512, validated by `jwt.ValidateToken`,
-   `Type == "access"`, user active, and issued **after** `users.tokens_revoked_at` if set.
-2. **Local JWT** from the `lattice-access-token` cookie — same validation.
-3. **Long-lived API token** from `Authorization: Bearer` — SHA-256 hashed, looked up in
+   `Type == "access"`, user active, `auth_type != "sso"`, and issued **after**
+   `users.tokens_revoked_at` if set.
+2. **SSO session** from the `lattice_session` cookie — `sso.Manager().Authenticate`, which
+   refreshes the provider's tokens when due (see below). The user must be active.
+3. **Local JWT** from the `lattice-access-token` cookie — same validation as 1.
+4. **Long-lived API token** from `Authorization: Bearer` — SHA-256 hashed, looked up in
    `api_tokens`, must be active and belong to an active user. `last_used_at` is touched.
    **Scopes are enforced:** a token's `scopes` column is a comma-separated list of `read` /
    `write` / `admin`. A `read`-only (or nil-of-write) token is limited to safe methods
@@ -409,51 +402,40 @@ it cannot verify.
    scopes field (`middleware.NormalizeApiTokenScopes`) and rejects unknown values with a `400`.
    Enforcement lives in `DualAuthMiddleware` (`apiTokenScopeAllows`).
 
-SSO users are **not** a separate auth path at request time: the SSO callback issues them a
-Lattice JWT, so they authenticate exactly like local users. The one extra step is
-`checkpointSSOGrant` — for users with `auth_type == "sso"`, the middleware re-introspects the
-stored refresh token against the IdP at most every **5 minutes** (`ssoCheckpointTTL`). The policy
-itself lives in `go-forta/sso`'s `Checkpointer`; this repo supplies the stores and maps the result
-onto the middleware's bool.
+### SSO sessions — lifetime is the identity provider's
 
-**Correlation (go-forta v1.11.0).** `checkpointSSOGrant` passes the **request ctx** into
-`Checkpointer.Check` (never `context.Background()`), and the Checkpointer's `Correlation` hook
-(`ssoCorrelation`) returns go-monitor's `RequestID`/`TraceID`, so every introspection call carries
-`X-Request-ID` / `X-Trace-ID` / `traceparent` to forta-api (or whichever IdP) — one `request_id`
-across lattice-api's `http.request.end` and the IdP's logs. Concurrent checks for one user share
-one introspection, carrying the first request's ids. The library's log lines go through `LogfCtx`
-→ `logger.WarnCtx(ctx, "sso", "sso checkpoint warning", {detail})`, and `OnResult`
-(`logCheckpointResult`) logs `sso checkpoint degraded` at **warn** for a grace-window pass (OK with
-a cause) or `unavailable`, with `result`/`grace`/`cause` fields, and debug otherwise. Never a token.
-lattice-api does not use go-forta's root `forta` package, so `Config.Correlation` /
-`OnAuthFailure` do not apply here.
+The SSO callback (`sso.Manager().CallbackHandler`) creates an `oidc_sessions` row — keyed by the
+SHA-256 of the opaque `lattice_session` cookie, holding the provider's access/refresh/id tokens
+encrypted with `crypto` — and sets that cookie (HttpOnly, host-only, `SameSite=Lax`). SSO users
+get **no Lattice JWTs**: `validateLatticeToken` refuses any for `auth_type = "sso"`, and
+`/auth/refresh` answers 401 for them, so a pre-migration session re-authenticates once (silently)
+and lands on this model.
 
-⚠️ **This had NEVER RUN before 2026-07-30, and the reason is worth remembering.** The logic below
-was correct in outline, but it opened with `if err != nil { return true }` on the session lookup,
-and `sso_sessions` was never created by any migration — so every request took that branch. The
-bounded fail-open was unreachable; the effective behaviour was **unbounded** fail-open, and the
-only symptom was a warning line. A second, independent reason it could not have worked:
-`introspect_url` was read by `LoadConfig` but no handler ever wrote it, so there was no endpoint
-to call. Both are fixed; `introspect_url` is now settable through `PUT /admin/sso-config`.
+| Event | Result |
+|---|---|
+| provider access token within 1 min of expiry | refreshed server-side on the next request (single-flight per session; the row is re-read first so a rotated refresh token is never presented twice) |
+| refresh succeeds | session continues — a successful refresh *is* the liveness check |
+| provider answers `invalid_grant` | session deleted → 401; lattice-web re-authenticates silently |
+| provider unreachable | serve until access-token expiry + 10 min, then **503** (never 401 — a 401 would send the browser to the provider that is down) |
+| back-channel logout | matching sessions deleted at once |
+| 30 days (`MaxLifetime`) | session deleted |
 
-If the IdP reports `active: false`, the checkpoint **stamps `users.tokens_revoked_at = NOW()`**
-(via `RevokeUserTokens`, wired as the library's `LocalTokenRevoker`) — this is what actually locks
-the user out: `validateLatticeToken` then rejects every existing access/refresh JWT issued before
-that moment. The `sso_sessions` row is also deleted and the request 401s. Revoking tokens is
-essential — deleting the session alone would drop the *next* request into the `sess == nil`
-allow-path, keeping a revoked user authenticated for the full JWT window.
+There is **no introspection checkpoint** and no separate Lattice clock for SSO users; revocation
+lands within one provider access-token lifetime (10 min for Forta), or immediately by back-channel
+logout. Correlation: `Authenticate` gets the request ctx, so the refresh call carries this
+request's `X-Request-ID` / trace ids to the provider.
 
-"No answer" (network error, 5xx, decrypt failure) **fails open** only within a bounded grace
-window (`ssoCheckpointGrace`, 30 min) measured from the last positive confirmation
-(`last_checked_at`, never from now — measuring from now would restart the window on every failed
-attempt and grant permanent access to a permanently unreachable IdP). Past that window the result
-is `CheckpointUnavailable`.
+**Silent re-authentication:** `GET /auth/sso/login?prompt=none&return_to=<url>` — lattice-web's
+`/login` does this automatically. A user still signed in at the provider comes straight back with
+a new session; otherwise the callback redirects to `/login?error=login_required`. `return_to` is
+accepted only on the post-login URL's origin. Callback error codes: `state_expired`,
+`state_mismatch`, `access_denied`, `provider_unavailable`, `provider_error`, `login_failed`, and the
+resolver's `sso_no_email`, `sso_no_account`, `account_disabled`.
 
-⚠️ **`CheckpointUnavailable` should be HTTP 503, not 401, and this middleware cannot express
-it.** The hook returns a bool, so it denies — which is the right choice of the two available,
-since allowing would restore the unbounded fail-open. But a 401 tells clients to discard
-credentials and re-authenticate against the IdP that is already down. Widening the hook to carry
-a status is the fix.
+**Logout** (`POST /auth/logout`) returns `data.redirect_url`: the provider's end-session URL
+(RP-initiated logout) when an SSO session was present, `""` otherwise. lattice-web navigates to it.
+Register `<frontend>/login?signed_out=1` as a **logout redirect URI** with the provider or it is
+not honoured.
 
 **RBAC roles:** `admin` > `editor` > `viewer`, plus `pending`.
 - `RejectPending` blocks `pending` users from all `/admin` routes (they can still hit
@@ -469,23 +451,16 @@ it, and looks it up in `worker_tokens` to resolve a `worker_id`.
 
 **CSRF:** double-submit cookie (`lattice-csrf` / `X-CSRF-Token`), constant-time compare. Exempt:
 safe methods, an `Authorization: Bearer` request **that carries no session cookie** (API-token/JWT
-header clients don't need it; but a Bearer header no longer waives CSRF for a request that also
-sends the `lattice-access-token` cookie — a cookie-authed browser request still gets checked),
+header clients don't need it; but a Bearer header does not waive CSRF for a request that also
+sends `lattice-access-token` or `lattice_session` — a cookie-authed browser request still gets
+checked; pinned by `TestCSRFBearerWithSessionCookieIsChecked`),
 `/auth/login`, `/auth/refresh`, `/ws/worker`, `/api/deploy/*`, `/api/automations/*`,
 `/auth/sso/callback`, `/auth/sso/backchannel-logout`.
 
 **SSO login CSRF:** the `state` parameter is bound to the browser and is single-use.
-`/auth/sso/login` sets an HttpOnly, `SameSite=Lax`, `Path=/auth/sso` cookie (`lattice-sso-state`)
-holding the same random `state` it sends to the IDP and stores in the DB (10-min expiry). The
-callback requires **both** that the returned `state` constant-time-matches the cookie (an attacker
-forging a callback can't set this browser's cookie → CSRF blocked) **and** that `ValidateState`
-finds it in the DB, which **consumes** it (single-use). The state cookie is cleared on every
-callback. A benign double-callback (provider redirect chains) is tolerated only when the browser
-already holds a `lattice-access-token` session, in which case it is redirected to the dashboard.
-**Follow-up (not yet implemented):** PKCE (S256 `code_challenge`/`code_verifier`) and OIDC `nonce`
-validation — deferred because correctness depends on the IDP's support and the token-exchange has
-three fallback request shapes (JSON / basic-auth / body-auth) plus a Forta-envelope response, so
-it must be validated against the live IDP before shipping.
+`/auth/sso/login` sets an HttpOnly, `SameSite=Lax` cookie (`lattice_session_login`) holding the
+`state` it sends to the provider and stores in `oidc_login_states` (10-min expiry). The callback
+requires both the matching cookie and a successful single-use consume of the stored state.
 
 **Rate limiting:** per-IP token bucket. Auth, deploy-token and automation-webhook
 (`/api/automations/*`) endpoints 1 rps burst 5; general `/admin`
@@ -1037,8 +1012,9 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 |--------|------|---------|
 | POST | `/auth/login` | `HandleLocalLogin` (sets JWT cookies) |
 | POST | `/auth/refresh` | `HandleAuthRefresh` |
-| GET | `/auth/sso/login` | `sso.LoginHandler` (302 to IDP) |
-| GET | `/auth/sso/callback` | `HandleSSOCallback` (exchanges code, provisions user, issues JWT) |
+| GET | `/auth/sso/login` | `sso.Manager().LoginHandler` (302 to IDP; `?prompt=none&return_to=`) |
+| GET | `/auth/sso/callback` | `sso.Manager().CallbackHandler` (exchanges code, resolves/provisions user, creates the SSO session) |
+| POST | `/auth/sso/backchannel-logout` | `sso.Manager().BackchannelHandler` (public; CSRF-exempt) |
 | GET | `/auth/sso/config` | inline — public SSO config for the login page |
 | GET | `/auth/self` | `HandleAuthSelf` (protected) |
 | PUT | `/auth/self` | `HandleUpdateSelf` (protected) |
@@ -1282,8 +1258,11 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
     missing/unreachable. Check the container's first log lines. With telemetry configured these
     also arrive in Monitor as `service.crashed` (with the panic) — except a missing required env
     var, which panics during package init, before `main` and before telemetry exists.
-  - *All `/admin` calls 401* — expired/revoked JWT, or an SSO user whose IDP grant was revoked
-    (the 5-min checkpoint killed the session).
+  - *All `/admin` calls 401* — expired/revoked JWT, or an SSO user whose provider session ended
+    (the provider refused the refresh, or a back-channel logout arrived). lattice-web's `/login`
+    re-authenticates silently if the provider session is still alive.
+  - *All `/admin` calls 503 "identity provider unavailable"* — the provider's token endpoint is
+    unreachable and an SSO session's access token is >10 min past expiry. Check forta-api.
   - *Deploy returns 400 "worker is not connected"* — the runner's WebSocket dropped; check
     worker status / `lattice_get_anomalies`.
   - *Deploy stuck in `deploying`* — the watchdog force-fails after 30 min; a stale
