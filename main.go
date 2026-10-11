@@ -22,7 +22,6 @@ var installRunnerScript []byte
 var Version = "dev"
 
 func main() {
-	sso.OnLogin = routers.AuditSSOLogin
 	defer telemetry.CrashGuard()
 
 	// One-off subcommands run instead of the server and exit.
@@ -98,18 +97,14 @@ func main() {
 	// Auth (unprotected)
 	r.HandleFunc("/auth/login", routers.HandleLocalLogin).Methods(http.MethodPost)
 	r.HandleFunc("/auth/refresh", routers.HandleAuthRefresh).Methods(http.MethodPost)
-	// SSO (go-oidc-session). Browser navigations: login accepts
-	// ?prompt=none&return_to= for silent re-authentication.
-	r.HandleFunc("/auth/sso/login", func(w http.ResponseWriter, r *http.Request) { sso.Manager().LoginHandler(w, r) }).Methods(http.MethodGet)
-	r.HandleFunc("/auth/sso/callback", func(w http.ResponseWriter, r *http.Request) { sso.Manager().CallbackHandler(w, r) }).Methods(http.MethodGet)
+	r.HandleFunc("/auth/sso/login", sso.LoginHandler).Methods(http.MethodGet)
+	r.HandleFunc("/auth/sso/callback", routers.HandleSSOCallback).Methods(http.MethodGet)
 
 	// OIDC Back-Channel Logout 1.0 §2.5 — a form POST from the identity provider,
 	// not a browser. Public by necessity: the caller holds no Lattice session and
 	// its only authentication is the signature on the logout token. Exempt from
 	// CSRF (see middleware/csrf.go); never move it behind DualAuthMiddleware.
-	r.HandleFunc("/auth/sso/backchannel-logout", func(w http.ResponseWriter, r *http.Request) {
-		sso.Manager().BackchannelHandler(sso.ProviderSlug).ServeHTTP(w, r)
-	}).Methods(http.MethodPost)
+	r.HandleFunc("/auth/sso/backchannel-logout", routers.HandleBackchannelLogout).Methods(http.MethodPost)
 	r.HandleFunc("/auth/sso/config", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(sso.Config())

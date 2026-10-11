@@ -11,7 +11,6 @@ import (
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/query"
-	"github.com/aidenappl/lattice-api/structs"
 )
 
 // logAudit records an audit log entry asynchronously. It extracts the user
@@ -62,11 +61,6 @@ func logAudit(r *http.Request, action, resourceType string, resourceID *int, det
 		}
 		logger.ErrorCtx(ctx, "audit", "audit log write failed after 3 attempts", failed)
 	}()
-}
-
-// AuditSSOLogin records an SSO sign-in. Wired as sso.OnLogin in main.
-func AuditSSOLogin(r *http.Request, user *structs.User) {
-	logAudit(r, "sso_login", "user", intPtr(user.ID), strPtr(user.Email))
 }
 
 func intPtr(i int) *int       { return &i }

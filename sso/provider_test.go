@@ -3,7 +3,7 @@ package sso
 import (
 	"testing"
 
-	oidcsession "github.com/aidenappl/go-oidc-session"
+	ssolib "github.com/aidenappl/go-forta/sso"
 )
 
 // TestProviderKindFollowsIssuer pins the security-relevant half of the OAuth2 →
@@ -21,18 +21,18 @@ import (
 func TestProviderKindFollowsIssuer(t *testing.T) {
 	t.Run("issuer_set_upgrades_to_oidc", func(t *testing.T) {
 		c := &SSOConfig{IssuerURL: "https://auth.appleby.cloud"}
-		if got := c.Provider().Kind; got != oidcsession.KindOIDC {
+		if got := c.Provider().Kind; got != ssolib.KindOIDC {
 			t.Fatalf("Kind = %v with an issuer configured, want %v. Without the OIDC adapter "+
 				"identity comes from an unsigned UserInfo response and no `sid` is available "+
-				"for back-channel logout.", got, oidcsession.KindOIDC)
+				"for back-channel logout.", got, ssolib.KindOIDC)
 		}
 	})
 
 	t.Run("no_issuer_stays_oauth2", func(t *testing.T) {
 		c := &SSOConfig{AuthorizeURL: "https://auth.example/authorize"}
-		if got := c.Provider().Kind; got != oidcsession.KindOAuth2 {
+		if got := c.Provider().Kind; got != ssolib.KindOAuth2 {
 			t.Fatalf("Kind = %v with no issuer, want %v. The fallback is what keeps an "+
-				"existing deployment working across this upgrade.", got, oidcsession.KindOAuth2)
+				"existing deployment working across this upgrade.", got, ssolib.KindOAuth2)
 		}
 	})
 
@@ -40,8 +40,8 @@ func TestProviderKindFollowsIssuer(t *testing.T) {
 		// An admin field submitted blank arrives as spaces. Treating that as
 		// configured would build an OIDC adapter whose discovery cannot resolve,
 		// failing every login instead of falling back.
-		if got := (&SSOConfig{IssuerURL: "   "}).Provider().Kind; got != oidcsession.KindOAuth2 {
-			t.Fatalf("Kind = %v for a whitespace-only issuer, want %v", got, oidcsession.KindOAuth2)
+		if got := (&SSOConfig{IssuerURL: "   "}).Provider().Kind; got != ssolib.KindOAuth2 {
+			t.Fatalf("Kind = %v for a whitespace-only issuer, want %v", got, ssolib.KindOAuth2)
 		}
 	})
 
