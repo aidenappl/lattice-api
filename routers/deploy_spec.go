@@ -124,7 +124,7 @@ func (b *specBuilder) build(c structs.Container, image, tag string) (map[string]
 		spec["network_aliases"] = aliases
 	}
 
-	if c.PortMappings != nil {
+	if !jsonBlank(c.PortMappings) {
 		var pm []any
 		if err := json.Unmarshal([]byte(*c.PortMappings), &pm); err != nil {
 			b.skipField(c, "port_mappings", err)
@@ -153,7 +153,7 @@ func (b *specBuilder) build(c structs.Container, image, tag string) (map[string]
 		spec["env_vars"] = merged
 	}
 
-	if c.Volumes != nil {
+	if !jsonBlank(c.Volumes) {
 		var vol map[string]any
 		if err := json.Unmarshal([]byte(*c.Volumes), &vol); err != nil {
 			b.skipField(c, "volumes", err)
@@ -169,7 +169,7 @@ func (b *specBuilder) build(c structs.Container, image, tag string) (map[string]
 		spec["memory_limit"] = int64(*c.MemoryLimit) * 1024 * 1024 // MB -> bytes for Docker
 	}
 
-	if c.Command != nil {
+	if !jsonBlank(c.Command) {
 		var cmd []string
 		if err := json.Unmarshal([]byte(*c.Command), &cmd); err != nil {
 			b.skipField(c, "command", err)
@@ -177,7 +177,7 @@ func (b *specBuilder) build(c structs.Container, image, tag string) (map[string]
 			spec["command"] = cmd
 		}
 	}
-	if c.Entrypoint != nil {
+	if !jsonBlank(c.Entrypoint) {
 		var ep []string
 		if err := json.Unmarshal([]byte(*c.Entrypoint), &ep); err != nil {
 			b.skipField(c, "entrypoint", err)
@@ -186,7 +186,7 @@ func (b *specBuilder) build(c structs.Container, image, tag string) (map[string]
 		}
 	}
 
-	if c.HealthCheck != nil && *c.HealthCheck != "" {
+	if c.HasHealthCheck() {
 		var hc map[string]any
 		if err := json.Unmarshal([]byte(*c.HealthCheck), &hc); err != nil {
 			b.skipField(c, "health_check", err)

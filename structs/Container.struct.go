@@ -29,3 +29,10 @@ type Container struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 	InsertedAt     time.Time  `json:"inserted_at"`
 }
+
+// HasHealthCheck reports whether the container has a healthcheck configured in
+// Lattice. A cleared one is stored as "" rather than NULL, so a nil check alone
+// is wrong: it reads a cleared healthcheck as configured.
+func (c Container) HasHealthCheck() bool {
+	return c.HealthCheck != nil && *c.HealthCheck != ""
+}

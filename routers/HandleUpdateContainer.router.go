@@ -35,6 +35,7 @@ func HandleUpdateContainer(w http.ResponseWriter, r *http.Request) {
 		HealthCheck   *string  `json:"health_check"`
 		Ulimits       *string  `json:"ulimits"`
 		RegistryID    *int     `json:"registry_id"`
+		DependsOn     *string  `json:"depends_on"`
 		Active        *bool    `json:"active"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -46,6 +47,16 @@ func HandleUpdateContainer(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		responder.SendError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+
+	// Clearing the healthcheck ("") also clears the stale health status, which
+	// nothing else would reset: with no configured check the container would keep
+	// showing its last healthy/unhealthy verdict. A healthcheck baked into the
+	// image still applies at the next deploy; the worker's sync reports it then.
+	var healthStatus *string
+	if body.HealthCheck != nil && *body.HealthCheck == "" {
+		none := "none"
+		healthStatus = &none
 	}
 
 	container, err := query.UpdateContainer(db.DB, id, query.UpdateContainerRequest{
@@ -63,8 +74,10 @@ func HandleUpdateContainer(w http.ResponseWriter, r *http.Request) {
 		Command:       body.Command,
 		Entrypoint:    body.Entrypoint,
 		HealthCheck:   body.HealthCheck,
+		HealthStatus:  healthStatus,
 		Ulimits:       ulimits,
 		RegistryID:    body.RegistryID,
+		DependsOn:     body.DependsOn,
 		Active:        body.Active,
 	})
 	if err != nil {

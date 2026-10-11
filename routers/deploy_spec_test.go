@@ -175,3 +175,22 @@ func TestSpecBuilderFatalAndSkippedFields(t *testing.T) {
 		t.Error("unparseable command sent to the runner")
 	}
 }
+
+// A field cleared through the edit form is stored as "", which must mean
+// "unset" rather than malformed JSON logged as an error on every deploy.
+func TestSpecBuilderClearedFieldsAreUnset(t *testing.T) {
+	b := &specBuilder{ctx: context.Background(), env: map[string]any{}}
+	empty := ""
+	spec, specErr := b.build(structs.Container{
+		Name: "x", PortMappings: &empty, Volumes: &empty, Command: &empty,
+		Entrypoint: &empty, EnvVars: &empty, HealthCheck: &empty, Ulimits: &empty,
+	}, "img", "latest")
+	if specErr != nil {
+		t.Fatalf("cleared fields failed the deploy: %v", specErr.err)
+	}
+	for _, k := range []string{"port_mappings", "volumes", "command", "entrypoint", "env_vars", "health_check", "ulimits"} {
+		if _, ok := spec[k]; ok {
+			t.Errorf("cleared %s still sent to the runner", k)
+		}
+	}
+}

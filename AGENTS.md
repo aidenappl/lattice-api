@@ -251,6 +251,13 @@ This repo follows the global Go standards. Specifics and deviations:
   aliases fail the deploy; other unreadable fields are skipped (error log, or warn on rollback).
   `TestSpecBuilderSameSpecForEveryPath` pins it. Single-container recreates
   (`recreateContainerPayload`) send only image/tag/auth — the runner rebuilds from `docker inspect`.
+- **Cleared container fields are `""`, not NULL.** The deploy builder treats a blank (`jsonBlank`)
+  port_mappings/volumes/command/entrypoint/env_vars/ulimits as unset. `PUT /admin/containers/{id}`
+  also accepts `depends_on` (the form always sent it; the handler used to drop it).
+- **A cleared healthcheck is `""`, not NULL.** `PUT /admin/containers/{id}` with `health_check: ""`
+  clears it and resets `health_status` to `none`. Test for a configured check with
+  `Container.HasHealthCheck()`, never `HealthCheck != nil`: the nil test left cleared containers stuck
+  at `starting`. An image's own `HEALTHCHECK` still applies at the next deploy.
 - **Container `ulimits`** (migration `019`). Stored as JSON normalized to
   `{"nofile":{"soft":n,"hard":n}}`; accepted in compose (`ulimits:` integer or `{soft, hard}`, per
   the compose spec) and as a JSON string in container create/update and stack import bodies.

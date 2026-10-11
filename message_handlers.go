@@ -561,7 +561,9 @@ func handleContainerStatus(ctx context.Context, workerID int, payload map[string
 		req.StartedAt = &now
 	}
 	// On start/recreate/restart, reset health_status to "starting" if the container has a healthcheck.
-	if (action == "start" || action == "recreate" || action == "restart") && c.HealthCheck != nil {
+	// A cleared healthcheck is stored as "", not NULL; treating it as configured left the container
+	// at "starting" forever, since nothing would ever report it healthy.
+	if (action == "start" || action == "recreate" || action == "restart") && c.HasHealthCheck() {
 		hs := "starting"
 		req.HealthStatus = &hs
 		enriched["health_status"] = hs
