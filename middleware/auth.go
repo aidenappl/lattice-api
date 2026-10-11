@@ -2,14 +2,13 @@ package middleware
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
-	ssolib "github.com/aidenappl/go-forta/sso"
 	monitor "github.com/aidenappl/go-monitor"
+	oidcsession "github.com/aidenappl/go-oidc-session"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/jwt"
 	"github.com/aidenappl/lattice-api/logger"
@@ -19,18 +18,6 @@ import (
 	"github.com/aidenappl/lattice-api/structs"
 	"github.com/aidenappl/lattice-api/tools"
 )
-
-// ssoCheckpointTTL controls how often the auth middleware re-validates an
-// SSO user's grant against the IDP. Shorter = faster revocation propagation,
-// more network calls. 5 min matches the IDP's recommended access token TTL.
-const ssoCheckpointTTL = 5 * time.Minute
-
-// ssoCheckpointGrace bounds how long the checkpoint may keep failing OPEN. If
-// the IDP grant has not been positively re-confirmed (last_checked_at) within
-// this window, the checkpoint fails CLOSED — the request is denied rather than
-// allowed on an unverified grant. It does not revoke tokens, so once the IDP is
-// reachable again and reports active, the user is allowed without re-login.
-const ssoCheckpointGrace = 30 * time.Minute
 
 const (
 	UserContextKey   contextKey = "user"
@@ -67,6 +54,25 @@ func DualAuthMiddleware(next http.Handler) http.Handler {
 			if user := validateLatticeToken(r.Context(), bearerToken); user != nil {
 				next.ServeHTTP(w, withUser(w, r, user))
 				return
+			}
+		}
+
+		// SSO session cookie. Authenticate refreshes the provider tokens when
+		// due; a provider outage is 503, never 401 — a 401 would send the
+		// browser to re-authenticate against the provider that is down.
+		if c, err := r.Cookie(sso.SessionCookie); err == nil && c.Value != "" {
+			s, err := sso.Manager().Authenticate(w, r)
+			if errors.Is(err, oidcsession.ErrProviderUnavailable) {
+				responder.SendError(w, http.StatusServiceUnavailable, "identity provider unavailable, retry shortly")
+				return
+			}
+			if err == nil {
+				if user := sessionUser(s); user != nil {
+					next.ServeHTTP(w, withUser(w, r.WithContext(oidcsession.WithSession(r.Context(), s)), user))
+					return
+				}
+			} else if !errors.Is(err, oidcsession.ErrNoSession) && !errors.Is(err, oidcsession.ErrSessionEnded) {
+				logger.ErrorCtx(r.Context(), "auth", "sso session lookup failed", logger.F{"error": err})
 			}
 		}
 
@@ -292,120 +298,24 @@ func validateLatticeToken(ctx context.Context, tokenStr string) *structs.User {
 		}
 	}
 
-	if user.AuthType == "sso" && !checkpointSSOGrant(ctx, int64(user.ID)) {
+	// SSO users authenticate with the lattice_session cookie (sso.Manager),
+	// whose lifetime is the identity provider's. A Lattice JWT for one is from
+	// before that change; refusing it sends the browser through a silent
+	// re-authentication that replaces it with a real session.
+	if user.AuthType == "sso" {
 		return nil
 	}
 
 	return user
 }
 
-// ssoCheckpointer is the shared checkpoint implementation, built once.
-//
-// ⚠️ THIS REPLACES A HAND-ROLLED CHECKPOINT THAT HAD NEVER RUN. The previous
-// version was correct in outline — bounded fail-open, measured from the last
-// positive confirmation — but it opened with `if err != nil { return true }` on
-// the session lookup, and the sso_sessions table did not exist, so every request
-// took that branch. The bound was unreachable; the effective behaviour was
-// unbounded fail-open. db/db.go now creates the table, and the policy lives in the
-// library where all three services share one copy of it.
-var ssoCheckpointer = &ssolib.Checkpointer{
-	Sessions: sso.NewSessionStore(),
-	Providers: func(_ context.Context, slug string) (*ssolib.Provider, error) {
-		if slug != sso.ProviderSlug {
-			return nil, fmt.Errorf("auth: unknown sso provider %q", slug)
-		}
-		// Re-resolved on every check rather than cached, so a rotated client secret
-		// or a newly-set introspect_url takes effect at the next checkpoint instead
-		// of the next restart.
-		return sso.LoadConfig().Provider(), nil
-	},
-	Interval: ssoCheckpointTTL,
-	Grace:    ssoCheckpointGrace,
-	// Correlation forwards this request's ids on the introspection call, so a
-	// checkpoint shows up in forta-api's logs under the same request_id as the
-	// lattice-api request that triggered it. Only works because Check is given the
-	// request ctx (checkpointSSOGrant).
-	Correlation: ssoCorrelation,
-	LogfCtx: func(ctx context.Context, format string, args ...any) {
-		// The library's text varies per call, so it is data, not the message.
-		// Never contains a token (go-forta guarantees user id + provider slug only).
-		logger.WarnCtx(ctx, "sso", "sso checkpoint warning", logger.F{"detail": fmt.Sprintf(format, args...)})
-	},
-	OnResult: logCheckpointResult,
-}
-
-// ssoCorrelation returns the go-monitor request and trace ids that
-// RequestIDMiddleware stored on ctx. go-forta forwards them as X-Request-ID /
-// X-Trace-ID / traceparent (only when they are ids Monitor would accept).
-func ssoCorrelation(ctx context.Context) (string, string) {
-	return monitor.RequestID(ctx), monitor.TraceID(ctx)
-}
-
-// checkpointResultLevel is the level policy for OnResult. A pass with a cause is
-// a grace-window pass (the IdP did not answer) or a session-store failure —
-// degraded but handled, so warn. Unavailable is warn too: the session is denied
-// because the IdP could not be reached, not because of anything the user did.
-// Everything else (confirmed live, revoked) is debug here; checkpointSSOGrant
-// already logs the revocation at info.
-func checkpointResultLevel(r ssolib.CheckpointResult, cause error) logger.Level {
-	switch {
-	case r == ssolib.CheckpointUnavailable:
-		return logger.LevelWarn
-	case r == ssolib.CheckpointOK && cause != nil:
-		return logger.LevelWarn
-	default:
-		return logger.LevelDebug
+// sessionUser loads the active user an SSO session belongs to.
+func sessionUser(s *oidcsession.Session) *structs.User {
+	user, err := query.GetUserByID(db.DB, int(s.UserID))
+	if err != nil || user == nil || !user.Active {
+		return nil
 	}
-}
-
-// logCheckpointResult is the Checkpointer's OnResult hook. The message is fixed;
-// the result and its cause ride in fields. Never logs a token — cause is a
-// transport / store / provider-lookup error.
-func logCheckpointResult(ctx context.Context, userID int64, r ssolib.CheckpointResult, cause error) {
-	f := logger.F{"user_id": userID, "result": r.String(), "grace": r == ssolib.CheckpointOK && cause != nil}
-	if cause != nil {
-		f["cause"] = cause.Error()
-	}
-	if checkpointResultLevel(r, cause) == logger.LevelWarn {
-		logger.WarnCtx(ctx, "sso", "sso checkpoint degraded", f)
-		return
-	}
-	logger.DebugCtx(ctx, "sso", "sso checkpoint result", f)
-}
-
-// checkpointSSOGrant re-validates the user's grant against the IdP on a TTL.
-// Returns true if the session may proceed.
-//
-// The three outcomes and what they mean:
-//
-//   - CheckpointOK — not an SSO session, or confirmed live, or inside the grace
-//     window after a failure. Proceed.
-//   - CheckpointRevoked — the IdP definitively reported the grant gone. The session
-//     row is deleted AND tokens_revoked_at is stamped, which is what actually locks
-//     the user out; see sso.SessionStore.RevokeLocalTokens for why deleting the row
-//     alone would not.
-//   - CheckpointUnavailable — no answer, and the grace window has elapsed.
-//
-// ⚠️ CheckpointUnavailable SHOULD BE HTTP 503, NOT 401, and this bool signature
-// cannot express that. A 401 tells the client to discard its credentials and
-// re-authenticate — against the identity provider that is already unreachable.
-// Denying is still the right choice of the two available here, because allowing
-// would restore the unbounded fail-open this change exists to remove. Widening
-// this hook to carry a status is the fix; until then this comment is the record of
-// what is lost.
-func checkpointSSOGrant(ctx context.Context, userID int64) bool {
-	// The request ctx, not context.Background(): it carries the go-monitor ids that
-	// Correlation forwards to the IdP and that LogfCtx/OnResult log under.
-	switch ssoCheckpointer.Check(ctx, userID) {
-	case ssolib.CheckpointRevoked:
-		logger.InfoCtx(ctx, "auth", "checkpoint: upstream grant revoked, session terminated", logger.F{"user_id": userID})
-		return false
-	case ssolib.CheckpointUnavailable:
-		logger.WarnCtx(ctx, "auth", "checkpoint: unverifiable past grace window, denying (should be 503)", logger.F{"user_id": userID})
-		return false
-	default:
-		return true
-	}
+	return user
 }
 
 func extractBearerToken(r *http.Request) string {

@@ -34,7 +34,6 @@ func HandleGetSSOConfig(w http.ResponseWriter, r *http.Request) {
 		"authorize_url":   cfg.AuthorizeURL,
 		"token_url":       cfg.TokenURL,
 		"userinfo_url":    cfg.UserInfoURL,
-		"introspect_url":  cfg.IntrospectURL,
 		"redirect_url":    cfg.RedirectURL,
 		"logout_url":      cfg.LogoutURL,
 		"scopes":          cfg.Scopes,
@@ -57,7 +56,6 @@ func HandleUpdateSSOConfig(w http.ResponseWriter, r *http.Request) {
 		AuthorizeURL   *string `json:"authorize_url"`
 		TokenURL       *string `json:"token_url"`
 		UserInfoURL    *string `json:"userinfo_url"`
-		IntrospectURL  *string `json:"introspect_url"`
 		RedirectURL    *string `json:"redirect_url"`
 		LogoutURL      *string `json:"logout_url"`
 		Scopes         *string `json:"scopes"`
@@ -108,7 +106,6 @@ func HandleUpdateSSOConfig(w http.ResponseWriter, r *http.Request) {
 	// checkpoint was dead — the first being that sso_sessions did not exist.
 	//
 	// For forta-api the value is https://auth.appleby.cloud/oauth/introspect.
-	form.str("sso.introspect_url", body.IntrospectURL)
 	form.str("sso.redirect_url", body.RedirectURL)
 	form.str("sso.logout_url", body.LogoutURL)
 	form.str("sso.scopes", body.Scopes)
@@ -134,6 +131,7 @@ func HandleUpdateSSOConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logAudit(r, "update", "sso_config", nil, nil)
+	sso.Reload()
 
 	responder.New(w, nil, "SSO configuration updated")
 }

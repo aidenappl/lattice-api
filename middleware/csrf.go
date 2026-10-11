@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/aidenappl/lattice-api/env"
+	"github.com/aidenappl/lattice-api/sso"
 )
 
 const csrfCookieName = "lattice-csrf"
@@ -35,8 +36,14 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 		// if a session cookie is present the request may actually be authenticated
 		// by that cookie, so CSRF must still be enforced (don't let an attached
 		// Bearer header waive it for a cookie-authed browser request).
+		// A bearer-token request is not CSRF-able — unless the browser also
+		// carries a session cookie, in which case a forged request could add a
+		// junk Authorization header and ride the cookie. Exempt only when
+		// neither session cookie is present.
 		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
-			if _, err := r.Cookie(latticeTokenName); err != nil {
+			_, jwtErr := r.Cookie(latticeTokenName)
+			_, ssoErr := r.Cookie(sso.SessionCookie)
+			if jwtErr != nil && ssoErr != nil {
 				next.ServeHTTP(w, r)
 				return
 			}

@@ -28,7 +28,6 @@ var (
 	SSOAuthorizeURL   = getEnv("SSO_AUTHORIZE_URL", "")
 	SSOTokenURL       = getEnv("SSO_TOKEN_URL", "")
 	SSOUserInfoURL    = getEnv("SSO_USERINFO_URL", "")
-	SSOIntrospectURL  = getEnv("SSO_INTROSPECT_URL", "")
 	SSORedirectURL    = getEnv("SSO_REDIRECT_URL", "")
 	SSOLogoutURL      = getEnv("SSO_LOGOUT_URL", "")
 	SSOScopes         = getEnv("SSO_SCOPES", "openid email profile")
