@@ -1446,3 +1446,5 @@ Update this AGENTS.md **in the same change** when you:
 - **Change env vars, commands, Docker/CI, or the repo's role** → update this file **and**
   `README.md` (its env-var table and route list are the fastest-drifting parts, and both are
   currently stale on the removed Forta auth — fix them when you touch that area).
+
+**`sso_sessions` is dropped** (migration 020): the pre-go-oidc-session table, unused since `oidc_sessions` replaced it.
