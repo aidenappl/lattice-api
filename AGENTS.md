@@ -504,7 +504,11 @@ worker's new connection. The connect/disconnect/message callbacks are set in `me
 - **OnDisconnect:** emit `worker.disconnected` with the `cause` and `connected_for` — warn, or
   info with `graceful=true` when the runner sent `worker_shutdown` first — mark offline, broadcast
   `worker_disconnected`, fire the
-  `worker.disconnected` webhook, and schedule a grace-delayed email alert.
+  `worker.disconnected` webhook, and schedule a grace-delayed email alert. A session that
+  `WorkerHub.Register` **replaced** (the runner reconnected before the server saw the old socket
+  die) only logs the event — info, `replaced=true` — and returns: the new session's `OnConnect`
+  has already run, so marking offline or scheduling an alert there would leave a connected worker
+  shown offline and an email nothing cancels.
 - **OnMessage:** switch on `msg.Type` — heartbeat (metrics + container-name reconciliation),
   registration (OS/arch/docker/runner version; resolves pending upgrade actions),
   container status/health/sync/logs, lifecycle logs, deployment progress/status, worker
@@ -1274,7 +1278,10 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
 - *A worker shows as disconnected* — the `worker.disconnected` event carries `cause` (the read,
   write or ping error that ended the connection, or "replaced by a new connection from the same
   worker") and `connected_for`; it is warn unless the runner announced `worker_shutdown` first
-  (`graceful=true`, info).
+  (`graceful=true`, info) or the session was replaced (`replaced=true`, info — not an outage).
+  Bursts of 1006 / replaced causes across *every* worker point at the network path, not the
+  workers: on-prem runners reach this API over the LAN via a UniFi DNS override (see
+  lattice-runner `AGENTS.md`, Operations).
 
 ### Monitor telemetry
 
@@ -1304,7 +1311,7 @@ retries) before they are counted as dropped.
 | `deployment.recovered` | info | A `deployed` for a deployment already force-failed (stalled/timed out while the runner kept going): the success fields plus `previous_status=failed`. |
 | `deployment.failed` | info / warn / error | See the policy below. Fields: `deployment_id`, `stack_id`, `strategy`, `duration_ms`, and for API-raised failures `cause`, `error`. A repeat is debug. |
 | `worker.connected` | info | `worker_id`, `worker_name`, `runner_version` (as last registered), `remote_ip`. |
-| `worker.disconnected` | warn / info | `worker_id`, `worker_name`, `remote_ip`, `connected_for`, `cause`; info with `graceful=true` after `worker_shutdown`. |
+| `worker.disconnected` | warn / info | `worker_id`, `worker_name`, `remote_ip`, `connected_for`, `cause`; info with `graceful=true` after `worker_shutdown`, or `replaced=true` when a newer connection from the same worker took over. |
 | `panic.recovered` | error | Every recovered panic, with the stack where it happened: HTTP handlers (`RecoverMiddleware`), worker/admin WebSocket callbacks and pumps, `safeGo`, every background loop and goroutine. |
 | `<resource_type>.<action>.success` | info | A mirror of every `logAudit` call, on the request's ids. Details are left out — they are free text. |
 | `service.startup` / `service.shutdown` | info | Boot (version, spool on/off) and the signal that stopped it. |

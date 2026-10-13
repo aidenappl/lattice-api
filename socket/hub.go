@@ -37,6 +37,12 @@ type WorkerSession struct {
 	// its connection ended, so the disconnect that follows is a planned stop.
 	GracefulShutdown atomic.Bool
 
+	// Replaced is set when a newer connection from the same worker took this
+	// session's place. The worker never went offline, so the disconnect that
+	// follows must not mark it offline or alert — the new session's OnConnect
+	// has already run by the time this one's OnDisconnect does.
+	Replaced atomic.Bool
+
 	cancel context.CancelFunc
 	once   sync.Once
 	// done is closed exactly once in Close(). Senders select on it so they
@@ -97,6 +103,7 @@ func (h *WorkerHub) Register(session *WorkerSession) error {
 
 	// Allow re-registration of existing worker (replaces old session)
 	if old, ok := h.sessions[session.WorkerID]; ok {
+		old.Replaced.Store(true)
 		old.setCloseCause(errors.New("replaced by a new connection from the same worker"))
 		old.Close()
 	} else if len(h.sessions) >= MaxWorkerSessions {

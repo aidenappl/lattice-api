@@ -146,6 +146,15 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 			fields["graceful"] = true
 			level = logger.LevelInfo
 		}
+		// A replaced session is a reconnect, not an outage: the new session is
+		// already registered and its OnConnect has run. Marking the worker
+		// offline, firing the webhook or scheduling an alert here would undo
+		// that — and nothing would cancel the alert.
+		if session.Replaced.Load() {
+			fields["replaced"] = true
+			logger.EventCtx(context.Background(), logger.LevelInfo, "worker.disconnected", "worker", "worker disconnected", fields)
+			return
+		}
 		logger.EventCtx(context.Background(), level, "worker.disconnected", "worker", "worker disconnected", fields)
 		logWorkerWriteErr("offline status update", session.WorkerID, query.UpdateWorkerHeartbeat(db.DB, session.WorkerID, "offline"))
 		adminHub.BroadcastJSON(map[string]any{
