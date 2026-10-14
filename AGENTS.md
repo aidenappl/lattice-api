@@ -1190,6 +1190,16 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
 
 ## Operations
 
+- **Changing a container's environment needs a stack deploy, not a restart.** Restart,
+  Recreate, a deploy token's `?container=`, and the `redeploy_container` automation step all
+  rebuild the new container from the OLD one (`recreateContainerPayload` sends only
+  image/tag/auth; the runner copies the rest from `docker inspect`). An edited stack env var,
+  global env var, compose `environment:` or `PUT /admin/containers/{id}` `env_vars` is
+  therefore ignored until a **deploy** re-renders the spec. For one service, deploy just that
+  container: `POST /admin/stacks/{id}/deploy` with `container_ids: [id]`
+  (`lattice_deploy_stack {id, container_ids}`); the stack's other containers (its database,
+  say) are not touched. Found on 2026-10-14 moving monitor-core to a new Keyring token: two
+  recreates and the "Redeploy Monitor Core" automation all kept the old credentials.
 - **CI runners:** every GitHub Actions job runs on `[self-hosted, lattice-worker]` — a
   single-use runner started by `aidenappl/gh-runner-broker` on the CI host (`aplb-actions`,
   10.15.10.78), with the toolchain and shared Go/npm caches provisioned by
