@@ -24,7 +24,7 @@ Lattice is self-hosting: Forta (SSO), Keyring, Monitor and the rest all run as s
 
 ## Tech stack
 
-- **Go 1.25** with `gorilla/mux` (subrouters for `/auth` and `/admin`)
+- **Go 1.26** with `gorilla/mux` (subrouters for `/auth` and `/admin`)
 - **MariaDB** — primary data store (schema `lattice`, migrated **in-code** via idempotent `migrate()` calls in `db.Init()`; no external migration runner)
 - **`gorilla/websocket`** — worker hub and admin hub
 - **`squirrel`** (`sq`) — SQL query builder, no ORM
@@ -36,7 +36,7 @@ Lattice is self-hosting: Forta (SSO), Keyring, Monitor and the rest all run as s
 
 ### Prerequisites
 
-- **Go 1.25+**
+- **Go 1.26+**
 - **Docker** — for `dev up` (bundled MariaDB) and, in production, the Docker-socket self-update path
 - A **MariaDB** reachable via `DATABASE_DSN` (the base DSN only, no database name — `db.Init()` appends `/lattice`)
 - A **`.env`** file (copy `.env.example`); the `dev` server sources it
