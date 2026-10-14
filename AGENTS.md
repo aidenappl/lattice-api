@@ -66,7 +66,7 @@ rows in this database.
 
 ## Stack & dependencies
 
-- **Go 1.25** (`go.mod` declares `go 1.25.0`; Docker builds on `golang:1.25-alpine`).
+- **Go 1.26** (`go.mod` declares `go 1.25.0`; Docker builds on `golang:1.26-alpine`).
 - **Router:** `github.com/gorilla/mux` v1.8.1 — subrouters for `/auth` and `/admin`.
 - **WebSocket:** `github.com/gorilla/websocket` v1.5.3 — both the worker hub and the admin hub.
 - **SQL builder:** `github.com/Masterminds/squirrel` v1.5.4, imported as `sq`. **No ORM.**
@@ -1190,6 +1190,18 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
 
 ## Operations
 
+- **CI runners:** every GitHub Actions job runs on `[self-hosted, lattice-worker]` — a
+  single-use runner started by `aidenappl/gh-runner-broker` on the CI host (`aplb-actions`,
+  10.15.10.78), with the toolchain and shared Go/npm caches provisioned by
+  `TeamTrailblaze/runner-setup`. Images build through the host's `lattice-builder` BuildKit
+  (`builder: lattice-builder`), never `docker/setup-buildx-action`, which races other runners
+  on the shared Docker daemon; its local layer cache replaces the gha cache. `setup-go` runs
+  with `cache: false`. Jobs stuck in "Queued" mean the broker or the host is down — check the
+  `gh-runner-broker` service in Monitor (zone `appleby`).
+  **Fallback:** Lattice must build even when that host is down, since Lattice is how you fix it.
+  Set the repo variable `LATTICE_CI_RUNS_ON` to `["ubuntu-latest"]` and every job runs
+  GitHub-hosted, building with `docker/setup-buildx-action`; delete the variable to switch back.
+
 - **Deployed on Lattice itself**, at `lattice.appleby.cloud`, as the `lattice-api` container in
   its stack (alongside `lattice-web` and a `lattice-docker-helper`). It mounts the Docker socket
   because `POST /admin/update/api` and `/update/web` shell out to `docker compose` in
@@ -1234,7 +1246,7 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
   when the image is unchanged, which is what you want after an env-var change. Every attempt writes
   its outcome to the audit log (`resource_type: api`), which is the durable record — the HTTP
   response necessarily goes out before the container is replaced.
-- **Image:** multi-stage `golang:1.25-alpine` → `alpine:3.19`, static `CGO_ENABLED=0` build with
+- **Image:** multi-stage `golang:1.26-alpine` → `alpine:3.19`, static `CGO_ENABLED=0` build with
   `-ldflags="-w -s -X main.Version=${VERSION}"`, `EXPOSE 8000`, Docker `HEALTHCHECK` hitting
   `/healthcheck`. Pushed to `registry.appleby.cloud/lattice-api`.
 - **CI** (`.github/workflows/build-and-deploy.yml`): on push to `main`, resolves a version (a
