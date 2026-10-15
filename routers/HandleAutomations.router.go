@@ -388,7 +388,7 @@ func (h *AutomationHandler) HandleRunAutomation(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	ip := r.RemoteAddr
+	ip := middleware.ClientIP(r)
 	outcome, err := h.Executor.Fire(r.Context(), existing, automations.Firing{
 		Source:      structs.AutomationSourceManual,
 		Detail:      "manual run by " + user.Email,
@@ -487,7 +487,7 @@ func (h *AutomationHandler) HandleListAutomationRuns(w http.ResponseWriter, r *h
 // that disconnects mid-run must not leave a half-applied automation behind.
 func (h *AutomationHandler) HandleAutomationWebhook(w http.ResponseWriter, r *http.Request) {
 	token := mux.Vars(r)["token"]
-	ip := r.RemoteAddr
+	ip := middleware.ClientIP(r)
 	detail := "webhook from " + ip
 	if commit := r.URL.Query().Get("commit"); commit != "" {
 		detail += " @ " + commit
