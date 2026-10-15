@@ -99,15 +99,21 @@ type ListMetricsRequest struct {
 	Since    *time.Time
 }
 
+// ListMetrics returns a worker's newest samples, newest first, optionally only
+// those recorded at or after Since.
+//
+// Since is applied in Go, not in SQL. With `AND recorded_at >= ?` in the WHERE
+// clause the production database picked a plan that took 2–4 minutes (every
+// ranged call from the worker metrics page timed out), while the same query
+// without it returns 500 rows in under a second. Because rows come back
+// ordered by recorded_at, the newest Limit rows filtered to >= Since are
+// exactly the newest Limit rows that satisfy it, so the result is unchanged.
 func ListMetrics(engine db.Queryable, req ListMetricsRequest) (*[]structs.WorkerMetrics, error) {
 	q := sq.Select(metricsColumns...).
 		From("worker_metrics").
 		Where(sq.Eq{"worker_metrics.worker_id": req.WorkerID}).
 		OrderBy("worker_metrics.recorded_at DESC")
 
-	if req.Since != nil {
-		q = q.Where(sq.GtOrEq{"worker_metrics.recorded_at": *req.Since})
-	}
 	if req.Limit == 0 || req.Limit > db.MAX_LIMIT {
 		req.Limit = db.DEFAULT_LIMIT
 	}
@@ -132,8 +138,25 @@ func ListMetrics(engine db.Queryable, req ListMetricsRequest) (*[]structs.Worker
 		}
 		metrics = append(metrics, *m)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
-	return &metrics, rows.Err()
+	if req.Since != nil {
+		metrics = metricsSince(metrics, *req.Since)
+	}
+	return &metrics, nil
+}
+
+// metricsSince keeps the leading run of newest-first samples recorded at or
+// after since.
+func metricsSince(newestFirst []structs.WorkerMetrics, since time.Time) []structs.WorkerMetrics {
+	for i, m := range newestFirst {
+		if m.RecordedAt.Before(since) {
+			return newestFirst[:i]
+		}
+	}
+	return newestFirst
 }
 
 type CreateMetricsRequest struct {

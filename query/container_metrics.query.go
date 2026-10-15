@@ -205,7 +205,40 @@ func GetLatestWorkerContainerMetrics(engine db.Queryable, workerID int) ([]struc
 		}
 		metrics = append(metrics, *m)
 	}
-	return metrics, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return currentContainerSamples(metrics, containerStatsMaxLag), nil
+}
+
+// containerStatsMaxLag is how far behind the newest sample a container's last
+// sample may be and still count as running. Samples arrive every heartbeat
+// (~15 s), so a container missing for 5 minutes is gone.
+const containerStatsMaxLag = 5 * time.Minute
+
+// currentContainerSamples drops containers whose last sample is much older
+// than the newest one. The latest-per-name query also returns containers that
+// no longer exist — a rolling deploy's "<name>-lattice-updating" container
+// stayed on the worker page as if running for hours after it was removed.
+// Measured against the newest sample rather than the clock, so a worker that
+// has stopped reporting still shows its last known state.
+func currentContainerSamples(rows []structs.ContainerMetrics, maxLag time.Duration) []structs.ContainerMetrics {
+	if len(rows) == 0 {
+		return rows
+	}
+	newest := rows[0].RecordedAt
+	for _, r := range rows[1:] {
+		if r.RecordedAt.After(newest) {
+			newest = r.RecordedAt
+		}
+	}
+	kept := rows[:0]
+	for _, r := range rows {
+		if newest.Sub(r.RecordedAt) <= maxLag {
+			kept = append(kept, r)
+		}
+	}
+	return kept
 }
 
 // GetLatestContainerMetrics returns the most recent metrics for a container.
