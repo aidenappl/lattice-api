@@ -139,6 +139,24 @@ func HandleImportStackExport(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Networks: an export carries them only inside compose_yaml, so create the
+	// records from it the way a compose import does. Without this, a stack
+	// imported from an export (or created from a template) had no networks
+	// until the next restart's backfill.
+	if body.Stack.ComposeYAML != nil {
+		nets, err := composeNetworkRequests(stack.ID, *body.Stack.ComposeYAML)
+		if err != nil {
+			responder.SendError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		for _, n := range nets {
+			if err := query.CreateNetwork(tx, n); err != nil {
+				responder.SendError(w, http.StatusInternalServerError, "failed to create stack network", err)
+				return
+			}
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		responder.SendError(w, http.StatusInternalServerError, "failed to commit transaction", err)
 		return

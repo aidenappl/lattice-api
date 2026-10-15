@@ -1033,8 +1033,8 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 | GET / POST | `/workers` | `HandleGetWorkers` / `HandleCreateWorker` `[E]` |
 | GET / PUT / DELETE | `/workers/{id}` | `HandleGetWorker` / `HandleUpdateWorker` `[E]` / `HandleDeleteWorker` `[E]` |
 | GET / POST | `/workers/{id}/tokens` | `HandleGetWorkerTokens` / `HandleCreateWorkerToken` `[E]` |
-| GET | `/workers/{id}/metrics` | `HandleGetWorkerMetrics` |
-| GET | `/workers/{id}/container-stats` | `HandleGetWorkerContainerStats` |
+| GET | `/workers/{id}/metrics` | `HandleGetWorkerMetrics`. `?range=` (1h/6h/24h/7d) is applied **in Go** after fetching the newest 500 rows (`metricsSince`); with `recorded_at >= ?` in SQL the production DB took 2–4 min. Note the 500-row cap means long ranges only cover the newest ~2 h |
+| GET | `/workers/{id}/container-stats` | `HandleGetWorkerContainerStats`. Drops containers whose last sample is >5 min older than the newest (`currentContainerSamples`), so removed containers such as `<name>-lattice-updating` stop showing as running |
 | POST | `/workers/{id}/reboot` | `WorkerActionHandler.HandleRebootWorker` `[A]` |
 | POST | `/workers/{id}/upgrade` | `WorkerActionHandler.HandleUpgradeRunner` `[A]` |
 | POST | `/workers/{id}/stop-all` / `/start-all` | `WorkerActionHandler.HandleStopAllContainers` / `HandleStartAllContainers` `[E]` |
@@ -1066,7 +1066,7 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 | POST | `/stacks/{id}/deploy` | `DeployHandler.HandleDeployStack` `[E]` |
 | POST | `/stacks/{id}/restart-all` / `stop-all` / `start-all` | `ContainerActionHandler.HandleRestartStack` / `HandleStopStack` / `HandleStartStack` `[E]` |
 | GET | `/stacks/{id}/export` | `HandleExportStack` `[E]` (export includes plaintext env config) |
-| POST | `/stacks/import-export` | `HandleImportStackExport` `[E]` |
+| POST | `/stacks/import-export` | `HandleImportStackExport` `[E]`. Also creates the stack's network records from `stack.compose_yaml` (`composeNetworkRequests`, same defaults as a compose import); exports don't carry networks separately |
 | POST | `/stacks/{id}/save-template` | `HandleCreateTemplateFromStack` `[E]` |
 | GET / POST | `/stacks/{id}/deploy-tokens` | `HandleListDeployTokens` / `HandleCreateDeployToken` `[A]` |
 | DELETE | `/deploy-tokens/{id}` | `HandleDeleteDeployToken` `[A]` |
