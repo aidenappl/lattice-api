@@ -17,6 +17,7 @@ var stackColumns = []string{
 	"stacks.deployment_strategy",
 	"stacks.auto_deploy",
 	"stacks.env_vars",
+	"stacks.secret_env_keys",
 	"stacks.compose_yaml",
 	"stacks.placement_constraints",
 	"stacks.active",
@@ -35,6 +36,7 @@ func scanStack(row scanner) (*structs.Stack, error) {
 		&s.DeploymentStrategy,
 		&s.AutoDeploy,
 		&s.EnvVars,
+		&s.SecretEnvKeys,
 		&s.ComposeYAML,
 		&s.PlacementConstraints,
 		&s.Active,
@@ -124,14 +126,15 @@ type CreateStackRequest struct {
 	DeploymentStrategy   string
 	AutoDeploy           bool
 	EnvVars              *string
+	SecretEnvKeys        *string
 	ComposeYAML          *string
 	PlacementConstraints *string
 }
 
 func CreateStack(engine db.Queryable, req CreateStackRequest) (*structs.Stack, error) {
 	q := sq.Insert("stacks").
-		Columns("name", "description", "worker_id", "deployment_strategy", "auto_deploy", "env_vars", "compose_yaml", "placement_constraints").
-		Values(req.Name, req.Description, req.WorkerID, req.DeploymentStrategy, req.AutoDeploy, req.EnvVars, req.ComposeYAML, req.PlacementConstraints)
+		Columns("name", "description", "worker_id", "deployment_strategy", "auto_deploy", "env_vars", "secret_env_keys", "compose_yaml", "placement_constraints").
+		Values(req.Name, req.Description, req.WorkerID, req.DeploymentStrategy, req.AutoDeploy, req.EnvVars, req.SecretEnvKeys, req.ComposeYAML, req.PlacementConstraints)
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
@@ -159,6 +162,7 @@ type UpdateStackRequest struct {
 	DeploymentStrategy   *string
 	AutoDeploy           *bool
 	EnvVars              *string
+	SecretEnvKeys        *string
 	ComposeYAML          *string
 	PlacementConstraints *string
 	Active               *bool
@@ -202,6 +206,15 @@ func UpdateStack(engine db.Queryable, id int, req UpdateStackRequest) (*structs.
 	}
 	if req.EnvVars != nil {
 		q = q.Set("env_vars", *req.EnvVars)
+		hasUpdate = true
+	}
+	if req.SecretEnvKeys != nil {
+		// "" clears the list.
+		if *req.SecretEnvKeys == "" {
+			q = q.Set("secret_env_keys", nil)
+		} else {
+			q = q.Set("secret_env_keys", *req.SecretEnvKeys)
+		}
 		hasUpdate = true
 	}
 	if req.ComposeYAML != nil {

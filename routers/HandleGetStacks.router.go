@@ -43,5 +43,5 @@ func HandleGetStacks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	responder.New(w, stacks, "stacks retrieved")
+	responder.New(w, stacksForUser(r, stacks), "stacks retrieved")
 }

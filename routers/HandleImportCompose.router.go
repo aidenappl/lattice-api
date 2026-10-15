@@ -301,7 +301,7 @@ func HandleImportCompose(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logAudit(r, "import", "stack", intPtr(stack.ID), strPtr(stack.Name))
-	responder.NewCreated(w, stack, "stack imported from compose file")
+	responder.NewCreated(w, stackForUser(r, stack), "stack imported from compose file")
 }
 
 func parseImageRef(imageRef string) (string, string) {

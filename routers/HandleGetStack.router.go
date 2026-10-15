@@ -23,5 +23,5 @@ func HandleGetStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	responder.New(w, stack, "stack retrieved")
+	responder.New(w, stackForUser(r, stack), "stack retrieved")
 }

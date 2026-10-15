@@ -26,6 +26,7 @@ func HandleUpdateStack(w http.ResponseWriter, r *http.Request) {
 		DeploymentStrategy   *string `json:"deployment_strategy"`
 		AutoDeploy           *bool   `json:"auto_deploy"`
 		EnvVars              *string `json:"env_vars"`
+		SecretEnvKeys        *string `json:"secret_env_keys"`
 		PlacementConstraints *string `json:"placement_constraints"`
 		Active               *bool   `json:"active"`
 	}
@@ -42,6 +43,48 @@ func HandleUpdateStack(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Secret values come back to non-admins (and to the web UI until revealed)
+	// as "***"; saving that must keep the stored value, not overwrite it.
+	envVars := body.EnvVars
+	if envVars != nil {
+		existing, err := query.GetStackByID(db.DB, id)
+		if err != nil {
+			responder.NotFound(w)
+			return
+		}
+		merged, err := mergeMaskedEnvVars(existing.EnvVars, *envVars)
+		if err != nil {
+			responder.SendError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		envVars = &merged
+	}
+	var secretKeys *string
+	if body.SecretEnvKeys != nil {
+		// Only admins can see secret values, so only admins may un-mark one:
+		// otherwise an editor could reveal a secret by clearing its flag.
+		norm, err := normalizeSecretKeys(*body.SecretEnvKeys)
+		if err != nil {
+			responder.SendError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !canReadSecrets(r) {
+			existing, err := query.GetStackByID(db.DB, id)
+			if err != nil {
+				responder.NotFound(w)
+				return
+			}
+			next := parseSecretKeys(&norm)
+			for k := range parseSecretKeys(existing.SecretEnvKeys) {
+				if !next[k] {
+					responder.SendError(w, http.StatusForbidden, "only admins can unmark a secret env var")
+					return
+				}
+			}
+		}
+		secretKeys = &norm
+	}
+
 	stack, err := query.UpdateStack(db.DB, id, query.UpdateStackRequest{
 		Name:                 body.Name,
 		Description:          body.Description,
@@ -49,7 +92,8 @@ func HandleUpdateStack(w http.ResponseWriter, r *http.Request) {
 		Status:               body.Status,
 		DeploymentStrategy:   body.DeploymentStrategy,
 		AutoDeploy:           body.AutoDeploy,
-		EnvVars:              body.EnvVars,
+		EnvVars:              envVars,
+		SecretEnvKeys:        secretKeys,
 		PlacementConstraints: body.PlacementConstraints,
 		Active:               body.Active,
 	})
@@ -59,5 +103,5 @@ func HandleUpdateStack(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logAudit(r, "update", "stack", intPtr(id), nil)
-	responder.New(w, stack, "stack updated")
+	responder.New(w, stackForUser(r, stack), "stack updated")
 }

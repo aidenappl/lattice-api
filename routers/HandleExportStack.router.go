@@ -75,6 +75,7 @@ func HandleExportStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	visible := stackForUser(r, stack)
 	export := map[string]any{
 		"version": "1",
 		"stack": map[string]any{
@@ -82,7 +83,8 @@ func HandleExportStack(w http.ResponseWriter, r *http.Request) {
 			"description":           stack.Description,
 			"deployment_strategy":   stack.DeploymentStrategy,
 			"auto_deploy":           stack.AutoDeploy,
-			"env_vars":              stack.EnvVars,
+			"env_vars":              visible.EnvVars,
+			"secret_env_keys":       stack.SecretEnvKeys,
 			"compose_yaml":          stack.ComposeYAML,
 			"placement_constraints": stack.PlacementConstraints,
 		},

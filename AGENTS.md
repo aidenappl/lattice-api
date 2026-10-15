@@ -1061,13 +1061,23 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 | GET / POST | `/stacks` | `HandleGetStacks` / `HandleCreateStack` `[E]` |
 | POST | `/stacks/import` | `HandleImportCompose` `[E]` |
 | GET / PUT / DELETE | `/stacks/{id}` | `HandleGetStack` / `HandleUpdateStack` `[E]` / `ContainerActionHandler.HandleDeleteStack` `[E]` |
+
+**Secret stack env vars.** `stacks.secret_env_keys` (JSON array) names the `env_vars` keys that are
+secret. Every response that returns a stack (get, list, create, update, compose import, export
+import) goes through `stackForUser` (`routers/stack_secrets.go`): non-admins get those values as
+`***`, mirroring global env vars. `PUT` with `env_vars` merges against the stored object
+(`mergeMaskedEnvVars`): a key sent as `***` keeps its stored value, so an editor can save without
+having seen the secrets. Only admins may *remove* a key from `secret_env_keys` (403 otherwise),
+since un-marking would reveal it. Deploys read the row directly and always get real values.
+Values are not encrypted at rest (neither are non-secret ones) — masking is about who can read
+them through the API.
 | PUT | `/stacks/{id}/compose` | `HandleUpdateCompose` `[E]` |
 | POST | `/stacks/{id}/sync-compose` | `HandleSyncCompose` `[E]` |
 | POST | `/stacks/{id}/deploy` | `DeployHandler.HandleDeployStack` `[E]` |
 | POST | `/stacks/{id}/restart-all` / `stop-all` / `start-all` | `ContainerActionHandler.HandleRestartStack` / `HandleStopStack` / `HandleStartStack` `[E]` |
-| GET | `/stacks/{id}/export` | `HandleExportStack` `[E]` (export includes plaintext env config) |
+| GET | `/stacks/{id}/export` | `HandleExportStack` `[E]` (env config plaintext for admins; secret values `***` for editors; includes `secret_env_keys`) |
 | POST | `/stacks/import-export` | `HandleImportStackExport` `[E]`. Also creates the stack's network records from `stack.compose_yaml` (`composeNetworkRequests`, same defaults as a compose import); exports don't carry networks separately |
-| POST | `/stacks/{id}/save-template` | `HandleCreateTemplateFromStack` `[E]` |
+| POST | `/stacks/{id}/save-template` | `HandleCreateTemplateFromStack` `[E]` (secret env values are stored blank — templates are readable by every role; the key list is kept) |
 | GET / POST | `/stacks/{id}/deploy-tokens` | `HandleListDeployTokens` / `HandleCreateDeployToken` `[A]` |
 | DELETE | `/deploy-tokens/{id}` | `HandleDeleteDeployToken` `[A]` |
 
@@ -1156,7 +1166,7 @@ wiped the bucket, region and keys and silently broke every backup to that destin
 | POST | `/webhooks/{id}/test` | `HandleTestWebhook` `[A]` |
 | GET / POST / PUT / DELETE | `/env-vars`, `/env-vars/{id}` | `HandleListGlobalEnvVars` / `HandleCreateGlobalEnvVar` `[A]` / `HandleUpdateGlobalEnvVar` `[A]` / `HandleDeleteGlobalEnvVar` `[A]` |
 | GET / POST / DELETE | `/templates`, `/templates/{id}` | `HandleListTemplates` / `HandleCreateTemplate` `[E]` / `HandleDeleteTemplate` `[E]` |
-| GET | `/audit-log` | `HandleGetAuditLog` `[A]` |
+| GET | `/audit-log` | `HandleGetAuditLog` `[A]`. Filters: `user_id`, `action`, `resource_type`, `resource_id`, `q` (substring of action / resource type / details / IP, LIKE wildcards escaped), `from` / `to` (RFC 3339, `to` exclusive), `limit` / `offset` |
 | GET / PUT | `/sso-config` | `HandleGetSSOConfig` `[A]` / `HandleUpdateSSOConfig` `[A]` |
 | GET / PUT | `/smtp-config` | `HandleGetSMTPConfig` `[A]` / `HandleUpdateSMTPConfig` `[A]` |
 | POST | `/smtp-config/test` | `HandleTestSMTP` `[A]` |
