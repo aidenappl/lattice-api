@@ -128,12 +128,22 @@ func HandleUpdateBackupDestination(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if body.Config != nil {
-		b, err := json.Marshal(*body.Config)
+		// The config is merged into the stored one, not swapped for it. Clients
+		// never see the stored config (it holds credentials), so lattice-web's
+		// edit form sends only the fields the user filled in — and replacing
+		// wholesale turned "change the path prefix" into "delete the bucket,
+		// region and keys", silently breaking every backup to that destination.
+		existing, err := query.GetBackupDestinationByID(db.DB, id)
 		if err != nil {
-			responder.SendError(w, http.StatusBadRequest, "failed to marshal config")
+			responder.NotFound(w)
 			return
 		}
-		configStr := string(b)
+		sameType := body.Type == nil || *body.Type == existing.Type
+		configStr, err := mergeBackupConfig(existing.Config, *body.Config, sameType)
+		if err != nil {
+			responder.SendError(w, http.StatusInternalServerError, "failed to merge backup destination config", err)
+			return
+		}
 		req.Config = &configStr
 	}
 
@@ -145,6 +155,33 @@ func HandleUpdateBackupDestination(w http.ResponseWriter, r *http.Request) {
 
 	logAudit(r, "update", "backup_destination", intPtr(id), nil)
 	responder.New(w, destination, "backup destination updated")
+}
+
+// mergeBackupConfig applies a partial config update to the stored one.
+//
+// Keys in patch overwrite stored keys; a key set to JSON null removes it, so an
+// optional field (endpoint, path prefix) can still be cleared. When the
+// destination's type changes the stored keys belong to a different backend
+// and are dropped — the patch is the whole new config.
+func mergeBackupConfig(stored *string, patch map[string]any, sameType bool) (string, error) {
+	merged := map[string]any{}
+	if sameType && stored != nil && *stored != "" {
+		if err := json.Unmarshal([]byte(*stored), &merged); err != nil {
+			return "", err
+		}
+	}
+	for k, v := range patch {
+		if v == nil {
+			delete(merged, k)
+			continue
+		}
+		merged[k] = v
+	}
+	b, err := json.Marshal(merged)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // HandleDeleteBackupDestination soft-deletes a backup destination.

@@ -52,6 +52,10 @@ func startServer(r *mux.Router) {
 		// Readable by lattice-web, which puts it on its own Monitor events so a
 		// browser failure and the API request behind it share one id.
 		ExposedHeaders: []string{"X-Request-ID", "X-Trace-ID"},
+		// Let browsers cache the preflight. Every lattice-web request is
+		// cross-origin with credentials and custom headers, so without this
+		// each one paid an extra OPTIONS round trip (400–1300 ms observed).
+		MaxAge: 600,
 	})
 
 	server := &http.Server{

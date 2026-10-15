@@ -1139,6 +1139,14 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 | GET / PUT / DELETE | `/backup-destinations/{id}` | `HandleGetBackupDestination` / `HandleUpdateBackupDestination` `[E]` / `HandleDeleteBackupDestination` `[E]` |
 | POST | `/backup-destinations/{id}/test` | `DatabaseHandler.HandleTestBackupDestination` `[E]` |
 
+**`PUT /backup-destinations/{id}` merges `config`; it does not replace it.** Clients never see the
+stored config (`json:"-"` — it holds credentials), so lattice-web's edit form sends only the fields
+the user filled in. Keys in the body overwrite stored keys, a key set to `null` removes it (so an
+optional `endpoint` or `path_prefix` can be cleared), and every other stored key is kept
+(`mergeBackupConfig`). Changing `type` in the same request drops the stored keys — they belong to
+another backend — and the body's `config` becomes the whole config. Before this, a one-field edit
+wiped the bucket, region and keys and silently broke every backup to that destination.
+
 **Admin config, discovery & self-update** (all `/admin`)
 
 | Method | Path | Handler |
@@ -1364,7 +1372,9 @@ accept it (`monitor.ValidCorrelationID`), otherwise mints a UUID; the `trace_id`
 W3C `traceparent`, then `X-Trace-ID`, otherwise `monitor.NewTraceID()`. Both go on the context
 and back out as `X-Request-ID` / `X-Trace-ID` response headers. CORS allows `X-Request-ID`,
 `X-Trace-ID` and `traceparent` inbound and exposes `X-Request-ID` / `X-Trace-ID`, so lattice-web's
-`api.request.*` events carry the same id as the request's `http.request.end` event. Commands to a
+`api.request.*` events carry the same id as the request's `http.request.end` event. The CORS
+`MaxAge` is 600 s so browsers cache the preflight; without it every lattice-web call paid an extra
+`OPTIONS` round trip (400–1300 ms observed). Commands to a
 runner carry the ids on the envelope (see *Worker protocol*), so a deploy clicked in the browser is
 one `request_id` across lattice-web, this API and the runner. Background jobs log under their own
 `monitor.WithJobID` context.
