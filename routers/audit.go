@@ -23,7 +23,10 @@ func logAudit(r *http.Request, action, resourceType string, resourceID *int, det
 	if user != nil {
 		userID = &user.ID
 	}
-	ip := r.RemoteAddr
+	// Same client IP the request log and rate limiter use: the peer address
+	// without its port, or the forwarded client when the peer is a trusted
+	// proxy. RemoteAddr recorded the reverse proxy's ip:port on every row.
+	ip := middleware.ClientIP(r)
 
 	// Every audited mutation also reaches Monitor, on the request's own ids,
 	// so the trail survives the audit table's 180-day retention and can be read

@@ -473,6 +473,13 @@ listed in `TRUSTED_PROXIES` (comma-separated IPs/CIDRs), so header spoofing can'
 limiter or flood the bucket map. The bucket map is capped (`maxBuckets`) and stale entries are
 evicted, bounding memory.
 
+`middleware.ClientIP` is the one source of a client address: the request log's `client_ip`, the
+rate limiter, audit-log `ip_address` and automation run details all use it. (Audit and automations
+used to record raw `RemoteAddr`, so every row read `<proxy-ip>:<port>`.) ⚠️ Production sits behind
+the reverse proxy at `10.15.10.71` and does not set `TRUSTED_PROXIES`, so every one of those records
+the proxy's address. Setting `TRUSTED_PROXIES=10.15.10.71` in `/opt/lattice/.env` (and restarting
+the API) makes them record real clients, provided the proxy sends `X-Real-IP` or `X-Forwarded-For`.
+
 ### WebSocket hubs
 
 Two independent hubs, both created in `initApp()`:
