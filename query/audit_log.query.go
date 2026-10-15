@@ -2,6 +2,8 @@ package query
 
 import (
 	"fmt"
+	"strings"
+	"time"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/aidenappl/lattice-api/db"
@@ -42,6 +44,19 @@ type ListAuditLogRequest struct {
 	UserID       *int
 	Action       *string
 	ResourceType *string
+	ResourceID   *int
+	// Search matches action, resource type, details and IP address
+	// (case-insensitive substring).
+	Search *string
+	From   *time.Time
+	To     *time.Time
+}
+
+// likeEscape escapes LIKE wildcards so a search for "100%" or "a_b" matches
+// those characters literally.
+func likeEscape(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s)
 }
 
 func ListAuditLog(engine db.Queryable, req ListAuditLogRequest) (*[]structs.AuditLogEntry, error) {
@@ -55,6 +70,24 @@ func ListAuditLog(engine db.Queryable, req ListAuditLogRequest) (*[]structs.Audi
 	}
 	if req.ResourceType != nil {
 		q = q.Where(sq.Eq{"audit_log.resource_type": *req.ResourceType})
+	}
+	if req.ResourceID != nil {
+		q = q.Where(sq.Eq{"audit_log.resource_id": *req.ResourceID})
+	}
+	if req.From != nil {
+		q = q.Where(sq.GtOrEq{"audit_log.inserted_at": *req.From})
+	}
+	if req.To != nil {
+		q = q.Where(sq.Lt{"audit_log.inserted_at": *req.To})
+	}
+	if req.Search != nil && strings.TrimSpace(*req.Search) != "" {
+		pat := "%" + likeEscape(strings.TrimSpace(*req.Search)) + "%"
+		q = q.Where(sq.Or{
+			sq.Like{"audit_log.action": pat},
+			sq.Like{"audit_log.resource_type": pat},
+			sq.Like{"audit_log.details": pat},
+			sq.Like{"audit_log.ip_address": pat},
+		})
 	}
 
 	if req.Limit == 0 || req.Limit > db.MAX_LIMIT {

@@ -3,14 +3,17 @@ package structs
 import "time"
 
 type Stack struct {
-	ID                   int       `json:"id"`
-	Name                 string    `json:"name"`
-	Description          *string   `json:"description"`
-	WorkerID             *int      `json:"worker_id"`
-	Status               string    `json:"status"`
-	DeploymentStrategy   string    `json:"deployment_strategy"`
-	AutoDeploy           bool      `json:"auto_deploy"`
-	EnvVars              *string   `json:"env_vars"`
+	ID                 int     `json:"id"`
+	Name               string  `json:"name"`
+	Description        *string `json:"description"`
+	WorkerID           *int    `json:"worker_id"`
+	Status             string  `json:"status"`
+	DeploymentStrategy string  `json:"deployment_strategy"`
+	AutoDeploy         bool    `json:"auto_deploy"`
+	EnvVars            *string `json:"env_vars"`
+	// SecretEnvKeys is a JSON array naming the env_vars keys whose values are
+	// masked ("***") for non-admins in every API response.
+	SecretEnvKeys        *string   `json:"secret_env_keys"`
 	ComposeYAML          *string   `json:"compose_yaml"`
 	PlacementConstraints *string   `json:"placement_constraints"`
 	Active               bool      `json:"active"`

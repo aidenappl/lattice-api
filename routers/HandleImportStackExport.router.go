@@ -20,6 +20,7 @@ func HandleImportStackExport(w http.ResponseWriter, r *http.Request) {
 			DeploymentStrategy   string  `json:"deployment_strategy"`
 			AutoDeploy           bool    `json:"auto_deploy"`
 			EnvVars              *string `json:"env_vars"`
+			SecretEnvKeys        *string `json:"secret_env_keys"`
 			ComposeYAML          *string `json:"compose_yaml"`
 			PlacementConstraints *string `json:"placement_constraints"`
 		} `json:"stack"`
@@ -72,12 +73,25 @@ func HandleImportStackExport(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback() // no-op if committed
 
 	// Create the stack
+	var secretKeys *string
+	if body.Stack.SecretEnvKeys != nil {
+		norm, err := normalizeSecretKeys(*body.Stack.SecretEnvKeys)
+		if err != nil {
+			responder.SendError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if norm != "" {
+			secretKeys = &norm
+		}
+	}
+
 	stack, err := query.CreateStack(tx, query.CreateStackRequest{
 		Name:                 body.Stack.Name,
 		Description:          body.Stack.Description,
 		DeploymentStrategy:   strategy,
 		AutoDeploy:           body.Stack.AutoDeploy,
 		EnvVars:              body.Stack.EnvVars,
+		SecretEnvKeys:        secretKeys,
 		ComposeYAML:          body.Stack.ComposeYAML,
 		PlacementConstraints: body.Stack.PlacementConstraints,
 	})
@@ -163,5 +177,5 @@ func HandleImportStackExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logAudit(r, "import", "stack", intPtr(stack.ID), strPtr(body.Stack.Name))
-	responder.NewCreated(w, stack, "stack imported")
+	responder.NewCreated(w, stackForUser(r, stack), "stack imported")
 }

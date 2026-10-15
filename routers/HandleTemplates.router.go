@@ -117,6 +117,9 @@ func HandleCreateTemplateFromStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Templates are readable by every role, so secret values are blanked
+	// rather than masked: a stack created from the template gets the keys,
+	// still marked secret, and someone fills them in.
 	export := map[string]any{
 		"version": "1",
 		"stack": map[string]any{
@@ -124,7 +127,8 @@ func HandleCreateTemplateFromStack(w http.ResponseWriter, r *http.Request) {
 			"description":           stack.Description,
 			"deployment_strategy":   stack.DeploymentStrategy,
 			"auto_deploy":           stack.AutoDeploy,
-			"env_vars":              stack.EnvVars,
+			"env_vars":              maskEnvVars(stack.EnvVars, parseSecretKeys(stack.SecretEnvKeys), ""),
+			"secret_env_keys":       stack.SecretEnvKeys,
 			"compose_yaml":          stack.ComposeYAML,
 			"placement_constraints": stack.PlacementConstraints,
 		},

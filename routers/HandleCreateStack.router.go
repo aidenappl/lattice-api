@@ -18,6 +18,7 @@ func HandleCreateStack(w http.ResponseWriter, r *http.Request) {
 		DeploymentStrategy string  `json:"deployment_strategy"`
 		AutoDeploy         bool    `json:"auto_deploy"`
 		EnvVars            *string `json:"env_vars"`
+		SecretEnvKeys      *string `json:"secret_env_keys"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		responder.BadBody(w, err)
@@ -43,6 +44,18 @@ func HandleCreateStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var secretKeys *string
+	if body.SecretEnvKeys != nil {
+		norm, err := normalizeSecretKeys(*body.SecretEnvKeys)
+		if err != nil {
+			responder.SendError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if norm != "" {
+			secretKeys = &norm
+		}
+	}
+
 	stack, err := query.CreateStack(db.DB, query.CreateStackRequest{
 		Name:               body.Name,
 		Description:        body.Description,
@@ -50,6 +63,7 @@ func HandleCreateStack(w http.ResponseWriter, r *http.Request) {
 		DeploymentStrategy: body.DeploymentStrategy,
 		AutoDeploy:         body.AutoDeploy,
 		EnvVars:            body.EnvVars,
+		SecretEnvKeys:      secretKeys,
 	})
 	if err != nil {
 		responder.QueryError(w, err, "failed to create stack")
@@ -57,5 +71,5 @@ func HandleCreateStack(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logAudit(r, "create", "stack", intPtr(stack.ID), strPtr(stack.Name))
-	responder.NewCreated(w, stack, "stack created")
+	responder.NewCreated(w, stackForUser(r, stack), "stack created")
 }
