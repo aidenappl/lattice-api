@@ -172,14 +172,19 @@ func ClientIP(r *http.Request) string {
 		return peer
 	}
 
-	// Peer is a trusted proxy — honor the IP it forwarded.
-	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
-		return xri
-	}
+	// Peer is a trusted proxy — honor the IP it forwarded. X-Forwarded-For
+	// comes first: a proxy appends the address it observed, so the rightmost
+	// entry can't be forged by the client. X-Real-IP is only safe when the
+	// proxy overwrites it, and production's proxy passes a client-supplied
+	// X-Real-IP straight through, which let anyone pick their own address.
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
-		// The rightmost entry is the address our trusted proxy observed.
-		return strings.TrimSpace(parts[len(parts)-1])
+		if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
+			return last
+		}
+	}
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		return xri
 	}
 	return peer
 }

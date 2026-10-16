@@ -492,10 +492,16 @@ evicted, bounding memory.
 
 `middleware.ClientIP` is the one source of a client address: the request log's `client_ip`, the
 rate limiter, audit-log `ip_address` and automation run details all use it. (Audit and automations
-used to record raw `RemoteAddr`, so every row read `<proxy-ip>:<port>`.) ⚠️ Production sits behind
-the reverse proxy at `10.15.10.71` and does not set `TRUSTED_PROXIES`, so every one of those records
-the proxy's address. Setting `TRUSTED_PROXIES=10.15.10.71` in `/opt/lattice/.env` (and restarting
-the API) makes them record real clients, provided the proxy sends `X-Real-IP` or `X-Forwarded-For`.
+used to record raw `RemoteAddr`, so every row read `<proxy-ip>:<port>`.) Production sits behind the
+reverse proxy (openresty) at `10.15.10.71` with `TRUSTED_PROXIES=10.15.10.71`; the compose file's
+`lattice-api` service lists its env vars explicitly, so a new `.env` key does nothing until it is
+also added there (`TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"`) and the container is recreated
+(`lattice_update_api({force: true})`).
+
+From a trusted peer, **the rightmost `X-Forwarded-For` entry wins, and `X-Real-IP` is only a
+fallback.** The production proxy appends the address it saw to `X-Forwarded-For` but passes a
+client-supplied `X-Real-IP` through untouched, so reading `X-Real-IP` first let any client choose
+its own IP for the audit log and the brute-force limiter. Keep that order.
 
 ### WebSocket hubs
 
