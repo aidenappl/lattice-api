@@ -11,6 +11,9 @@ import (
 	"github.com/gorilla/mux"
 )
 
+// workerChartPoints is roughly how many points a ranged worker chart gets.
+const workerChartPoints = 300
+
 func HandleGetWorkerMetrics(w http.ResponseWriter, r *http.Request) {
 	workerID, err := strconv.Atoi(mux.Vars(r)["id"])
 	if err != nil {
@@ -38,9 +41,15 @@ func HandleGetWorkerMetrics(w http.ResponseWriter, r *http.Request) {
 			"7d":  7 * 24 * time.Hour,
 		}
 		if d, ok := rangeDurations[rangeStr]; ok {
-			since := time.Now().Add(-d)
-			req.Since = &since
-			req.Limit = 500 // allow more data points for time range queries
+			// Ranged charts get the whole window in ~300 buckets; the newest
+			// 500 raw samples only reached back ~80 minutes.
+			metrics, err := query.ListMetricsBucketed(db.DB, workerID, d, workerChartPoints)
+			if err != nil {
+				responder.QueryError(w, err, "failed to list worker metrics")
+				return
+			}
+			responder.New(w, metrics, "worker metrics retrieved")
+			return
 		}
 	}
 

@@ -2,6 +2,7 @@ package query
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -266,12 +267,12 @@ type FleetMetricsPoint struct {
 // Aggregation is done in SQL: each bucket averages CPU/memory per worker first,
 // then averages across workers for fleet-wide values. Network uses pre-computed
 // rates (bytes/sec) instead of cumulative byte counters.
+//
+// The window and bucket size are inlined as integers (see windowClause) rather
+// than bound as parameters.
 func GetFleetMetricsHistory(engine db.Queryable, since time.Time, points int) ([]FleetMetricsPoint, error) {
-	duration := time.Since(since)
-	intervalSec := int(duration.Seconds()) / points
-	if intervalSec < 60 {
-		intervalSec = 60
-	}
+	windowSec := int(time.Since(since).Seconds())
+	intervalSec := bucketSeconds(windowSec, points, 60)
 
 	// Two-level aggregation in SQL:
 	// Inner query: per-worker per-bucket averages
@@ -289,7 +290,7 @@ func GetFleetMetricsHistory(engine db.Queryable, since time.Time, points int) ([
 		FROM (
 			SELECT
 				worker_id,
-				FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP(recorded_at) / ?) * ?) AS bucket_ts,
+				FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP(recorded_at) / ` + strconv.Itoa(intervalSec) + `) * ` + strconv.Itoa(intervalSec) + `) AS bucket_ts,
 				AVG(cpu_percent) AS worker_cpu_avg,
 				AVG(CASE WHEN memory_total_mb > 0 THEN (memory_used_mb / memory_total_mb) * 100 ELSE NULL END) AS worker_mem_avg,
 				AVG(COALESCE(network_rx_rate, 0)) AS worker_rx_rate,
@@ -297,14 +298,14 @@ func GetFleetMetricsHistory(engine db.Queryable, since time.Time, points int) ([
 				MAX(container_count) AS worker_containers,
 				MAX(container_running_count) AS worker_running
 			FROM worker_metrics
-			WHERE recorded_at >= ?
+			WHERE ` + windowClause(windowSec) + `
 			GROUP BY worker_id, bucket_ts
 		) per_worker
 		GROUP BY bucket_ts
 		ORDER BY bucket_ts ASC
 	`
 
-	rows, err := engine.Query(rawSQL, intervalSec, intervalSec, since)
+	rows, err := engine.Query(rawSQL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query fleet history: %w", err)
 	}
@@ -351,6 +352,103 @@ func GetFleetMetricsHistory(engine db.Queryable, since time.Time, points int) ([
 		return []FleetMetricsPoint{}, nil
 	}
 	return result, nil
+}
+
+// windowClause is the recorded_at filter for "the last windowSec seconds",
+// computed in SQL from an inlined integer.
+//
+// Binding the start time as a parameter (`recorded_at >= ?`) made the
+// production database full-scan worker_metrics (2.2M rows, ~6.5 s for every
+// fleet-metrics range, minutes for the old ranged worker query); SHOW EXPLAIN
+// on the live query showed type ALL with idx_wm_recorded available. The same
+// query with the window computed in SQL is an index range read of a few
+// thousand rows (~30 ms). The integer comes from server-side constants, never
+// from request input, so inlining it is safe.
+func windowClause(windowSec int) string {
+	if windowSec < 1 {
+		windowSec = 1
+	}
+	return "recorded_at >= NOW() - INTERVAL " + strconv.Itoa(windowSec) + " SECOND"
+}
+
+// bucketSeconds splits a window into about `points` buckets, never smaller
+// than minSec.
+func bucketSeconds(windowSec, points, minSec int) int {
+	if points < 1 {
+		points = 1
+	}
+	sec := windowSec / points
+	if sec < minSec {
+		sec = minSec
+	}
+	return sec
+}
+
+// workerBucketColumns aggregates one bucket of a worker's samples into the
+// metricsColumns shape so scanMetrics can read it: gauges are averaged,
+// capacities and cumulative counters take the max, and recorded_at is the
+// bucket's newest sample.
+var workerBucketColumns = []string{
+	"MAX(id)",
+	"MAX(worker_id)",
+	"AVG(cpu_percent)",
+	"MAX(cpu_cores)",
+	"AVG(load_avg_1)",
+	"AVG(load_avg_5)",
+	"AVG(load_avg_15)",
+	"AVG(memory_used_mb)",
+	"MAX(memory_total_mb)",
+	"AVG(memory_free_mb)",
+	"AVG(swap_used_mb)",
+	"MAX(swap_total_mb)",
+	"AVG(disk_used_mb)",
+	"MAX(disk_total_mb)",
+	"CAST(ROUND(AVG(container_count)) AS SIGNED)",
+	"CAST(ROUND(AVG(container_running_count)) AS SIGNED)",
+	"MAX(network_rx_bytes)",
+	"MAX(network_tx_bytes)",
+	"AVG(network_rx_rate)",
+	"AVG(network_tx_rate)",
+	"MAX(uptime_seconds)",
+	"CAST(ROUND(AVG(process_count)) AS SIGNED)",
+	"CAST(ROUND(AVG(runner_goroutines)) AS SIGNED)",
+	"AVG(runner_heap_mb)",
+	"AVG(runner_sys_mb)",
+	"MAX(recorded_at)",
+}
+
+// ListMetricsBucketed returns a worker's samples over the last `window`,
+// aggregated into about `points` time buckets, newest first.
+//
+// Ranged worker charts used to take the newest 500 raw samples. At one sample
+// every 10 s that is ~80 minutes, so the 24h and 7d views silently showed only
+// the last hour or so. Bucketing covers the whole window at a fixed size.
+func ListMetricsBucketed(engine db.Queryable, workerID int, window time.Duration, points int) ([]structs.WorkerMetrics, error) {
+	windowSec := int(window.Seconds())
+	intervalSec := bucketSeconds(windowSec, points, 10)
+
+	rawSQL := `
+		SELECT ` + strings.Join(workerBucketColumns, ", ") + `
+		FROM worker_metrics
+		WHERE worker_id = ` + strconv.Itoa(workerID) + ` AND ` + windowClause(windowSec) + `
+		GROUP BY FLOOR(UNIX_TIMESTAMP(recorded_at) / ` + strconv.Itoa(intervalSec) + `)
+		ORDER BY MAX(recorded_at) DESC
+	`
+	rows, err := engine.Query(rawSQL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query bucketed worker metrics: %w", err)
+	}
+	defer rows.Close()
+
+	metrics := []structs.WorkerMetrics{}
+	for rows.Next() {
+		m, err := scanMetrics(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan bucketed worker metrics: %w", err)
+		}
+		metrics = append(metrics, *m)
+	}
+	return metrics, rows.Err()
 }
 
 func joinColumns(cols []string) string {
