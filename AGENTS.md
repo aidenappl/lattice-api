@@ -1325,6 +1325,11 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
   `worker_id` and every aggregated column, so the 7-day range (~550k samples, more than the 128 MB
   buffer pool can cache) is an index-only read — 7.5 s → ~1.4 s. If you change which columns
   `GetFleetMetricsHistory` aggregates, change the index too, or it silently goes back to row lookups.
+- **`worker_metrics` indexes** (after 023): `PRIMARY`, `idx_wm_recorded (recorded_at)`,
+  `idx_wm_worker_recorded (worker_id, recorded_at)` (also backs `fk_metrics_worker`), and
+  `idx_wm_fleet_cover`. 023 dropped `idx_metrics_recorded` (duplicate) and `idx_metrics_worker`
+  (prefix of `idx_wm_worker_recorded`); every insert maintained them for nothing. Don't add an index
+  here without checking it isn't a prefix of one that exists.
 - **Big indexes on existing installs: build online first.** Migrations run at API startup, so a long
   `CREATE INDEX` keeps the API down while it builds. Run the migration's statement by hand with
   `ALGORITHM=INPLACE LOCK=NONE` (writes keep flowing), then ship; `IF NOT EXISTS` makes the
