@@ -1063,7 +1063,7 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 | GET / POST | `/workers` | `HandleGetWorkers` / `HandleCreateWorker` `[E]` |
 | GET / PUT / DELETE | `/workers/{id}` | `HandleGetWorker` / `HandleUpdateWorker` `[E]` / `HandleDeleteWorker` `[E]` |
 | GET / POST | `/workers/{id}/tokens` | `HandleGetWorkerTokens` / `HandleCreateWorkerToken` `[E]` |
-| GET | `/workers/{id}/metrics` | `HandleGetWorkerMetrics`. `?range=` (1h/6h/24h/7d) is applied **in Go** after fetching the newest 500 rows (`metricsSince`); with `recorded_at >= ?` in SQL the production DB took 2–4 min. Note the 500-row cap means long ranges only cover the newest ~2 h |
+| GET | `/workers/{id}/metrics` | `HandleGetWorkerMetrics`. Without `?range=`: the newest `?limit=` raw samples. With `?range=` (1h/6h/24h/7d): `query.ListMetricsBucketed` — the **whole window** in ~300 time buckets (gauges averaged, capacities/counters max, `recorded_at` = newest sample in the bucket), newest first, same `WorkerMetrics` shape. (It used to return the newest 500 raw rows, which only reached back ~80 min.) |
 | GET | `/workers/{id}/container-stats` | `HandleGetWorkerContainerStats`. Drops containers whose last sample is >5 min older than the newest (`currentContainerSamples`), so removed containers such as `<name>-lattice-updating` stop showing as running |
 | POST | `/workers/{id}/reboot` | `WorkerActionHandler.HandleRebootWorker` `[A]` |
 | POST | `/workers/{id}/upgrade` | `WorkerActionHandler.HandleUpgradeRunner` `[A]` |
@@ -1203,7 +1203,7 @@ wiped the bucket, region and keys and silently broke every backup to that destin
 | GET / PUT | `/notification-prefs` | `HandleGetNotificationPrefs` `[A]` / `HandleUpdateNotificationPrefs` `[A]` |
 | GET | `/search` | `HandleSearch` |
 | GET | `/overview` | `HandleGetOverview` |
-| GET | `/fleet-metrics` | `HandleGetFleetMetrics` |
+| GET | `/fleet-metrics` | `HandleGetFleetMetrics` — `?range=` 1h/6h/24h/7d, two-level SQL aggregation (`GetFleetMetricsHistory`) |
 | GET | `/anomalies` | `HandleGetAnomalies` |
 | GET | `/versions` | `HandleGetVersions` |
 | POST | `/versions/refresh` | `HandleRefreshVersions` `[A]` |
@@ -1314,6 +1314,13 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
   pushes the image; it does not deploy** — rollout happens via Lattice's own self-update path.
 - **Database:** MariaDB, schema `lattice`. Schema is owned by the in-code `migrate()` calls in
   `db.Init()` (no external migration runner). Pool: 25 open / 10 idle / 5-min lifetime.
+- **Time windows on `worker_metrics` are computed in SQL, never bound.** Use `windowClause(sec)`
+  (`recorded_at >= NOW() - INTERVAL <int> SECOND`) with server-computed integers. With the start
+  time bound as a parameter (`recorded_at >= ?`), production MariaDB full-scans the 2.2M-row table
+  (`SHOW EXPLAIN` on the live query: `type ALL`, `idx_wm_recorded` unused) — 6.5 s for every
+  fleet-metrics range, minutes for the old ranged worker query — while the same query with the
+  window in SQL is an index range read (~30 ms). It did not reproduce on a fresh local DB, so test
+  against production plans, not just locally. Never inline request input this way.
 - **Background jobs** (all started in `initApp`): `versions` (GitHub tag poll via git refs, 30m), `retention`
   (log/metric purge, hourly; windows: container_logs 7d, lifecycle 14d, worker_metrics 30d,
   container_metrics 7d, deployment_logs 90d, audit_log 180d, database_instance_events 180d,
