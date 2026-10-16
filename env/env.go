@@ -36,6 +36,10 @@ var (
 	SSOAutoProvision  = getEnv("SSO_AUTO_PROVISION", "true") == "true" // auto-create users on first SSO login
 	SSOPostLoginURL   = getEnv("SSO_POST_LOGIN_URL", "/")              // URL to redirect to after SSO login (frontend URL)
 
+	// Activity sink (optional): audited actions by SSO users are mirrored here,
+	// authenticated with the SSO client credentials. Empty reports nothing.
+	ActivityReportURL = getEnv("ACTIVITY_REPORT_URL", "")
+
 	// TLS (optional — for local HTTPS development)
 	TLSCert = getEnv("TLS_CERT", "")
 	TLSKey  = getEnv("TLS_KEY", "")

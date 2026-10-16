@@ -42,6 +42,7 @@ func logAudit(r *http.Request, action, resourceType string, resourceID *int, det
 	ctx := context.WithoutCancel(r.Context())
 	go func() {
 		defer logger.Recover("audit", logger.F{"action": action, "resource_type": resourceType})
+		reportActivity(user, action, resourceType, resourceID)
 		req := query.CreateAuditLogRequest{
 			UserID:       userID,
 			Action:       action,
