@@ -18,6 +18,7 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
+	github.com/aidenappl/go-forta v1.13.0
 	github.com/aidenappl/go-oidc-session v0.1.2
 	github.com/coreos/go-oidc/v3 v3.20.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect

@@ -86,8 +86,9 @@ rows in this database.
   MariaDB `sqlstore`. Brings `coreos/go-oidc/v3` and `golang.org/x/oauth2` transitively.
   Pinned at **v0.1.0**; upgrade with `go get github.com/aidenappl/go-oidc-session@vX.Y.Z`.
 
-**Internal SDKs:** `go-monitor` (telemetry, above) and `go-oidc-session` (SSO). Lattice keeps its
-own users; Forta is just one OIDC provider it can be pointed at. Keyring is used only at **CI**
+**Internal SDKs:** `go-monitor` (telemetry, above), `go-oidc-session` (SSO) and the stdlib-only
+`go-forta/activity` subpackage (the optional activity sink — used generically, no Forta auth code).
+Lattice keeps its own users; Forta is just one OIDC provider it can be pointed at. Keyring is used only at **CI**
 time via the `aidenappl/keyring-actions` GitHub Action to inject registry credentials for the
 image build; the running binary reads plain env vars.
 
@@ -111,7 +112,7 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `message_handlers.go` | `configureWorkerHandler` / `configureAdminHandler` — the OnConnect/OnDisconnect/OnMessage callbacks. This is where inbound worker messages are routed by `msg.Type` and fanned out to the admin hub, DB, webhooks, and mailer. `safeGo` bounds handler goroutines (semaphore of 100). |
 | `ws_dispatch.go` | Helper dispatch logic for worker→API messages (heartbeat metrics, container status/sync/logs, lifecycle logs, deployment progress). Referenced by `message_handlers.go`. |
 | `container_cache.go` | 60s in-memory `name → *structs.Container` cache to kill the N+1 lookup on every heartbeat/log/status message. Status/health writes call `Invalidate(name)` so the next read is fresh, and a background `StartEviction` goroutine prunes expired entries to bound memory. |
-| `env/env.go` | All env vars via `getEnv`/`getEnvOrPanic`. `ValidateSecurityDefaults()` panics in production on weak `JWT_SIGNING_KEY` / admin password. |
+| `env/env.go` | All env vars via `getEnv`/`getEnvOrPanic` (incl. optional `ACTIVITY_REPORT_URL`). `ValidateSecurityDefaults()` panics in production on weak `JWT_SIGNING_KEY` / admin password. |
 | `db/db.go` | MariaDB pool (IIFE-free lazy `Init()`), `Queryable` interface, `DEFAULT_LIMIT`/`MAX_LIMIT`, `BeginTx`, and **all schema migrations run in-code** via the idempotent `migrate()` helper. |
 | `logger/logger.go` | Structured leveled logger (text/ANSI or JSON). `logger.F` = `map[string]any`. `Request()` picks level by HTTP status. `Debug/Info/Warn/Error` (and the `…Ctx(ctx, …)` variants, which carry the context's request/trace/user/job ids) build a `log/slog` record with the caller's PC and hand it to the slog default handler; `StdoutHandler` prints the historical stdout format gated by `LOG_LEVEL`, and telemetry installs `componentHandler`, which writes each record unchanged to `StdoutHandler` and hands Monitor (`monitor.NewSlogHandler(nil, …)`) a copy, so Monitor events name the true call site. `SetPanicSink` tees every reported panic out of the process; `Request` lines are stdout only — the middleware reports requests itself. `Recover(name, fields)`, deferred directly, is the panic guard for every goroutine; `Panic`/`PanicContext` report a value already recovered. |
 | `telemetry/telemetry.go` | Monitor wiring: `Init(version)` (never fails or blocks — Monitor is a Lattice stack), `InstallSinks(version)` (logger → `<component>.log.<level>` and `panic.recovered` events); `handler.go` is the `componentHandler` fan-out and the warn limiter, `Shutdown`, `Fatal`/`ReportFatal` for boot failures, `CrashGuard` (deferred first in `main`). See *Operations → Monitor telemetry*. |
@@ -401,6 +402,22 @@ token it cannot verify.
    field (so every pre-existing token is nil). `HandleCreateApiToken` validates/normalizes the
    scopes field (`middleware.NormalizeApiTokenScopes`) and rejects unknown values with a `400`.
    Enforcement lives in `DualAuthMiddleware` (`apiTokenScopeAllows`).
+
+### Activity sink (`routers/activity_sink.go`, optional)
+
+When `ACTIVITY_REPORT_URL` is set (prod: `https://auth.appleby.cloud/internal/activity`), every
+`logAudit` action by a user with an SSO subject is also posted there as
+`{sub, action: "<resource_type>.<action>", outcome: "success", details: {id}}`, authenticated with
+the DB-backed SSO client id/secret (HTTP Basic). In production that puts Lattice deploys,
+rollbacks, credential reveals and deletes on the user's Forta activity trail. Rules:
+
+- Off unless `ACTIVITY_REPORT_URL` is set **and** SSO is enabled with a client secret. The
+  reporter is rebuilt when the SSO client changes (settings are runtime-editable).
+- Skipped: local password users, subjects that still look like an email (pre-heal rows), and
+  `sso_login` (the provider already records sign-ins).
+- Only identifiers travel — never `audit_log.details` (it can hold emails and names).
+- Fire-and-forget on the audit goroutine through a bounded queue; failures log
+  `activity_sink` warnings. `audit_log` stays the record.
 
 ### SSO sessions — lifetime is the identity provider's
 
