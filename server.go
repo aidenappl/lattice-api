@@ -93,6 +93,8 @@ func startServer(r *mux.Router) {
 	if err := server.Shutdown(ctx); err != nil {
 		logger.ErrorCtx(context.Background(), "server", "graceful shutdown incomplete", logger.F{"error": err})
 	}
+	// Write queued container log lines before the process exits.
+	containerLogs.Close(ctx)
 	logger.InfoCtx(context.Background(), "server", "stopped")
 	telemetry.Shutdown(sig.String())
 }
