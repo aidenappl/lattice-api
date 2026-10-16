@@ -1321,6 +1321,14 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
   fleet-metrics range, minutes for the old ranged worker query — while the same query with the
   window in SQL is an index range read (~30 ms). It did not reproduce on a fresh local DB, so test
   against production plans, not just locally. Never inline request input this way.
+- **`idx_wm_fleet_cover`** (migration 022) covers the fleet-history query: `recorded_at` first, then
+  `worker_id` and every aggregated column, so the 7-day range (~550k samples, more than the 128 MB
+  buffer pool can cache) is an index-only read — 7.5 s → ~1.4 s. If you change which columns
+  `GetFleetMetricsHistory` aggregates, change the index too, or it silently goes back to row lookups.
+- **Big indexes on existing installs: build online first.** Migrations run at API startup, so a long
+  `CREATE INDEX` keeps the API down while it builds. Run the migration's statement by hand with
+  `ALGORITHM=INPLACE LOCK=NONE` (writes keep flowing), then ship; `IF NOT EXISTS` makes the
+  migration a no-op. Production's 2.2M-row `worker_metrics` took 16 s for 022.
 - **Background jobs** (all started in `initApp`): `versions` (GitHub tag poll via git refs, 30m), `retention`
   (log/metric purge, hourly; windows: container_logs 7d, lifecycle 14d, worker_metrics 30d,
   container_metrics 7d, deployment_logs 90d, audit_log 180d, database_instance_events 180d,
