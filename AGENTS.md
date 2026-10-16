@@ -110,6 +110,7 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `init.go` | `initApp()` — bootstraps logger, env validation, DB, crypto, retention, watcher, versions, admin bootstrap, network backfill, SSO check, and constructs the two hubs + all struct-receiver handlers into an `appContext`. |
 | `server.go` | `startServer` — CORS config, `http.Server` with timeouts, TLS toggle, graceful shutdown on SIGINT/SIGTERM (7s drain, then `telemetry.Shutdown` delivers or spools buffered events inside Docker's 10s stop window). |
 | `message_handlers.go` | `configureWorkerHandler` / `configureAdminHandler` — the OnConnect/OnDisconnect/OnMessage callbacks. This is where inbound worker messages are routed by `msg.Type` and fanned out to the admin hub, DB, webhooks, and mailer. `safeGo` bounds handler goroutines (semaphore of 100). |
+| `container_log_batcher.go` | `containerLogs` — buffers container log lines and writes them as multi-row INSERTs (see *Container log lines are batched*). Started in `initApp`, drained in `server.go` on shutdown. |
 | `ws_dispatch.go` | Helper dispatch logic for worker→API messages (heartbeat metrics, container status/sync/logs, lifecycle logs, deployment progress). Referenced by `message_handlers.go`. |
 | `container_cache.go` | 60s in-memory `name → *structs.Container` cache to kill the N+1 lookup on every heartbeat/log/status message. Status/health writes call `Invalidate(name)` so the next read is fresh, and a background `StartEviction` goroutine prunes expired entries to bound memory. |
 | `env/env.go` | All env vars via `getEnv`/`getEnvOrPanic` (incl. optional `ACTIVITY_REPORT_URL`). `ValidateSecurityDefaults()` panics in production on weak `JWT_SIGNING_KEY` / admin password. |
@@ -286,6 +287,15 @@ This repo follows the global Go standards. Specifics and deviations:
 - **Goroutine discipline.** Background message handling goes through `safeGo` (semaphore of 100,
   panic-recovered). Deployment monitors are bounded by `maxConcurrentDeploys = 10`. Follow this
   pattern for any new fan-out — do not spawn unbounded goroutines per message.
+- **Container log lines are batched, not inserted one by one.** `handleContainerLog` hands each
+  line to `containerLogs` (`container_log_batcher.go`), which writes one multi-row
+  `query.CreateContainerLogs` INSERT every 250 ms or at 200 rows / 1 MiB. Per-line INSERTs were most
+  of the database's commits (one disk sync each, 0.4–1.4 s on production's virtual disk). A failed
+  batch is retried row by row so one bad line can't lose its neighbours; a full queue or a closed
+  batcher stores the line directly rather than dropping it; `server.go` drains it on shutdown. The
+  live log view is fed by the admin-hub broadcast, so the delay doesn't show there. Lines without a
+  runner timestamp get `CURRENT_TIMESTAMP(6)` explicitly (the column default the single-row insert
+  relied on). Do the same for any other per-message write stream that grows.
 - **Audit logging.** State-changing handlers call `logAudit(r, action, entity, id, details)`
   (in `routers/audit.go`). Add an audit call to any new mutating route.
 - **Tests.** Standard `testing`, table-driven, no testify. Present for `crypto`, `jwt`,

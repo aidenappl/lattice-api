@@ -141,3 +141,39 @@ func CreateContainerLog(engine db.Queryable, req CreateContainerLogRequest) erro
 	_, err = engine.Exec(qStr, args...)
 	return err
 }
+
+// CreateContainerLogs stores a batch of log lines in one multi-row INSERT —
+// one transaction and one commit instead of one per line. ON DUPLICATE KEY
+// UPDATE applies per row, so replayed lines are still dropped by the unique
+// index exactly as in CreateContainerLog.
+func CreateContainerLogs(engine db.Queryable, reqs []CreateContainerLogRequest) error {
+	if len(reqs) == 0 {
+		return nil
+	}
+	qStr, args, err := containerLogsInsert(reqs)
+	if err != nil {
+		return err
+	}
+	_, err = engine.Exec(qStr, args...)
+	return err
+}
+
+// containerLogsInsert builds the batch INSERT. Every row has the same columns;
+// a line without a runner timestamp gets CURRENT_TIMESTAMP(6), which is what
+// the column default gave the single-row insert.
+func containerLogsInsert(reqs []CreateContainerLogRequest) (string, []any, error) {
+	q := sq.Insert("container_logs").
+		Columns("container_id", "container_name", "worker_id", "stream", "message", "recorded_at")
+	for _, r := range reqs {
+		var recordedAt any = sq.Expr("CURRENT_TIMESTAMP(6)")
+		if r.RecordedAt != nil {
+			recordedAt = r.RecordedAt.UTC().Format("2006-01-02 15:04:05.999999")
+		}
+		q = q.Values(r.ContainerID, r.ContainerName, r.WorkerID, r.Stream, r.Message, recordedAt)
+	}
+	qStr, args, err := q.Suffix("ON DUPLICATE KEY UPDATE id = id").ToSql()
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to build sql query: %w", err)
+	}
+	return qStr, args, nil
+}

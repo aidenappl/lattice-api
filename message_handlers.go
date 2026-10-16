@@ -799,9 +799,7 @@ func handleContainerLog(workerID int, payload map[string]any) {
 		}
 	}
 
-	if err := query.CreateContainerLog(db.DB, req); err != nil {
-		logger.ErrorCtx(context.Background(), "container", "failed to store container log", logger.F{"worker_id": workerID, "error": err})
-	}
+	containerLogs.Add(req)
 }
 
 // writeWorkerLifecycleLogs writes a system log entry to every container

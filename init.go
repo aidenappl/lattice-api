@@ -92,6 +92,7 @@ func initApp() *appContext {
 	watcher.Start()
 	mailer.StartEviction()
 	containerNameCache.StartEviction()
+	containerLogs.Start()
 
 	if err := db.PingDB(db.DB); err != nil {
 		telemetry.Fatal("service.startup.db_unreachable", "failed to ping db: ", err)
