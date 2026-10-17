@@ -36,3 +36,27 @@ type Container struct {
 func (c Container) HasHealthCheck() bool {
 	return c.HealthCheck != nil && *c.HealthCheck != ""
 }
+
+// ContainerStatus is the set of values Lattice writes to containers.status:
+// the runner's Docker-state mapping (container_sync), container actions and
+// deployment completion. The column is VARCHAR (migration 024) because the
+// original ENUM lacked restarting and paused, and every such write failed.
+type ContainerStatus string
+
+const (
+	ContainerStatusRunning    ContainerStatus = "running"
+	ContainerStatusStopped    ContainerStatus = "stopped"
+	ContainerStatusError      ContainerStatus = "error"
+	ContainerStatusPending    ContainerStatus = "pending"
+	ContainerStatusPaused     ContainerStatus = "paused"
+	ContainerStatusRestarting ContainerStatus = "restarting"
+)
+
+func (s ContainerStatus) IsValid() bool {
+	switch s {
+	case ContainerStatusRunning, ContainerStatusStopped, ContainerStatusError,
+		ContainerStatusPending, ContainerStatusPaused, ContainerStatusRestarting:
+		return true
+	}
+	return false
+}

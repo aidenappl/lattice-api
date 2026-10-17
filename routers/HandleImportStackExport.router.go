@@ -8,6 +8,7 @@ import (
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
+	"github.com/aidenappl/lattice-api/structs"
 	"github.com/aidenappl/lattice-api/tools"
 )
 
@@ -62,6 +63,10 @@ func HandleImportStackExport(w http.ResponseWriter, r *http.Request) {
 	strategy := body.Stack.DeploymentStrategy
 	if strategy == "" {
 		strategy = "rolling"
+	}
+	if !structs.DeploymentStrategy(strategy).IsValid() {
+		responder.SendError(w, http.StatusBadRequest, structs.INVALID_DEPLOYMENT_STRATEGY)
+		return
 	}
 
 	// Begin transaction — if container creation fails, the stack is rolled back too

@@ -7,6 +7,7 @@ import (
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
+	"github.com/aidenappl/lattice-api/structs"
 	"github.com/aidenappl/lattice-api/tools"
 )
 
@@ -34,6 +35,10 @@ func HandleCreateStack(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.DeploymentStrategy == "" {
 		body.DeploymentStrategy = "rolling"
+	}
+	if !structs.DeploymentStrategy(body.DeploymentStrategy).IsValid() {
+		responder.SendError(w, http.StatusBadRequest, structs.INVALID_DEPLOYMENT_STRATEGY)
+		return
 	}
 
 	if exists, err := query.StackNameExists(db.DB, body.Name, nil); err != nil {

@@ -264,6 +264,14 @@ This repo follows the global Go standards. Specifics and deviations:
   clears it and resets `health_status` to `none`. Test for a configured check with
   `Container.HasHealthCheck()`, never `HealthCheck != nil`: the nil test left cleared containers stuck
   at `starting`. An image's own `HEALTHCHECK` still applies at the next deploy.
+- **`containers.status` is `VARCHAR(32)`** (migration `024`), not the original
+  `ENUM('running','stopped','error','pending')`: the runner reports `restarting` and container
+  actions write `paused`, and both failed with Error 1265, leaving the old status in place. The
+  allowed values are `structs.ContainerStatus` (`IsValid`); `handleContainerSync` drops an unknown
+  one with a warning instead of storing it. Add a new status there, not in SQL.
+- **`deployment_strategy` is validated in the handler** (`structs.DeploymentStrategy.IsValid`:
+  `rolling`, `blue-green`, `canary`) on stack create, update, compose import and stack-export
+  import, answering 400. The columns are still ENUMs, so an unchecked value is a 500 (Error 1265).
 - **Container `ulimits`** (migration `019`). Stored as JSON normalized to
   `{"nofile":{"soft":n,"hard":n}}`; accepted in compose (`ulimits:` integer or `{soft, hard}`, per
   the compose spec) and as a JSON string in container create/update and stack import bodies.
