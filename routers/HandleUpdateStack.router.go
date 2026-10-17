@@ -8,6 +8,7 @@ import (
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
+	"github.com/aidenappl/lattice-api/structs"
 	"github.com/gorilla/mux"
 )
 
@@ -41,6 +42,10 @@ func HandleUpdateStack(w http.ResponseWriter, r *http.Request) {
 			responder.SendError(w, http.StatusBadRequest, "invalid status value")
 			return
 		}
+	}
+	if body.DeploymentStrategy != nil && !structs.DeploymentStrategy(*body.DeploymentStrategy).IsValid() {
+		responder.SendError(w, http.StatusBadRequest, structs.INVALID_DEPLOYMENT_STRATEGY)
+		return
 	}
 
 	// Secret values come back to non-admins (and to the web UI until revealed)

@@ -21,3 +21,26 @@ func TestContainerHasHealthCheck(t *testing.T) {
 		})
 	}
 }
+
+func TestContainerStatusIsValid(t *testing.T) {
+	tests := []struct {
+		status ContainerStatus
+		want   bool
+	}{
+		{"running", true},
+		{"stopped", true},
+		{"error", true},
+		{"pending", true},
+		{"paused", true},
+		{"restarting", true},
+		{"exited", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.status), func(t *testing.T) {
+			if got := tt.status.IsValid(); got != tt.want {
+				t.Errorf("ContainerStatus(%q).IsValid() = %v, want %v", tt.status, got, tt.want)
+			}
+		})
+	}
+}

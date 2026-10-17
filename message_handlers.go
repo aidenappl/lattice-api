@@ -709,6 +709,12 @@ func handleContainerSync(payload map[string]any) {
 	if containerName == "" || latticeStatus == "" {
 		return
 	}
+	// containers.status is free text since migration 024, so an unexpected
+	// value from a newer or older runner is refused here rather than stored.
+	if !structs.ContainerStatus(latticeStatus).IsValid() {
+		logger.WarnCtx(context.Background(), "container", "sync ignored unknown status", logger.F{"container_name": containerName, "status": latticeStatus})
+		return
+	}
 
 	c, err := containerNameCache.GetContainerByName(containerName)
 	if err != nil {
