@@ -236,8 +236,11 @@ This repo follows the global Go standards. Specifics and deviations:
   `TokensRevokedAt` carry `json:"-"` so they never serialize.
 - **Env-var interpolation in deploy specs.** When building container specs the deploy path
   resolves `${VAR}` / `$VAR` references (compose semantics) against a merged map of
-  `global_env_vars` (decrypted, base layer) then stack-level env vars (override). See
-  `resolveEnvRef` / `resolveVarsInValue` in `HandleDeployStack.router.go`. Memory limits are
+  `global_env_vars` (decrypted, base layer) then stack-level env vars (override). References
+  are resolved both as whole values and embedded in longer strings (e.g. a DSN
+  `postgres://u:${DB_PASSWORD}@db/x`) in env vars, ports, volumes and health checks; unknown
+  references are left literal. See `resolveEnvRef` / `resolveVarsInValue` in
+  `HandleDeployStack.router.go`. Memory limits are
   stored in MB and converted to bytes (`*1024*1024`) before being sent to the runner.
 - **One deploy-spec builder.** Dashboard deploys, CI-token deploys and rollbacks all build runner
   specs through `specBuilder` (`routers/deploy_spec.go`). **Add a new container field there and

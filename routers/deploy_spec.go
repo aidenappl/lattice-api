@@ -139,16 +139,11 @@ func (b *specBuilder) build(c structs.Container, image, tag string) (map[string]
 	}
 	if ev != nil {
 		// Compose semantics: only the keys defined for the service, with ${VAR}
-		// references resolved from the stack-level env.
+		// references resolved from the stack-level env — whole values and
+		// embedded ones (postgres://user:${DB_PASSWORD}@host/db) alike.
 		merged := make(map[string]any, len(ev))
 		for k, v := range ev {
-			if s, ok := v.(string); ok {
-				if resolved, ok := resolveEnvRef(s, b.env); ok {
-					merged[k] = resolved
-					continue
-				}
-			}
-			merged[k] = v
+			merged[k] = resolveVarsInValue(v, b.env)
 		}
 		spec["env_vars"] = merged
 	}
