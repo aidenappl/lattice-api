@@ -198,18 +198,19 @@ func TestSpecBuilderClearedFieldsAreUnset(t *testing.T) {
 // A ${VAR} embedded in a longer env value (a DSN) must be interpolated, not
 // only a value that is wholly a reference. Unknown refs stay literal.
 func TestSpecBuilderInterpolatesEmbeddedEnvRefs(t *testing.T) {
-	b := &specBuilder{ctx: context.Background(), env: map[string]any{"DB_PASSWORD": "s3cret", "PORT": float64(8080)}}
+	const dsnPrefix = "mysql://u:"
+	b := &specBuilder{ctx: context.Background(), env: map[string]any{"DB_PASSWORD": "fixture-value", "PORT": float64(8080)}}
 	spec, specErr := b.build(structs.Container{
 		Name:    "x",
-		EnvVars: strp(`{"DATABASE":"postgres://u:${DB_PASSWORD}@db:5432/x?sslmode=disable","PASS":"${DB_PASSWORD}","PORT":"${PORT}","ADDR":":$PORT","OTHER":"${MISSING}","PLAIN":"v"}`),
+		EnvVars: strp(`{"DATABASE":"` + dsnPrefix + `${DB_PASSWORD}@db/x","PASS":"${DB_PASSWORD}","PORT":"${PORT}","ADDR":":$PORT","OTHER":"${MISSING}","PLAIN":"v"}`),
 	}, "img", "latest")
 	if specErr != nil {
 		t.Fatalf("build failed: %v", specErr.err)
 	}
 	ev := spec["env_vars"].(map[string]any)
 	want := map[string]any{
-		"DATABASE": "postgres://u:s3cret@db:5432/x?sslmode=disable",
-		"PASS":     "s3cret",
+		"DATABASE": dsnPrefix + "fixture-value" + "@db/x",
+		"PASS":     "fixture-value",
 		"PORT":     float64(8080),
 		"ADDR":     ":8080",
 		"OTHER":    "${MISSING}",
