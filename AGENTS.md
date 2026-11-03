@@ -128,7 +128,7 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `structs/` | 20 `{Entity}.struct.go` domain types with `json` tags and pointer nullables. |
 | `socket/` | `hub.go` (WorkerHub + WorkerSession), `admin.go` (AdminHub + AdminSession with topic subscriptions), `handler.go` (WorkerHandler — upgrade, read/write pumps, ping/pong), `protocol.go` (all message-type constants + `Envelope`/`IncomingMessage`). |
 | `registry/client.go` | Docker Registry v2 HTTP client — `Ping`, `ListRepositories`, `ListTags`, `GetManifestDigest`. |
-| `healthscan/scanner.go` | Periodic worker-vs-DB reconciliation; emits `health_anomalies` to the admin hub. |
+| `healthscan/scanner.go` | Periodic worker-vs-DB reconciliation; emits `health_anomalies` to the admin hub. Includes `orphaned_database` / `orphaned_database_volume` from `db_sync` (`UpdateWorkerDatabaseOrphans`). |
 | `watcher/watcher.go` | Polls registries for mutable-tag re-pushes (digest change) → fires `image.updated` / auto-deploy webhooks. |
 | `retention/retention.go` | Hourly batch purge of old log/metric rows per retention window. Also `database_instance_events` (180d) and soft-deleted `database_snapshots` (90d, gated on `active = 0` via `purgeWhere` — a live snapshot row is the only record of where its remote file lives, so purging by age alone would orphan objects on the destination). |
 | `webhooks/dispatcher.go` | `Fire(event, data)` — async outbound webhooks, optional HMAC-SHA256 signing. `Deliver(ctx, Request)` is the one outbound HTTP path for user/admin-configured URLs (SSRF-safe client, returns status + a 512-byte body snippet); event webhooks and automation `http_request` steps both use it. |
@@ -619,6 +619,18 @@ self-correcting:
   state, health, restart count and (when it recognises a fatal startup failure) a `fatal_hint`.
 - `handleDbSync`/`reconcileDatabaseInstance` diff observed against desired state and correct the
   difference in either direction. A lost `db_status` is therefore survivable.
+- **Observed containers are matched to instances by instance id, not name** (`matchObservedDatabase`).
+  The runner labels each container `lattice-database-instance-id` and reports it as
+  `database_instance_id` in `db_sync`. Unlabelled containers from older runners fall back to the name.
+  An instance in `error` with `create_failed` is never promoted to `running` by an observed container,
+  because that container belongs to someone else (APL-1: instance 12 adopted instance 11's orphan and
+  served its lost credentials).
+- `findDatabaseOrphans` lists managed DB containers and `lattice-dbdata-*` volumes (`db_sync.volumes`)
+  that no live instance owns. They are handed to the health scanner and surface in `/anomalies` as
+  `orphaned_database` / `orphaned_database_volume`.
+- A `db_create` reply that arrives while the instance is `deleting` is recorded as an event and
+  otherwise ignored, so a late create can't move a deleting row. The runner cancels and waits for an
+  in-flight create before it removes, so the remove's reply is the one that finalises the row.
 - A watchdog runs every 30s and fails out any instance that has sat in a transitional status for
   more than `dbProvisionTimeout` (10m), with `provision_timeout` or `worker_offline`. **This is
   the backstop that makes "stuck in pending forever" impossible.**

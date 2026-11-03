@@ -473,7 +473,11 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 			// Full per-worker report of observed database containers. This is
 			// the level-triggered input the reconciler diffs against desired
 			// state, so a lost db_status can no longer strand an instance.
-			safeGo("db-sync", func() { handleDbSync(ctx, session.WorkerID, msg.Payload) })
+			safeGo("db-sync", func() {
+				if orphans := handleDbSync(ctx, session.WorkerID, msg.Payload); orphans != nil {
+					scanner.UpdateWorkerDatabaseOrphans(session.WorkerID, *orphans)
+				}
+			})
 
 		case socket.MsgDbSnapshotProgress:
 			adminHub.BroadcastJSON(map[string]any{

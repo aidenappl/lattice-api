@@ -3,6 +3,7 @@ package healthscan
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,7 +25,44 @@ const (
 	AnomalyMismatch   AnomalyType = "status_mismatch"     // DB says running but worker says stopped (or vice versa)
 	AnomalyUnmanaged  AnomalyType = "unmanaged_container" // container on worker not in any stack
 	AnomalyStaleState AnomalyType = "stale_state"         // DB shows running but worker hasn't reported in >2min
+	// AnomalyOrphanedDatabase is a managed database container (labelled
+	// lattice-type=database) that no live database instance owns: left behind
+	// by a create that outlived its delete, or by an instance retired while its
+	// container survived. It still serves whatever credentials it was created
+	// with, and a new instance under the same name must not adopt it (APL-1).
+	AnomalyOrphanedDatabase AnomalyType = "orphaned_database"
+	// AnomalyOrphanedDatabaseVolume is a lattice-dbdata-* volume no live
+	// instance owns. Creating an instance with that name will refuse to start
+	// until it is removed or deliberately adopted.
+	AnomalyOrphanedDatabaseVolume AnomalyType = "orphaned_database_volume"
 )
+
+// OrphanDatabaseContainer is a managed database container no instance owns.
+type OrphanDatabaseContainer struct {
+	Name string
+	// InstanceID is the (retired or unknown) instance its label names; 0 when
+	// the container predates the label.
+	InstanceID int
+	State      string
+}
+
+// DatabaseOrphans is what one db_sync found that no live instance owns.
+type DatabaseOrphans struct {
+	Containers []OrphanDatabaseContainer
+	Volumes    []string
+	// VolumesKnown is false when the runner did not report volumes (older
+	// runners), so absence of orphan volumes means nothing.
+	VolumesKnown bool
+}
+
+// dbOrphanFreshness bounds how old a db_sync report may be and still count.
+// Workers send one every 60s.
+const dbOrphanFreshness = 3 * time.Minute
+
+type workerDatabaseOrphans struct {
+	DatabaseOrphans
+	UpdatedAt time.Time
+}
 
 // Anomaly represents a single detected issue.
 type Anomaly struct {
@@ -68,6 +106,10 @@ type Scanner struct {
 	// Updated from heartbeat container_stats payloads.
 	containerStateMu sync.RWMutex
 	containerState   map[int]workerContainerState // workerID -> state
+
+	// dbOrphans is the last db_sync's unowned database containers and volumes
+	// per worker, computed by the db_sync handler against database_instances.
+	dbOrphans map[int]workerDatabaseOrphans
 }
 
 type workerContainerState struct {
@@ -81,6 +123,7 @@ func New(db *sql.DB, adminHub *socket.AdminHub, workerHub *socket.WorkerHub) *Sc
 		adminHub:       adminHub,
 		workerHub:      workerHub,
 		containerState: make(map[int]workerContainerState),
+		dbOrphans:      make(map[int]workerDatabaseOrphans),
 	}
 }
 
@@ -118,6 +161,53 @@ func (s *Scanner) UpdateWorkerContainers(workerID int, containerNames []string) 
 	}
 }
 
+// UpdateWorkerDatabaseOrphans records what a worker's latest db_sync found
+// that no database instance owns.
+func (s *Scanner) UpdateWorkerDatabaseOrphans(workerID int, orphans DatabaseOrphans) {
+	s.containerStateMu.Lock()
+	defer s.containerStateMu.Unlock()
+	s.dbOrphans[workerID] = workerDatabaseOrphans{DatabaseOrphans: orphans, UpdatedAt: time.Now()}
+}
+
+// databaseOrphanAnomalies turns a worker's fresh db_sync orphans into
+// anomalies. Stale reports (worker gone quiet) yield none.
+func databaseOrphanAnomalies(workerID int, workerName string, o workerDatabaseOrphans, now time.Time) []Anomaly {
+	if now.Sub(o.UpdatedAt) > dbOrphanFreshness {
+		return nil
+	}
+	var out []Anomaly
+	for _, c := range o.Containers {
+		details := map[string]any{"state": c.State}
+		msg := "Database container on worker is not owned by any database instance"
+		if c.InstanceID > 0 {
+			details["database_instance_id"] = c.InstanceID
+			msg = fmt.Sprintf("Database container belongs to instance %d, which no longer exists", c.InstanceID)
+		}
+		out = append(out, Anomaly{
+			ID:            anomalyID(workerID, string(AnomalyOrphanedDatabase), c.Name),
+			Type:          AnomalyOrphanedDatabase,
+			WorkerID:      workerID,
+			WorkerName:    workerName,
+			ContainerName: c.Name,
+			Message:       msg,
+			DetectedAt:    now,
+			Details:       details,
+		})
+	}
+	for _, v := range o.Volumes {
+		out = append(out, Anomaly{
+			ID:         anomalyID(workerID, string(AnomalyOrphanedDatabaseVolume), v),
+			Type:       AnomalyOrphanedDatabaseVolume,
+			WorkerID:   workerID,
+			WorkerName: workerName,
+			Message:    "Database data volume on worker is not owned by any database instance",
+			DetectedAt: now,
+			Details:    map[string]any{"volume_name": v},
+		})
+	}
+	return out
+}
+
 // pruneContainerState drops per-worker state for any worker not in the current
 // worker set, and any entry that has gone stale (not updated within an hour).
 func (s *Scanner) pruneContainerState(workers []structs.Worker) {
@@ -130,6 +220,11 @@ func (s *Scanner) pruneContainerState(workers []structs.Worker) {
 	for id, state := range s.containerState {
 		if _, ok := live[id]; !ok || time.Since(state.UpdatedAt) > time.Hour {
 			delete(s.containerState, id)
+		}
+	}
+	for id, o := range s.dbOrphans {
+		if _, ok := live[id]; !ok || time.Since(o.UpdatedAt) > time.Hour {
+			delete(s.dbOrphans, id)
 		}
 	}
 }
@@ -172,7 +267,21 @@ func (s *Scanner) scan(ctx context.Context) {
 
 		s.containerStateMu.RLock()
 		state, hasState := s.containerState[w.ID]
+		dbOrphans, hasDbOrphans := s.dbOrphans[w.ID]
 		s.containerStateMu.RUnlock()
+
+		// Unowned database containers and volumes come from db_sync, which is
+		// independent of the heartbeat state checked below.
+		orphanedDatabases := map[string]bool{}
+		if hasDbOrphans {
+			found := databaseOrphanAnomalies(w.ID, w.Name, dbOrphans, time.Now())
+			anomalies = append(anomalies, found...)
+			for _, a := range found {
+				if a.ContainerName != "" {
+					orphanedDatabases[a.ContainerName] = true
+				}
+			}
+		}
 
 		if !hasState || time.Since(state.UpdatedAt) > 2*time.Minute {
 			continue // no fresh data to compare
@@ -213,7 +322,8 @@ func (s *Scanner) scan(ctx context.Context) {
 
 		// Check for orphaned/unmanaged containers on worker
 		for _, name := range state.Containers {
-			if managedDatabases[name] {
+			// Reported above with what it is; don't repeat it as unmanaged.
+			if managedDatabases[name] || orphanedDatabases[name] {
 				continue
 			}
 			if _, tracked := expectedNames[name]; !tracked {
