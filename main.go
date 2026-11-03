@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 
-	monitor "github.com/aidenappl/go-monitor"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/routers"
@@ -41,12 +40,12 @@ func main() {
 
 	// Health check (before middleware)
 	r.HandleFunc("/healthcheck", func(w http.ResponseWriter, r *http.Request) {
-		// Telemetry counters ride along so lost or spooled events are visible
-		// from outside: a service whose events stop arriving cannot report it.
-		body := map[string]any{"status": "ok", "db": "ok", "telemetry": monitor.Stats()}
+		// Unauthenticated, so it says only whether the API can serve: no
+		// telemetry counters or dependency detail. A failed DB ping is a 503.
+		body := map[string]string{"status": "ok"}
 		status := http.StatusOK
 		if err := db.DB.Ping(); err != nil {
-			body["status"], body["db"] = "degraded", "error"
+			body["status"] = "degraded"
 			status = http.StatusServiceUnavailable
 		}
 		w.Header().Set("Content-Type", "application/json")
