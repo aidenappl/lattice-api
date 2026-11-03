@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/healthscan"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/routers"
@@ -316,6 +317,17 @@ func handleDbStatus(ctx context.Context, workerID int, payload map[string]any) {
 		}
 	}
 
+	// A create still finishing while its instance is being deleted must not
+	// move the row: a late "completed" would flip `deleting` to `running`, and
+	// the remove's reply would then find nothing to finalise. The runner
+	// cancels and waits for that create before it removes (APL-1), so the
+	// remove's own reply is the one that counts.
+	if action == socket.MsgDbCreate && dbInstanceStatus(instanceID) == string(structs.DBStatusDeleting) {
+		dbLifecycle.RecordEvent(instanceID, structs.DBEventTransition,
+			fmt.Sprintf("db_create %s while deleting; ignored", phase), "worker")
+		return
+	}
+
 	switch phase {
 	case socket.PhaseAck:
 		// The worker has the command. Move out of pending so the watchdog can
@@ -389,9 +401,13 @@ func handleDbStatus(ctx context.Context, workerID int, payload map[string]any) {
 // observedDbContainer is one entry of a worker's db_sync report.
 type observedDbContainer struct {
 	ContainerName string
-	State         string // docker state: running, exited, restarting, created, paused
-	Health        string // docker health: healthy, unhealthy, starting, none
-	RestartCount  int
+	// InstanceID is the instance the worker's lattice-database-instance-id
+	// label names, or 0 for a container created by a runner that predates the
+	// label.
+	InstanceID   int
+	State        string // docker state: running, exited, restarting, created, paused
+	Health       string // docker health: healthy, unhealthy, starting, none
+	RestartCount int
 	// FatalHint is the worker's diagnosis when it recognises a known-fatal
 	// startup failure in the container's logs (bad volume ownership, a
 	// non-empty Postgres data directory, and so on).
@@ -408,13 +424,13 @@ type observedDbContainer struct {
 // This is the level-triggered half of the design: it does not care which
 // command produced the current state, only whether observed matches desired. A
 // dropped db_status is therefore self-correcting.
-func handleDbSync(ctx context.Context, workerID int, payload map[string]any) {
+func handleDbSync(ctx context.Context, workerID int, payload map[string]any) *healthscan.DatabaseOrphans {
 	rawList, ok := payload["containers"].([]any)
 	if !ok {
-		return
+		return nil
 	}
 
-	observed := map[string]observedDbContainer{}
+	var observedList []observedDbContainer
 	for _, raw := range rawList {
 		entry, ok := raw.(map[string]any)
 		if !ok {
@@ -427,13 +443,25 @@ func handleDbSync(ctx context.Context, workerID int, payload map[string]any) {
 		state, _ := entry["state"].(string)
 		health, _ := entry["health"].(string)
 		fatalHint, _ := entry["fatal_hint"].(string)
-		observed[name] = observedDbContainer{
+		observedList = append(observedList, observedDbContainer{
 			ContainerName:   name,
+			InstanceID:      payloadInt(entry, socket.PayloadDbInstanceID),
 			State:           state,
 			Health:          health,
 			RestartCount:    payloadInt(entry, "restart_count"),
 			FatalHint:       fatalHint,
 			VolumeSizeBytes: int64(payloadInt(entry, "volume_size_bytes")),
+		})
+	}
+
+	// nil when the runner predates the field: unknown, not "no volumes".
+	var volumes []string
+	if rawVolumes, ok := payload["volumes"].([]any); ok {
+		volumes = []string{}
+		for _, v := range rawVolumes {
+			if name, ok := v.(string); ok && name != "" {
+				volumes = append(volumes, name)
+			}
 		}
 	}
 
@@ -442,17 +470,72 @@ func handleDbSync(ctx context.Context, workerID int, payload map[string]any) {
 		logger.ErrorCtx(ctx, "database", "db_sync failed to list instances", logger.F{
 			"worker_id": workerID, "error": err,
 		})
-		return
+		return nil
 	}
 
 	for _, instance := range instances {
-		reconcileDatabaseInstance(ctx, instance, observed[instance.ContainerName], observed)
+		obs, present := matchObservedDatabase(instance, observedList)
+		reconcileDatabaseInstance(ctx, instance, obs, present)
 	}
+
+	return findDatabaseOrphans(instances, observedList, volumes)
+}
+
+// matchObservedDatabase finds the container that belongs to an instance.
+//
+// By instance id first: the runner labels every container it creates with its
+// instance, so a container another instance left under the same name is never
+// taken for this one's. That is exactly what happened in APL-1 — instance 12's
+// create failed on instance 11's orphaned volume, then the reconciler matched
+// 11's still-running container by name and marked 12 running and healthy,
+// serving credentials nobody had. Unlabelled containers (runners that predate
+// the label) fall back to the name.
+func matchObservedDatabase(instance structs.DatabaseInstance, observed []observedDbContainer) (observedDbContainer, bool) {
+	for _, o := range observed {
+		if o.InstanceID == instance.ID {
+			return o, true
+		}
+	}
+	for _, o := range observed {
+		if o.InstanceID == 0 && o.ContainerName == instance.ContainerName {
+			return o, true
+		}
+	}
+	return observedDbContainer{}, false
+}
+
+// findDatabaseOrphans lists the managed database containers and data volumes
+// on a worker that no live instance owns. volumes is nil when the runner did
+// not report them.
+func findDatabaseOrphans(instances []structs.DatabaseInstance, observed []observedDbContainer, volumes []string) *healthscan.DatabaseOrphans {
+	byID := map[int]bool{}
+	byName := map[string]bool{}
+	byVolume := map[string]bool{}
+	for _, inst := range instances {
+		byID[inst.ID] = true
+		byName[inst.ContainerName] = true
+		byVolume[inst.VolumeName] = true
+	}
+
+	out := &healthscan.DatabaseOrphans{VolumesKnown: volumes != nil}
+	for _, o := range observed {
+		owned := byID[o.InstanceID] || (o.InstanceID == 0 && byName[o.ContainerName])
+		if !owned {
+			out.Containers = append(out.Containers, healthscan.OrphanDatabaseContainer{
+				Name: o.ContainerName, InstanceID: o.InstanceID, State: o.State,
+			})
+		}
+	}
+	for _, v := range volumes {
+		if !byVolume[v] {
+			out.Volumes = append(out.Volumes, v)
+		}
+	}
+	return out
 }
 
 // reconcileDatabaseInstance drives one instance toward its observed state.
-func reconcileDatabaseInstance(ctx context.Context, instance structs.DatabaseInstance, obs observedDbContainer, observed map[string]observedDbContainer) {
-	_, present := observed[instance.ContainerName]
+func reconcileDatabaseInstance(ctx context.Context, instance structs.DatabaseInstance, obs observedDbContainer, present bool) {
 	current := structs.DatabaseStatus(instance.Status)
 
 	// Record what the database costs on disk whenever the worker reports it.
@@ -523,6 +606,13 @@ func reconcileDatabaseInstance(ctx context.Context, instance structs.DatabaseIns
 
 	switch obs.State {
 	case "running":
+		// A failed create produced no container of its own, so a running one
+		// under its name belongs to someone else. Leave the instance in error
+		// with the create's reason rather than promote it (APL-1).
+		if current == structs.DBStatusError && instance.LastError != nil &&
+			instance.LastError.Code == structs.DBErrCodeCreateFailed {
+			return
+		}
 		if current != structs.DBStatusRunning {
 			opts := transitionOpts{
 				Ctx:     ctx,
