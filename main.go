@@ -126,6 +126,9 @@ func main() {
 	admin.Use(middleware.DualAuthMiddleware)
 	admin.Use(middleware.RejectPending)
 
+	// Health detail (DB status, telemetry counters) — the public /healthcheck is just {status}
+	admin.HandleFunc("/health", routers.HandleAdminGetHealth).Methods(http.MethodGet)
+
 	// Workers
 	admin.HandleFunc("/workers", routers.HandleGetWorkers).Methods(http.MethodGet)
 	admin.HandleFunc("/workers", middleware.RequireEditor(routers.HandleCreateWorker)).Methods(http.MethodPost)

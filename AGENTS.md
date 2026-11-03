@@ -1058,6 +1058,7 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 |--------|------|---------|
 | GET | `/` | inline — "Lattice API" |
 | GET | `/healthcheck` | inline, unauthenticated — pings DB, returns only `{"status":"ok"}` (503 `{"status":"degraded"}` when the ping fails); skips logging |
+| GET | `/admin/health` | `HandleAdminGetHealth` — any signed-in approved user; `{status, db, telemetry}` (go-monitor `Stats()`) |
 | GET | `/version` | inline — `{"version": Version}` |
 | GET | `/install/runner` | `HandleInstallRunner` (embedded script) |
 | POST | `/api/deploy/{token}` | `DeployHandler.HandlePublicDeploy` (deploy-token auth; `?container=` for single-container, `?commit=` for audit) |
@@ -1463,7 +1464,9 @@ one `request_id` across lattice-web, this API and the runner. Background jobs lo
 **Deploy order.** lattice-api must be deployed **before** lattice-web: the browser now sends
 `X-Request-ID` on every call, and an API whose CORS preflight does not allow that header fails
 every request. The runner and the API can go in either order (the envelope fields are additive). `/healthcheck` deliberately returns only `{"status":"ok"}` (APL-15): it is unauthenticated, so
-go-monitor's `Stats()` counters are no longer exposed there. Redaction happens in the SDK before anything is written or sent
+go-monitor's `Stats()` counters (sent, dropped, spooled, pending) moved to the authenticated
+`GET /admin/health` (`lattice_health` in lattice-mcp). A rising `dropped` or `pending` means events
+are not arriving, which the service cannot tell you through Monitor itself. Redaction happens in the SDK before anything is written or sent
 (credential-shaped keys and values, plus `email`); query strings are never logged; webhook URLs
 are logged as scheme + host only, because a chat webhook's path is its credential.
 
