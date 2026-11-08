@@ -304,8 +304,14 @@ This repo follows the global Go standards. Specifics and deviations:
   line to `containerLogs` (`container_log_batcher.go`), which writes one multi-row
   `query.CreateContainerLogs` INSERT every 250 ms or at 200 rows / 1 MiB. Per-line INSERTs were most
   of the database's commits (one disk sync each, 0.4–1.4 s on production's virtual disk). A failed
-  batch is retried row by row so one bad line can't lose its neighbours; a full queue or a closed
-  batcher stores the line directly rather than dropping it; `server.go` drains it on shutdown. The
+  batch is retried row by row so one bad line can't lose its neighbours. **A full queue drops the
+  line** (counted in `containerLogs.Dropped()`, warned at most once a minute); only a closed batcher
+  (shutdown) stores directly; `server.go` drains it on shutdown. **`handleContainerLog` runs inline in
+  the read pump, not through `safeGo`, and must never wait on the database.** The old full-queue
+  fallback was a synchronous INSERT on the caller: under worker-6's log flood (2026-11-08) every
+  `msgSem` slot sat in one, `safeGo` blocked the read pump, pongs went unread and the connection was
+  reset about once a minute (540 proxy `recv() failed (104)` errors, all `/ws/worker` from worker-6),
+  costing status and health messages too. The
   live log view is fed by the admin-hub broadcast, so the delay doesn't show there. Lines without a
   runner timestamp get `CURRENT_TIMESTAMP(6)` explicitly (the column default the single-row insert
   relied on). Do the same for any other per-message write stream that grows.
@@ -540,8 +546,13 @@ Two independent hubs, both created in `initApp()`:
   `unsubscribe` to topics (e.g. `worker:3`); `BroadcastFiltered` respects them, and a session
   with no subscriptions receives everything.
 
-`socket/handler.go` runs the worker read/write pumps: `writeWait 10s`, `pongWait 90s`,
-`pingPeriod ~72s`, `maxMessageSize 64KB`, send buffer 128. Origin is checked by
+`socket/handler.go` runs the worker read/write pumps: `writeWait 10s`, `pongWait 60s`,
+`pingPeriod 25s` (shared by the admin socket), `maxMessageSize 64KB`, send buffer 128. **`pingPeriod`
+must stay well under the edge proxy's `proxy_read_timeout`** (NPM's nginx default 60s on
+lattice-api.appleby.cloud; it was 72s, above it), pinned by `socket/keepalive_test.go`. On shutdown
+`server.go` calls `WorkerHub.CloseAll` / `AdminHub.CloseAll` with **1001 going away** before
+`server.Shutdown` — hijacked sockets are invisible to it, and without the close frame every runner
+and browser saw a reset on each deploy. Origin is checked by
 `CheckAllowedOrigin` (matches scheme+host against `ALLOWED_ORIGINS`; empty Origin — non-browser
 runner — is allowed). Every callback runs with its panic contained (`logger.Recover`): on a pump's
 goroutine nothing else could recover it, and an uncontained panic would take the process and every

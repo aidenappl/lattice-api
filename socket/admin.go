@@ -372,3 +372,22 @@ func (h *AdminHandler) dispatch(session *AdminSession, msg IncomingMessage) {
 	defer logger.Recover("socket.admin.on_message", logger.F{"session_id": session.ID, "message_type": msg.Type})
 	h.OnMessage(session, msg)
 }
+
+// CloseAll sends every session a close frame with code and reason, then closes
+// it. Used on shutdown so peers see a clean 1001 "going away" and reconnect,
+// instead of a TCP reset the proxy logs as recv() failed (104). WriteControl is
+// safe to call alongside the session's write pump.
+func (h *AdminHub) CloseAll(code int, reason string) {
+	h.mu.Lock()
+	sessions := make([]*AdminSession, 0, len(h.sessions))
+	for k, s := range h.sessions {
+		sessions = append(sessions, s)
+		delete(h.sessions, k)
+	}
+	h.mu.Unlock()
+	msg := websocket.FormatCloseMessage(code, reason)
+	for _, s := range sessions {
+		_ = s.Conn.WriteControl(websocket.CloseMessage, msg, time.Now().Add(writeWait))
+		s.Close()
+	}
+}

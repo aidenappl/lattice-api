@@ -343,7 +343,11 @@ func configureWorkerHandler(wh *socket.WorkerHandler, adminHub *socket.AdminHub,
 				"worker_id": session.WorkerID,
 				"payload":   msg.Payload,
 			})
-			safeGo("container-log", func() { handleContainerLog(session.WorkerID, msg.Payload) })
+			// Inline, not through safeGo: handleContainerLog only queues the line
+			// (containerLogs.Add never waits on the database), so it cannot hold
+			// the read pump, and a log flood must not take the msgSem slots that
+			// status and health messages need. See containerLogBatcher.Add.
+			handleContainerLog(session.WorkerID, msg.Payload)
 
 		case socket.MsgLifecycleLog:
 			handleLifecycleLog(ctx, session.WorkerID, msg.Payload)
