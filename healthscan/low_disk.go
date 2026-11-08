@@ -13,7 +13,9 @@ import (
 // filled in one day of deploys).
 const AnomalyLowDisk AnomalyType = "low_disk"
 
-// Low-disk thresholds: a worker is flagged under either.
+// Low-disk thresholds: a worker is flagged under either. lattice-web's
+// src/lib/disk.ts colours the worker disk gauge red at the same values, so
+// change both together.
 const (
 	LOW_DISK_FREE_PCT = 10.0
 	LOW_DISK_FREE_MB  = 5 * 1024.0
