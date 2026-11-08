@@ -1335,6 +1335,19 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
   call with an older tag. Omitting `version` follows whatever the file already resolves to —
   `:latest` when the variable is unset.
 
+  **The target tag is checked in the registry before it is pinned** (`verifyTargetTag`): a tag
+  that does not exist is a 400 `tag not found in registry: <repo>:<tag>` and `.env` is left
+  untouched. It is skipped (logged, the pull decides) for images outside `REGISTRY_URL`, without
+  registry credentials, or when the registry can't be reached. **lattice-web publishes only
+  `latest`, `main` and `main-<sha>`** — never `vX.Y.Z` — so a web update must name one of those or
+  omit `version`; on 2026-11-08 a `v1.8.8` web pin passed every check and failed only at pull.
+
+  **If the host compose file hard-codes a tag** (no `${LATTICE_WEB_TAG}`), a versioned update is a
+  400 `cannot target a version: … does not interpolate ${…}`, and nothing changes; an update
+  without `version` still pulls the hard-coded tag. Fix it on the host (an operator change, not
+  something this API does) by making the web service's image
+  `${REGISTRY_URL:-registry.appleby.cloud}/lattice-web:${LATTICE_WEB_TAG:-latest}`.
+
   **The compose directory must be mounted read-write** (`- /opt/lattice:/compose`, never `:ro`):
   the rewrite stages a temp file beside `.env`. It was `:ro` from April to October 2026, so every
   version pin since the feature shipped failed with `read-only file system`. Now: boot logs a

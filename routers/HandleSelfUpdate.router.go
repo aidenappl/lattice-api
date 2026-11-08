@@ -16,6 +16,7 @@ import (
 
 	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/logger"
+	"github.com/aidenappl/lattice-api/registry"
 	"github.com/aidenappl/lattice-api/responder"
 	"gopkg.in/yaml.v3"
 )
@@ -347,7 +348,7 @@ func writeComposeTag(varName, tag string) error {
 
 // applyRequestedVersion pins a service to a target tag when one was asked for.
 // Returns the tag applied, or "" when the caller requested no specific version.
-func applyRequestedVersion(r *http.Request, tagVar string) (string, error) {
+func applyRequestedVersion(r *http.Request, tagVar, service string) (string, error) {
 	target := requestedVersion(r)
 	if target == "" {
 		return "", nil
@@ -363,14 +364,89 @@ func applyRequestedVersion(r *http.Request, tagVar string) (string, error) {
 	if !interpolated {
 		return "", fmt.Errorf(
 			"cannot target a version: %s does not interpolate ${%s}. "+
-				"Parameterise the image tag (image: .../service:${%s:-latest}) or edit the tag by hand",
-			composeFilePath(), tagVar, tagVar)
+				"Parameterise the image tag (image: .../%s:${%s:-latest}; see AGENTS.md \"Self-update\"), "+
+				"or update without a version to pull the tag the compose file already names",
+			composeFilePath(), tagVar, service, tagVar)
+	}
+
+	if err := verifyTargetTag(service, target); err != nil {
+		return "", err
 	}
 
 	if err := writeComposeTag(tagVar, target); err != nil {
 		return "", err
 	}
 	return target, nil
+}
+
+// errTagNotFound means the requested version is not in the registry. Pinning
+// it would only fail at pull time, after the env file was already rewritten
+// (lattice-web publishes latest and main-<sha>, never v1.x tags).
+var errTagNotFound = errors.New("tag not found in registry")
+
+// tagExists reports whether repo:tag exists in the configured registry. A var
+// so tests can stand in for the registry.
+var tagExists = func(repo, tag string) (bool, error) {
+	base := env.RegistryURL
+	if !strings.Contains(base, "://") {
+		base = "https://" + base
+	}
+	_, err := registry.NewClient(base, env.RegistryUsername, env.RegistryPassword).GetManifestDigest(repo, tag)
+	if err == nil {
+		return true, nil
+	}
+	if strings.HasPrefix(err.Error(), "manifest not found") {
+		return false, nil
+	}
+	return false, err
+}
+
+// registryRepo splits an image reference such as
+// registry.appleby.cloud/lattice-web:latest into its repository
+// (lattice-web), when it lives in the configured registry. ok is false for
+// any other registry, which this check cannot reach.
+func registryRepo(imageRef string) (repo string, ok bool) {
+	host := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(env.RegistryURL, "https://"), "http://"), "/")
+	if host == "" || !strings.HasPrefix(imageRef, host+"/") {
+		return "", false
+	}
+	repo = strings.TrimPrefix(imageRef, host+"/")
+	if i := strings.Index(repo, "@"); i >= 0 {
+		repo = repo[:i]
+	}
+	if i := strings.LastIndex(repo, ":"); i >= 0 && !strings.Contains(repo[i:], "/") {
+		repo = repo[:i]
+	}
+	return repo, repo != ""
+}
+
+// verifyTargetTag refuses a version whose image is not in the registry, before
+// anything is pinned. When the registry can't be asked (other registry, no
+// credentials, unreachable) it logs and lets the pull decide.
+func verifyTargetTag(service, tag string) error {
+	ref, err := serviceImageRef(service, nil)
+	if err != nil {
+		return nil
+	}
+	return checkTargetTag(ref, service, tag)
+}
+
+// checkTargetTag is verifyTargetTag once the service's image reference is known.
+func checkTargetTag(ref, service, tag string) error {
+	repo, ok := registryRepo(ref)
+	if !ok || env.RegistryUsername == "" || env.RegistryPassword == "" {
+		return nil
+	}
+	exists, err := tagExists(repo, tag)
+	if err != nil {
+		logger.Warn("self-update", "could not verify target tag; pulling anyway", logger.F{"repo": repo, "tag": tag, "error": err.Error()})
+		return nil
+	}
+	if !exists {
+		return fmt.Errorf("%w: %s:%s. Nothing was changed. List the published tags with GET /admin/registries/{id}/tags?repo=%s, "+
+			"or update without a version to pull %s's current tag", errTagNotFound, repo, tag, repo, service)
+	}
+	return nil
 }
 
 func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
@@ -398,7 +474,7 @@ func HandleUpdateAPI(w http.ResponseWriter, r *http.Request) {
 	// anything is resolved, so the pull, the comparison and the recreate all
 	// agree on which image is wanted. Rolling back is the same call with an
 	// older tag.
-	pinnedTo, err := applyRequestedVersion(r, env.APITagEnvVar)
+	pinnedTo, err := applyRequestedVersion(r, env.APITagEnvVar, env.APIServiceName)
 	if err != nil {
 		failVersion(w, r, "api", err)
 		return
@@ -541,7 +617,7 @@ func HandleUpdateWeb(w http.ResponseWriter, r *http.Request) {
 	service := env.WebServiceName
 	force := r.URL.Query().Get("force") == "true"
 
-	pinnedTo, err := applyRequestedVersion(r, env.WebTagEnvVar)
+	pinnedTo, err := applyRequestedVersion(r, env.WebTagEnvVar, env.WebServiceName)
 	if err != nil {
 		failVersion(w, r, "web", err)
 		return
