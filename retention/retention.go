@@ -9,6 +9,7 @@ import (
 
 	monitor "github.com/aidenappl/go-monitor"
 	"github.com/aidenappl/lattice-api/logger"
+	"github.com/aidenappl/lattice-api/partitions"
 )
 
 const batchSize = 10000
@@ -42,17 +43,18 @@ func safeRun(db *sql.DB) {
 func run(ctx context.Context, db *sql.DB) {
 	logger.InfoCtx(ctx, "retention", "starting cleanup")
 
-	// Container logs: keep 7 days
-	purge(ctx, db, "container_logs", "recorded_at", "7 DAY")
+	// Container logs and metrics: keep 7 days. Partitioned by day (APL-120),
+	// so expired days are dropped as whole files and disk is actually freed;
+	// a table not partitioned yet falls back to the batched DELETE.
+	for _, t := range partitions.Tables {
+		dropOrPurge(ctx, db, t, time.Now())
+	}
 
 	// Lifecycle logs: keep 14 days
 	purge(ctx, db, "lifecycle_logs", "recorded_at", "14 DAY")
 
 	// Worker metrics: keep 30 days
 	purge(ctx, db, "worker_metrics", "recorded_at", "30 DAY")
-
-	// Container metrics: keep 7 days (high volume, shorter retention)
-	purge(ctx, db, "container_metrics", "recorded_at", "7 DAY")
 
 	// Deployment logs: keep 90 days
 	purge(ctx, db, "deployment_logs", "recorded_at", "90 DAY")
@@ -78,6 +80,23 @@ func run(ctx context.Context, db *sql.DB) {
 	purgeWhere(ctx, db, "database_snapshots", "inserted_at", "90 DAY", "active = 0")
 
 	logger.InfoCtx(ctx, "retention", "cleanup complete")
+}
+
+// dropOrPurge runs partition maintenance on a partitioned table, or the
+// batched DELETE (with the same keep window) on one that isn't partitioned yet.
+func dropOrPurge(ctx context.Context, db *sql.DB, t partitions.Table, now time.Time) {
+	names, err := partitions.Partitions(db, t.Name)
+	if err != nil {
+		logger.ErrorCtx(ctx, "retention", "could not read partitions", logger.F{"table": t.Name, "error": err})
+		return
+	}
+	if len(names) == 0 {
+		purge(ctx, db, t.Name, t.Column, fmt.Sprintf("%d DAY", t.KeepDays))
+		return
+	}
+	if err := partitions.Maintain(ctx, db, t, now); err != nil {
+		logger.ErrorCtx(ctx, "retention", "partition maintenance failed", logger.F{"table": t.Name, "error": err})
+	}
 }
 
 // purge deletes rows older than the retention interval in batches to avoid

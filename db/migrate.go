@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/logger"
+	"github.com/aidenappl/lattice-api/partitions"
 	"github.com/go-sql-driver/mysql"
 )
 
@@ -36,6 +38,15 @@ const (
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
+
+// migrationHooks are Go steps that run right after a file's SQL, before it is
+// recorded, for a migration that needs a decision SQL can't make visibly. A
+// hook must be re-runnable like the SQL: a failure leaves the file unrecorded.
+var migrationHooks = map[string]func(conn *sql.DB) error{
+	// APL-120: partition the log tables by day, unless one is too large to
+	// rewrite on boot (partitions.MaxAutoBytes).
+	"027_partition_log_tables.sql": func(conn *sql.DB) error { return partitions.Migrate(conn, time.Now()) },
+}
 
 // RunMigrations applies every embedded migration in filename order, recording
 // each applied file in schema_migrations so it runs once under normal operation.
@@ -140,6 +151,11 @@ func RunMigrations() error {
 
 		if _, err := conn.Exec(string(content)); err != nil {
 			return fmt.Errorf("failed to execute migration %s: %w", name, err)
+		}
+		if hook, ok := migrationHooks[name]; ok {
+			if err := hook(conn); err != nil {
+				return fmt.Errorf("failed to run the hook for migration %s: %w", name, err)
+			}
 		}
 
 		if err := RecordMigration(conn, name); err != nil {
