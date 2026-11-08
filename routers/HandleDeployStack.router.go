@@ -211,6 +211,7 @@ func (h *DeployHandler) HandleDeployStack(w http.ResponseWriter, r *http.Request
 		"containers":    containerSpecs,
 		"attempt":       1,
 		"max_retries":   deployMaxRetryCount,
+		"image_prune":   structs.ImagePrunePayload(stack.ImagePruneKeep),
 	}
 
 	// Include stack-level networks
