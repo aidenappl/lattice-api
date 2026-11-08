@@ -399,7 +399,9 @@ func (s *Scanner) scan(ctx context.Context) {
 	s.mu.Unlock()
 
 	if changed {
-		s.broadcast(anomalies)
+		// The full list, control-plane disk included: lattice-web replaces its
+		// banner with each broadcast, so a scan-only payload would hide it.
+		s.broadcast(s.GetAnomalies())
 	}
 
 	// Every five minutes, forever: only a change in what the scan found is news.
