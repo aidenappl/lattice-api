@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/aidenappl/lattice-api/hostdisk"
 	"github.com/aidenappl/lattice-api/structs"
 )
 
@@ -13,13 +14,43 @@ import (
 // filled in one day of deploys).
 const AnomalyLowDisk AnomalyType = "low_disk"
 
-// Low-disk thresholds: a worker is flagged under either. lattice-web's
-// src/lib/disk.ts colours the worker disk gauge red at the same values, so
-// change both together.
+// AnomalyControlPlaneLowDisk is the control-plane host itself (lattice-api,
+// lattice-web, MariaDB) nearly full, from hostdisk's samples (APL-121). It is
+// computed when anomalies are read, not by the 5-minute scan, so it still
+// shows when the database the scan reads is what the full disk broke.
+const AnomalyControlPlaneLowDisk AnomalyType = "control_plane_low_disk"
+
+// Low-disk thresholds: a worker or a control-plane path is flagged under
+// either. They are hostdisk's; lattice-web's src/lib/disk.ts colours the disk
+// gauges red at the same values, so change both together.
 const (
-	LOW_DISK_FREE_PCT = 10.0
-	LOW_DISK_FREE_MB  = 5 * 1024.0
+	LOW_DISK_FREE_PCT = hostdisk.LowFreePct
+	LOW_DISK_FREE_MB  = hostdisk.LowFreeMB
 )
+
+// controlPlaneLowDiskAnomalies is one anomaly per low control-plane sample.
+// Worker 0 and the name "control-plane" mark them as not a worker's.
+func controlPlaneLowDiskAnomalies(samples []hostdisk.Sample) []Anomaly {
+	var out []Anomaly
+	for _, s := range samples {
+		if s.Error != "" || !s.Low {
+			continue
+		}
+		out = append(out, Anomaly{
+			ID:         anomalyID(0, string(AnomalyControlPlaneLowDisk), s.Label),
+			Type:       AnomalyControlPlaneLowDisk,
+			WorkerName: "control-plane",
+			Message:    fmt.Sprintf("Control-plane disk nearly full (%s, %s): %.1f GB free (%.1f%%) of %.1f GB", s.Label, s.Path, s.FreeMB/1024, s.FreePct, s.TotalMB/1024),
+			DetectedAt: s.At,
+			Details: map[string]any{
+				"label": s.Label, "path": s.Path,
+				"disk_free_mb": s.FreeMB, "disk_total_mb": s.TotalMB, "disk_free_pct": s.FreePct,
+				"threshold_free_pct": LOW_DISK_FREE_PCT, "threshold_free_mb": LOW_DISK_FREE_MB,
+			},
+		})
+	}
+	return out
+}
 
 // lowDiskFreshness bounds how old a metrics sample may be and still count.
 // Workers send one every heartbeat.

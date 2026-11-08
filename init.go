@@ -13,6 +13,7 @@ import (
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/env"
 	"github.com/aidenappl/lattice-api/healthscan"
+	"github.com/aidenappl/lattice-api/hostdisk"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/mailer"
 	"github.com/aidenappl/lattice-api/middleware"
@@ -93,6 +94,7 @@ func initApp() *appContext {
 	crypto.Init()
 	retention.Start(db.DB)
 	watcher.Start()
+	hostdisk.Start(hostdisk.Config{ComposeDir: env.DockerComposeDir, DBContainer: env.ControlPlaneDBContainer, DB: db.DB})
 	mailer.StartEviction()
 	containerNameCache.StartEviction()
 	containerLogs.Start()

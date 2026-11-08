@@ -128,7 +128,8 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `structs/` | 20 `{Entity}.struct.go` domain types with `json` tags and pointer nullables. |
 | `socket/` | `hub.go` (WorkerHub + WorkerSession), `admin.go` (AdminHub + AdminSession with topic subscriptions), `handler.go` (WorkerHandler — upgrade, read/write pumps, ping/pong), `protocol.go` (all message-type constants + `Envelope`/`IncomingMessage`). |
 | `registry/client.go` | Docker Registry v2 HTTP client — `Ping`, `ListRepositories`, `ListTags`, `GetManifestDigest`. |
-| `healthscan/scanner.go` | Periodic worker-vs-DB reconciliation; emits `health_anomalies` to the admin hub. Includes `orphaned_database` / `orphaned_database_volume` from `db_sync` (`UpdateWorkerDatabaseOrphans`), and `low_disk` (`healthscan/low_disk.go`) from each online worker's latest heartbeat metrics (≤5 min old): free = `disk_total_mb − disk_used_mb` under 10% **or** under 5 GB. |
+| `healthscan/scanner.go` | Periodic worker-vs-DB reconciliation; emits `health_anomalies` to the admin hub. Includes `orphaned_database` / `orphaned_database_volume` from `db_sync` (`UpdateWorkerDatabaseOrphans`), and `low_disk` (`healthscan/low_disk.go`) from each online worker's latest heartbeat metrics (≤5 min old): free = `disk_total_mb − disk_used_mb` under 10% **or** under 5 GB. `GetAnomalies` also appends `control_plane_low_disk` live from `hostdisk` (see *Control-plane disk*). |
+| `hostdisk/` | Samples the control-plane host's own free space every minute (APL-121): root fs, `DOCKER_COMPOSE_DIR`, MariaDB's data dir. Feeds `control_plane_low_disk`, `/admin/health`'s `control_plane_disk`, and the `control_plane.low_disk` event. |
 | `watcher/watcher.go` | Polls registries for mutable-tag re-pushes (digest change) → fires `image.updated` / auto-deploy webhooks. |
 | `retention/retention.go` | Hourly batch purge of old log/metric rows per retention window. Also `database_instance_events` (180d) and soft-deleted `database_snapshots` (90d, gated on `active = 0` via `purgeWhere` — a live snapshot row is the only record of where its remote file lives, so purging by age alone would orphan objects on the destination). |
 | `webhooks/dispatcher.go` | `Fire(event, data)` — async outbound webhooks, optional HMAC-SHA256 signing. `Deliver(ctx, Request)` is the one outbound HTTP path for user/admin-configured URLs (SSRF-safe client, returns status + a 512-byte body snippet); event webhooks and automation `http_request` steps both use it. |
@@ -1092,7 +1093,7 @@ Built directly from the registrations in `main.go`. `[E]` = wrapped in `RequireE
 |--------|------|---------|
 | GET | `/` | inline — "Lattice API" |
 | GET | `/healthcheck` | inline, unauthenticated — pings DB, returns only `{"status":"ok"}` (503 `{"status":"degraded"}` when the ping fails); skips logging |
-| GET | `/admin/health` | `HandleAdminGetHealth` — any signed-in approved user; `{status, db, telemetry}` (go-monitor `Stats()`) |
+| GET | `/admin/health` | `HandleAdminGetHealth` — any signed-in approved user; `{status, db, telemetry, telemetry_delivery, control_plane_disk}`: go-monitor `Stats()`, the delivery watchdog, and `hostdisk`'s fresh samples (`[{label, path, total_mb, free_mb, free_pct, low, sampled_at, error?}]`). `status` is `degraded` when any sample is `low` |
 | GET | `/version` | inline — `{"version": Version}` |
 | GET | `/install/runner` | `HandleInstallRunner` (embedded script) |
 | POST | `/api/deploy/{token}` | `DeployHandler.HandlePublicDeploy` (deploy-token auth; `?container=` for single-container, `?commit=` for audit) |
@@ -1430,6 +1431,28 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
   workers: on-prem runners reach this API over the LAN via a UniFi DNS override (see
   lattice-runner `AGENTS.md`, Operations).
 
+### Control-plane disk (APL-121)
+
+On 2026-11-08 the control-plane host (lattice-api, lattice-web and MariaDB on one 61 GB disk) filled
+to 100% with `lattice_get_anomalies` empty: `low_disk` only covered workers. `hostdisk` now samples
+the host from inside the lattice-api container every minute:
+
+| Label | How | What it measures |
+|-------|-----|------------------|
+| `root` | `statfs("/")` | The container's overlay root, whose statfs is the host filesystem behind `/var/lib/docker`: images, container logs, and named volumes (MariaDB's `mariadb_data` by default) |
+| `compose` | `statfs(DOCKER_COMPOSE_DIR)` | The host's `/opt/lattice` mount (self-update), i.e. the host root filesystem. Skipped when `DOCKER_COMPOSE_DIR` is unset |
+| `mariadb` | `docker exec <container> df -Pk <@@datadir>` | MariaDB's data dir, whatever device it is on. MariaDB names both: `@@hostname` is its container ID, `@@datadir` its data dir. `CONTROL_PLANE_DB_CONTAINER` overrides the container. A sample with `error` set when the DB isn't a container on this Docker host |
+
+Free is what a non-root writer can use (`Bavail`, `df`'s Available), so the root reserve doesn't
+count. Low is the worker rule, **under 10% or under 5 GB** (`hostdisk.LowFreePct` / `LowFreeMB`;
+`healthscan.LOW_DISK_*` are now aliases, and lattice-web's `src/lib/disk.ts` must match). A low
+sample is: a **`control_plane_low_disk`** anomaly (`worker_id` 0, `worker_name` `control-plane`,
+id `0:control_plane_low_disk:<label>`, details as `low_disk` plus `label`/`path`), computed when
+anomalies are read rather than by the 5-minute scan, so it shows even when the full disk broke the
+database the scan reads; `status: degraded` on `/admin/health`; and the `control_plane.low_disk`
+Monitor event. A full disk can also stop the Monitor spool, so the anomaly and `/admin/health`
+are the ground truth. Samples older than 5 minutes are dropped.
+
 ### Monitor telemetry
 
 `lattice-api` reports to the **appleby** Monitor zone through `go-monitor` (`telemetry/`).
@@ -1462,6 +1485,8 @@ retries) before they are counted as dropped.
 | `panic.recovered` | error | Every recovered panic, with the stack where it happened: HTTP handlers (`RecoverMiddleware`), worker/admin WebSocket callbacks and pumps, `safeGo`, every background loop and goroutine. |
 | `<resource_type>.<action>.success` | info | A mirror of every `logAudit` call, on the request's ids. Details are left out — they are free text. |
 | `service.startup` / `service.shutdown` | info | Boot (version, spool on/off) and the signal that stopped it. |
+| `control_plane.low_disk` | warn | A control-plane path (`label` root / compose / mariadb) under 10% or 5 GB free: on entering that state and every 30 min while it lasts. Fields: `label`, `path`, `disk_free_mb`, `disk_total_mb`, `disk_free_pct`, thresholds. **The alert rule for APL-121 matches this name** (zone appleby, service lattice-api). |
+| `control_plane.disk_recovered` | info | That path back above both thresholds. |
 | `telemetry.heartbeat` | info | Every 5 min (`telemetry.RunWatchdog`), with go-monitor's counters. Meant to be **missed**: alert on its absence to catch a stalled shipper from outside. |
 | `service.startup.db_unreachable` · `service.startup.bootstrap_failed` · `service.listen_failed` | fatal | Boot failures, flushed before exit. |
 | `service.crashed` | fatal | A panic escaping `main` — the boot's own panics (weak `JWT_SIGNING_KEY`, missing `ENCRYPTION_KEY` in production). |

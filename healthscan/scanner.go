@@ -10,6 +10,7 @@ import (
 	"time"
 
 	monitor "github.com/aidenappl/go-monitor"
+	"github.com/aidenappl/lattice-api/hostdisk"
 	"github.com/aidenappl/lattice-api/logger"
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/socket"
@@ -235,7 +236,7 @@ func (s *Scanner) GetAnomalies() []Anomaly {
 	defer s.mu.RUnlock()
 	result := make([]Anomaly, len(s.anomalies))
 	copy(result, s.anomalies)
-	return result
+	return append(result, controlPlaneLowDiskAnomalies(hostdisk.Default.Latest(time.Now()))...)
 }
 
 func (s *Scanner) scan(ctx context.Context) {

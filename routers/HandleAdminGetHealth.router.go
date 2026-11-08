@@ -2,9 +2,11 @@ package routers
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/aidenappl/go-monitor"
 	"github.com/aidenappl/lattice-api/db"
+	"github.com/aidenappl/lattice-api/hostdisk"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/telemetry"
 )
@@ -25,10 +27,19 @@ func HandleAdminGetHealth(w http.ResponseWriter, r *http.Request) {
 	if delivery.Stalled {
 		status = "degraded"
 	}
+	// The control-plane host's free space (APL-121): root fs, the compose
+	// dir and MariaDB's data dir, sampled every minute by hostdisk.
+	disk := hostdisk.Default.Latest(time.Now())
+	for _, s := range disk {
+		if s.Low {
+			status = "degraded"
+		}
+	}
 	responder.New(w, map[string]any{
 		"status":             status,
 		"db":                 dbStatus,
 		"telemetry":          monitor.Stats(),
 		"telemetry_delivery": delivery,
+		"control_plane_disk": disk,
 	})
 }

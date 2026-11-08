@@ -66,6 +66,10 @@ var (
 	APIServiceName        = getEnv("API_SERVICE_NAME", "lattice-api")
 	WebServiceName        = getEnv("WEB_SERVICE_NAME", "lattice-web")
 	DockerHelperContainer = getEnv("DOCKER_HELPER_CONTAINER", "lattice-docker-helper")
+	// ControlPlaneDBContainer is the MariaDB container hostdisk runs `df` in
+	// for the data dir's free space (APL-121); empty asks MariaDB (@@hostname
+	// is its container ID).
+	ControlPlaneDBContainer = getEnv("CONTROL_PLANE_DB_CONTAINER", "")
 	// Compose variables holding each service's image tag. The compose file
 	// interpolates these (image: .../lattice-api:${LATTICE_API_TAG:-latest}) so
 	// a targeted update can pin a version by writing the env file instead of
