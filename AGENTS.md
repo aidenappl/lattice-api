@@ -171,8 +171,10 @@ All commands go through the `dev` CLI (`Devfile.yaml`).
   `mariadb:11` container for this.
 - **A `.env` file** (there is `.env.example`). Do not commit it. The server sources it.
 - **Docker** — only needed for `dev up`, and in production for the Docker-socket-mounted
-  self-update path. The Go tests themselves do not require Docker (there is no integration-test
-  harness in this repo — unlike the Trailblaze repos, there is no `tbtest`/fixtures wiring here).
+  self-update path. `go test ./...` does not require Docker. The one opt-in integration test,
+  `query/log_scope_integration_test.go` (`//go:build integration`), needs a throwaway MariaDB
+  named by `LATTICE_TEST_DSN` and skips without it (see *Verification*). There is no
+  `tbtest`/fixtures wiring here.
 
 **Schema:** there is no external migration runner and no `migrations/` SQL files loaded by the
 app. Schema is created and evolved entirely by the idempotent `migrate()` calls in
@@ -1567,8 +1569,19 @@ JWT_SIGNING_KEY="local-test-key-at-least-32-characters-long" \
 This is also why the database protocol-contract tests live in `socket/` rather than next to
 `ws_dispatch.go` — see `socket/db_dispatch_test.go`.
 
-`dev check` runs fmt + vet + test together. There is **no** integration/Docker test suite in this
-repo, so a green `go test ./...` is sufficient here (unlike the Trailblaze repos). **CI runs all
+`dev check` runs fmt + vet + test together. A green `go test ./...` is sufficient for most
+changes. **If you touch the log list queries (`query/log_scope.query.go`, `ListContainerLogs`,
+`ListLifecycleLogs`) or their indexes**, also run the plan test. It seeds 600k rows per table
+into a scratch database, then asserts each UNION branch reads at most `limit` rows off
+`idx_*_container_recorded` with no filesort of the log table, and returns the same rows as the
+pre-APL-119 OR query:
+
+```bash
+docker run -d --rm --name lattice-it-db -e MARIADB_ROOT_PASSWORD=x -p 127.0.0.1:33991:3306 mariadb:11
+DATABASE_DSN=x JWT_SIGNING_KEY=x LATTICE_TEST_DSN='root:x@tcp(127.0.0.1:33991)/' \
+  go test -tags integration -run TestLogScopePlans -v ./query/
+docker rm -f lattice-it-db
+``` **CI runs all
 four of the above in a `test` job that `build-and-push` depends on**, so unformatted code or a
 failing test now blocks the image build and the deploy. If you changed
 a route, exercise it against a running instance or via `lattice-mcp` — schema-level confidence is
