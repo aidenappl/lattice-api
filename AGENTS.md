@@ -1451,6 +1451,7 @@ retries) before they are counted as dropped.
 | `panic.recovered` | error | Every recovered panic, with the stack where it happened: HTTP handlers (`RecoverMiddleware`), worker/admin WebSocket callbacks and pumps, `safeGo`, every background loop and goroutine. |
 | `<resource_type>.<action>.success` | info | A mirror of every `logAudit` call, on the request's ids. Details are left out — they are free text. |
 | `service.startup` / `service.shutdown` | info | Boot (version, spool on/off) and the signal that stopped it. |
+| `telemetry.heartbeat` | info | Every 5 min (`telemetry.RunWatchdog`), with go-monitor's counters. Meant to be **missed**: alert on its absence to catch a stalled shipper from outside. |
 | `service.startup.db_unreachable` · `service.startup.bootstrap_failed` · `service.listen_failed` | fatal | Boot failures, flushed before exit. |
 | `service.crashed` | fatal | A panic escaping `main` — the boot's own panics (weak `JWT_SIGNING_KEY`, missing `ENCRYPTION_KEY` in production). |
 
@@ -1490,7 +1491,16 @@ one `request_id` across lattice-web, this API and the runner. Background jobs lo
 every request. The runner and the API can go in either order (the envelope fields are additive). `/healthcheck` deliberately returns only `{"status":"ok"}` (APL-15): it is unauthenticated, so
 go-monitor's `Stats()` counters (sent, dropped, spooled, pending) moved to the authenticated
 `GET /admin/health` (`lattice_health` in lattice-mcp). A rising `dropped` or `pending` means events
-are not arriving, which the service cannot tell you through Monitor itself. Redaction happens in the SDK before anything is written or sent
+are not arriving, which the service cannot tell you through Monitor itself. **Delivery watchdog
+(`telemetry/watchdog.go`).** On 2026-11-08 lattice-api delivered nothing from 08:03Z until the
+21:20Z self-update restarted it, ingest being healthy for everyone else, and nothing said so; the
+spool it had was in the container's writable layer, so the recreate destroyed the backlog too.
+`RunWatchdog` reads `Stats()` every minute: events waiting (`pending`, or enqueued beyond
+flushed+dropped) with `flushed` unmoved for `STALL_AFTER` (5 min) is a **stall** — logged once at
+error to stdout (the container log), reported as `telemetry_delivery {stalled, stalled_since,
+last_progress_at}` on `/admin/health` with `status: degraded`, and a warn with the duration when it
+recovers. **`MONITOR_SPOOL_DIR` must be a volume** (see the env table) or a restart discards
+whatever a stall left behind. Redaction happens in the SDK before anything is written or sent
 (credential-shaped keys and values, plus `email`); query strings are never logged; webhook URLs
 are logged as scheme + host only, because a chat webhook's path is its credential.
 
