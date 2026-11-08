@@ -120,7 +120,7 @@ func TestContainerLogBatcherFlushesOnInterval(t *testing.T) {
 	t.Fatal("line was not written by the interval flush")
 }
 
-func TestContainerLogBatcherStoresDirectlyWhenClosedOrFull(t *testing.T) {
+func TestContainerLogBatcherDropsWhenFullStoresDirectlyWhenClosed(t *testing.T) {
 	rec := &recorder{}
 	// Not started and a queue of 1: the second line finds the queue full.
 	b := newContainerLogBatcher(rec.flush, rec.single, 100, 1<<20, time.Hour, 1)
@@ -133,8 +133,13 @@ func TestContainerLogBatcherStoresDirectlyWhenClosedOrFull(t *testing.T) {
 	if got := strings.Join(flatten(batches), ","); got != "queued" {
 		t.Fatalf("batched = %q, want %q", got, "queued")
 	}
-	if got := strings.Join(singles, ","); got != "overflow,after-close" {
-		t.Fatalf("stored directly = %q, want %q", got, "overflow,after-close")
+	// A full queue must not fall back to a synchronous insert: that is what
+	// blocked the worker read pump under a log flood.
+	if got := strings.Join(singles, ","); got != "after-close" {
+		t.Fatalf("stored directly = %q, want %q", got, "after-close")
+	}
+	if b.Dropped() != 1 {
+		t.Fatalf("Dropped() = %d, want 1 (the overflow line)", b.Dropped())
 	}
 }
 
@@ -157,8 +162,11 @@ func TestContainerLogBatcherConcurrentAddAndClose(t *testing.T) {
 	wg.Wait()
 
 	batches, singles := rec.snapshot()
-	if got := len(flatten(batches)) + len(singles); got != 1000 {
-		t.Fatalf("stored %d lines, want 1000 (none lost)", got)
+	// Every line is accounted for: stored, or refused by a full queue and
+	// counted. Nothing vanishes in the Add/Close race.
+	stored := len(flatten(batches)) + len(singles)
+	if got := stored + int(b.Dropped()); got != 1000 {
+		t.Fatalf("stored %d + dropped %d = %d lines, want 1000", stored, b.Dropped(), got)
 	}
 }
 

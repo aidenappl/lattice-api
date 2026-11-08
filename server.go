@@ -19,7 +19,7 @@ import (
 
 // startServer configures CORS, creates the HTTP server, and blocks until
 // a SIGINT/SIGTERM triggers graceful shutdown.
-func startServer(r *mux.Router) {
+func startServer(r *mux.Router, closeSockets func()) {
 	// Only trust the localhost dev origin outside production — in production it
 	// would let a page on the developer's machine make credentialed cross-origin
 	// requests against the live API. Production origins come from ALLOWED_ORIGINS.
@@ -90,6 +90,12 @@ func startServer(r *mux.Router) {
 	// waited on either way.
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 	defer cancel()
+	// Hijacked WebSockets are invisible to server.Shutdown. Close them with a
+	// 1001 first, so runners and browsers reconnect cleanly instead of seeing a
+	// reset when the process exits.
+	if closeSockets != nil {
+		closeSockets()
+	}
 	if err := server.Shutdown(ctx); err != nil {
 		logger.ErrorCtx(context.Background(), "server", "graceful shutdown incomplete", logger.F{"error": err})
 	}

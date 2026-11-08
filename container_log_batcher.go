@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aidenappl/lattice-api/db"
@@ -43,7 +44,14 @@ type containerLogBatcher struct {
 	mu      sync.RWMutex // guards closed against Add racing Close
 	closed  bool
 	started sync.Once
+
+	// dropped counts lines refused because the queue was full.
+	dropped     atomic.Int64
+	lastDropLog atomic.Int64 // unix nanos of the last "queue full" warning
 }
+
+// LOG_DROP_WARN_EVERY is the least time between two "queue full" warnings.
+const LOG_DROP_WARN_EVERY = time.Minute
 
 func newContainerLogBatcher(
 	flush func([]query.CreateContainerLogRequest) error,
@@ -66,8 +74,17 @@ func (b *containerLogBatcher) Start() {
 	b.started.Do(func() { go b.run() })
 }
 
-// Add queues a line without blocking. If the queue is full or the batcher is
-// closed, the line is stored directly instead of being dropped.
+// Add queues a line and never blocks on the database while the batcher runs.
+//
+// A full queue DROPS the line (counted, warned at most once a minute). It used
+// to store it with a synchronous single-row INSERT instead, on the caller's
+// goroutine. Under a log flood (worker-6, 2026-11-08) every msgSem slot ended up
+// in one of those inserts, safeGo then blocked the worker's read pump, pongs
+// went unread, and the connection was reset about once a minute (540 proxy
+// "recv() failed (104)" errors) — losing status and health messages along with
+// the logs. The live log view is fed by the admin broadcast, so a dropped
+// stored line costs history, not the live tail. After Close (shutdown) lines
+// are still stored directly: there is no queue left and no flood to protect.
 func (b *containerLogBatcher) Add(r query.CreateContainerLogRequest) {
 	b.mu.RLock()
 	if !b.closed {
@@ -76,10 +93,28 @@ func (b *containerLogBatcher) Add(r query.CreateContainerLogRequest) {
 			b.mu.RUnlock()
 			return
 		default:
+			b.mu.RUnlock()
+			b.recordDrop()
+			return
 		}
 	}
 	b.mu.RUnlock()
 	b.storeOne(r)
+}
+
+// Dropped is how many lines a full queue has refused since boot.
+func (b *containerLogBatcher) Dropped() int64 { return b.dropped.Load() }
+
+func (b *containerLogBatcher) recordDrop() {
+	total := b.dropped.Add(1)
+	now := time.Now().UnixNano()
+	last := b.lastDropLog.Load()
+	if now-last < int64(LOG_DROP_WARN_EVERY) || !b.lastDropLog.CompareAndSwap(last, now) {
+		return
+	}
+	logger.WarnCtx(context.Background(), "container", "container log queue full, dropping lines", logger.F{
+		"queue": cap(b.in), "dropped_total": total,
+	})
 }
 
 // Close stops accepting lines, writes everything queued, and waits for that

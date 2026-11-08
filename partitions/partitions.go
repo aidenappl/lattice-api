@@ -252,7 +252,14 @@ func Maintain(ctx context.Context, engine *sql.DB, t Table, now time.Time) error
 // Migrate partitions every unpartitioned table in Tables that is at most
 // MaxAutoBytes; a larger one is reported and left for an operator. Already
 // partitioned tables are skipped, so a manual run followed by this is
-// harmless. It is migration 027's hook (db/migrate.go).
+// harmless. It is migration 027's hook (db/migrate.go). It always returns nil.
+//
+// It never fails the boot: a failed migration leaves lattice-api serving on
+// the old schema, but this one is optional (retention falls back to DELETE), so
+// a table it can't read or can't partition (unexpected live DDL, a lock, no
+// disk for the copy) is reported as retention.unpartitioned with the error and
+// skipped. 027 is then recorded, and CheckStartup keeps reporting the table at
+// every boot until an operator partitions it.
 func Migrate(engine *sql.DB, now time.Time) error {
 	return migrate(engine, now, MaxAutoBytes)
 }
@@ -262,21 +269,24 @@ func migrate(engine *sql.DB, now time.Time, maxBytes int64) error {
 	for _, t := range Tables {
 		names, err := Partitions(engine, t.Name)
 		if err != nil {
-			return err
+			reportUnpartitioned(ctx, t, -1, err)
+			continue
 		}
 		if len(names) > 0 {
 			continue
 		}
 		size, err := TableBytes(engine, t.Name)
 		if err != nil {
-			return err
+			reportUnpartitioned(ctx, t, -1, err)
+			continue
 		}
 		if size > maxBytes {
-			reportUnpartitioned(ctx, t, size)
+			reportUnpartitioned(ctx, t, size, nil)
 			continue
 		}
 		if _, err := engine.Exec(t.PartitionDDL(now)); err != nil {
-			return fmt.Errorf("partitioning %s: %w", t.Name, err)
+			reportUnpartitioned(ctx, t, size, fmt.Errorf("partitioning failed: %w", err))
+			continue
 		}
 		logger.InfoCtx(ctx, "retention", "partitioned log table by day", logger.F{"table": t.Name, "table_bytes": size})
 	}
@@ -296,12 +306,18 @@ func CheckStartup(engine *sql.DB) {
 		if err != nil {
 			continue
 		}
-		reportUnpartitioned(ctx, t, size)
+		reportUnpartitioned(ctx, t, size, nil)
 	}
 }
 
-func reportUnpartitioned(ctx context.Context, t Table, size int64) {
+// reportUnpartitioned raises Event for a table left unpartitioned: too large
+// (err nil), or err when reading or partitioning it failed. size is -1 when
+// unknown.
+func reportUnpartitioned(ctx context.Context, t Table, size int64, err error) {
+	fields := logger.F{"table": t.Name, "table_bytes": size, "max_auto_bytes": MaxAutoBytes, "runbook": "lattice-api AGENTS.md: Log table partitions"}
+	if err != nil {
+		fields["error"] = err.Error()
+	}
 	logger.EventCtx(ctx, logger.LevelWarn, Event, "retention",
-		"log table is not partitioned; retention cannot free its disk until an operator partitions it",
-		logger.F{"table": t.Name, "table_bytes": size, "max_auto_bytes": MaxAutoBytes, "runbook": "lattice-api AGENTS.md: Log table partitions"})
+		"log table is not partitioned; retention cannot free its disk until an operator partitions it", fields)
 }

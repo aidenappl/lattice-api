@@ -47,9 +47,13 @@ func CheckAllowedOrigin(r *http.Request) bool {
 }
 
 const (
-	writeWait      = 10 * time.Second
-	pongWait       = 90 * time.Second
-	pingPeriod     = (pongWait * 8) / 10 // ~72s
+	writeWait = 10 * time.Second
+	// pingPeriod must stay well under the edge proxy's proxy_read_timeout (NPM's
+	// nginx default, 60s, on lattice-api.appleby.cloud): an idle upgraded
+	// connection with no frame inside it is cut by the proxy. It was 72s.
+	pingPeriod = 25 * time.Second
+	// pongWait tolerates one lost pong before the read deadline expires.
+	pongWait       = 60 * time.Second
 	maxMessageSize = 64 * 1024
 	sendBufferSize = 128
 )

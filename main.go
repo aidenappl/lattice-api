@@ -12,6 +12,7 @@ import (
 	"github.com/aidenappl/lattice-api/sso"
 	"github.com/aidenappl/lattice-api/telemetry"
 	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
 )
 
 //go:embed install/runner.sh
@@ -325,5 +326,8 @@ func main() {
 	r.Handle("/ws/worker", app.workerHandler).Methods(http.MethodGet)
 	r.Handle("/ws/admin", middleware.DualAuthMiddleware(middleware.RejectPending(app.adminHandler))).Methods(http.MethodGet)
 
-	startServer(r)
+	startServer(r, func() {
+		app.workerHub.CloseAll(websocket.CloseGoingAway, "server shutting down")
+		app.adminHub.CloseAll(websocket.CloseGoingAway, "server shutting down")
+	})
 }

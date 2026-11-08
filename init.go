@@ -53,6 +53,9 @@ func initApp() *appContext {
 	// included (see telemetry.CrashGuard), is then reported. It never blocks or
 	// fails — Monitor is a Lattice stack and may well not be up yet.
 	telemetry.Init(Version)
+	// Watches delivery from inside the process: a stalled shipper cannot report
+	// its own stall through Monitor (see telemetry.STALL_AFTER).
+	go telemetry.RunWatchdog(context.Background())
 	logger.InfoCtx(context.Background(), "server", "Lattice API starting", logger.F{"version": Version})
 
 	routers.InstallScript = installRunnerScript

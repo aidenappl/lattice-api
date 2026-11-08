@@ -307,8 +307,14 @@ This repo follows the global Go standards. Specifics and deviations:
   line to `containerLogs` (`container_log_batcher.go`), which writes one multi-row
   `query.CreateContainerLogs` INSERT every 250 ms or at 200 rows / 1 MiB. Per-line INSERTs were most
   of the database's commits (one disk sync each, 0.4–1.4 s on production's virtual disk). A failed
-  batch is retried row by row so one bad line can't lose its neighbours; a full queue or a closed
-  batcher stores the line directly rather than dropping it; `server.go` drains it on shutdown. The
+  batch is retried row by row so one bad line can't lose its neighbours. **A full queue drops the
+  line** (counted in `containerLogs.Dropped()`, warned at most once a minute); only a closed batcher
+  (shutdown) stores directly; `server.go` drains it on shutdown. **`handleContainerLog` runs inline in
+  the read pump, not through `safeGo`, and must never wait on the database.** The old full-queue
+  fallback was a synchronous INSERT on the caller: under worker-6's log flood (2026-11-08) every
+  `msgSem` slot sat in one, `safeGo` blocked the read pump, pongs went unread and the connection was
+  reset about once a minute (540 proxy `recv() failed (104)` errors, all `/ws/worker` from worker-6),
+  costing status and health messages too. The
   live log view is fed by the admin-hub broadcast, so the delay doesn't show there. Lines without a
   runner timestamp get `CURRENT_TIMESTAMP(6)` explicitly (the column default the single-row insert
   relied on). Do the same for any other per-message write stream that grows.
@@ -553,8 +559,13 @@ Two independent hubs, both created in `initApp()`:
   `unsubscribe` to topics (e.g. `worker:3`); `BroadcastFiltered` respects them, and a session
   with no subscriptions receives everything.
 
-`socket/handler.go` runs the worker read/write pumps: `writeWait 10s`, `pongWait 90s`,
-`pingPeriod ~72s`, `maxMessageSize 64KB`, send buffer 128. Origin is checked by
+`socket/handler.go` runs the worker read/write pumps: `writeWait 10s`, `pongWait 60s`,
+`pingPeriod 25s` (shared by the admin socket), `maxMessageSize 64KB`, send buffer 128. **`pingPeriod`
+must stay well under the edge proxy's `proxy_read_timeout`** (NPM's nginx default 60s on
+lattice-api.appleby.cloud; it was 72s, above it), pinned by `socket/keepalive_test.go`. On shutdown
+`server.go` calls `WorkerHub.CloseAll` / `AdminHub.CloseAll` with **1001 going away** before
+`server.Shutdown` — hijacked sockets are invisible to it, and without the close frame every runner
+and browser saw a reset on each deploy. Origin is checked by
 `CheckAllowedOrigin` (matches scheme+host against `ALLOWED_ORIGINS`; empty Origin — non-browser
 runner — is allowed). Every callback runs with its panic contained (`logger.Recover`): on a pump's
 goroutine nothing else could recover it, and an uncontained panic would take the process and every
@@ -1456,9 +1467,15 @@ whole days, which frees their disk instantly with no free space needed.
   `db/migrate.go` → `partitions.Migrate`): skips a table that is already partitioned; partitions a
   table of **at most 1 GiB** (`partitions.MaxAutoBytes`, data + index) on boot; leaves a larger one
   alone. Partitioning rewrites the whole table and **blocks writes while it copies**, which is fine at
-  a few MB and not at tens of GB. A skipped table raises **`retention.unpartitioned`** (warn,
-  `table`, `table_bytes`) at the hook and again at **every boot** (`partitions.CheckStartup`) until
-  it is partitioned. Alert on that event.
+  a few MB and not at tens of GB. **The hook never fails the boot**: if reading
+  `information_schema` or the ALTER itself fails (live DDL drifted from what the code expects, a
+  lock, no space for the copy), the table is skipped with the error, the hook returns nil and 027 is
+  recorded. Retention keeps the DELETE fallback for it. A skipped table, for either reason, raises
+  **`retention.unpartitioned`** (warn, `table`, `table_bytes` (-1 if unknown), `error` when the
+  ALTER or the read failed) at the hook and again at **every boot** (`partitions.CheckStartup`)
+  until it is partitioned. Alert on that event, and read `error` before following the runbook: a
+  failed ALTER needs its cause fixed (e.g. a unique key without `recorded_at`), not just a quiet
+  window.
 
 **Runbook: partitioning a table that 027 skipped.** Needs free disk of at least the table's size
 (data + indexes, `SELECT DATA_LENGTH + INDEX_LENGTH FROM information_schema.TABLES WHERE
@@ -1524,7 +1541,8 @@ retries) before they are counted as dropped.
 | `panic.recovered` | error | Every recovered panic, with the stack where it happened: HTTP handlers (`RecoverMiddleware`), worker/admin WebSocket callbacks and pumps, `safeGo`, every background loop and goroutine. |
 | `<resource_type>.<action>.success` | info | A mirror of every `logAudit` call, on the request's ids. Details are left out — they are free text. |
 | `service.startup` / `service.shutdown` | info | Boot (version, spool on/off) and the signal that stopped it. |
-| `retention.unpartitioned` | warn | At every boot while `container_logs` or `container_metrics` is not partitioned by day (migration 027 skipped it as over 1 GiB): `table`, `table_bytes`, `max_auto_bytes`, `runbook`. Retention can't free that table's disk until someone follows *Log table partitions*. |
+| `retention.unpartitioned` | warn | At every boot while `container_logs` or `container_metrics` is not partitioned by day (migration 027 skipped it as over 1 GiB, or its ALTER failed): `table`, `table_bytes`, `max_auto_bytes`, `runbook`, and `error` when partitioning failed. Retention can't free that table's disk until someone follows *Log table partitions*. |
+| `telemetry.heartbeat` | info | Every 5 min (`telemetry.RunWatchdog`), with go-monitor's counters. Meant to be **missed**: alert on its absence to catch a stalled shipper from outside. |
 | `service.startup.db_unreachable` · `service.startup.bootstrap_failed` · `service.listen_failed` | fatal | Boot failures, flushed before exit. |
 | `service.crashed` | fatal | A panic escaping `main` — the boot's own panics (weak `JWT_SIGNING_KEY`, missing `ENCRYPTION_KEY` in production). |
 
@@ -1564,7 +1582,16 @@ one `request_id` across lattice-web, this API and the runner. Background jobs lo
 every request. The runner and the API can go in either order (the envelope fields are additive). `/healthcheck` deliberately returns only `{"status":"ok"}` (APL-15): it is unauthenticated, so
 go-monitor's `Stats()` counters (sent, dropped, spooled, pending) moved to the authenticated
 `GET /admin/health` (`lattice_health` in lattice-mcp). A rising `dropped` or `pending` means events
-are not arriving, which the service cannot tell you through Monitor itself. Redaction happens in the SDK before anything is written or sent
+are not arriving, which the service cannot tell you through Monitor itself. **Delivery watchdog
+(`telemetry/watchdog.go`).** On 2026-11-08 lattice-api delivered nothing from 08:03Z until the
+21:20Z self-update restarted it, ingest being healthy for everyone else, and nothing said so; the
+spool it had was in the container's writable layer, so the recreate destroyed the backlog too.
+`RunWatchdog` reads `Stats()` every minute: events waiting (`pending`, or enqueued beyond
+flushed+dropped) with `flushed` unmoved for `STALL_AFTER` (5 min) is a **stall** — logged once at
+error to stdout (the container log), reported as `telemetry_delivery {stalled, stalled_since,
+last_progress_at}` on `/admin/health` with `status: degraded`, and a warn with the duration when it
+recovers. **`MONITOR_SPOOL_DIR` must be a volume** (see the env table) or a restart discards
+whatever a stall left behind. Redaction happens in the SDK before anything is written or sent
 (credential-shaped keys and values, plus `email`); query strings are never logged; webhook URLs
 are logged as scheme + host only, because a chat webhook's path is its credential.
 

@@ -202,3 +202,28 @@ func TestMigrateSkipsLargeTable(t *testing.T) {
 	// Retention's fallback still applies to it: CheckStartup only reports.
 	CheckStartup(db)
 }
+
+// A table whose live DDL can't take the partitioning (here a unique key
+// without recorded_at, which MariaDB rejects) is reported and skipped: the
+// hook still returns nil so 027 is recorded and the API boots.
+func TestMigrateSurvivesFailedAlter(t *testing.T) {
+	db := openDB(t)
+	mustExec(t, db, "ALTER TABLE container_logs ADD UNIQUE KEY uq_drift (worker_id, id)")
+	if err := migrate(db, time.Now(), MaxAutoBytes); err != nil {
+		t.Fatalf("migrate returned %v, want nil", err)
+	}
+	names, err := Partitions(db, "container_logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 0 {
+		t.Errorf("container_logs was partitioned despite the failing ALTER: %v", names)
+	}
+	// The other table is unaffected by one table's failure.
+	if names, _ := Partitions(db, "container_metrics"); len(names) == 0 {
+		t.Error("container_metrics was not partitioned")
+	}
+	// Retention still works on the unpartitioned table (DELETE fallback is in
+	// retention; here the table is simply still writable).
+	mustExec(t, db, "INSERT INTO container_logs (container_id, worker_id, message) VALUES (1, 1, 'still writable')")
+}
