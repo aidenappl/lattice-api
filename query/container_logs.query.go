@@ -43,43 +43,27 @@ type ListLogsRequest struct {
 }
 
 func ListContainerLogs(engine db.Queryable, req ListLogsRequest) (*[]structs.ContainerLog, error) {
-	q := sq.Select(logColumns...).From("container_logs")
-
-	if req.WorkerID != nil {
-		q = q.Where(sq.Eq{"container_logs.worker_id": *req.WorkerID})
-	}
-	if req.ContainerID != nil {
-		if req.ContainerName != nil {
-			// Match by container_id OR (container_id IS NULL AND container_name matches)
-			// This catches logs stored before the container name could be resolved to an ID
-			q = q.Where(sq.Or{
-				sq.Eq{"container_logs.container_id": *req.ContainerID},
-				sq.And{
-					sq.Expr("container_logs.container_id IS NULL"),
-					sq.Eq{"container_logs.container_name": *req.ContainerName},
-				},
-			})
-		} else {
-			q = q.Where(sq.Eq{"container_logs.container_id": *req.ContainerID})
-		}
-	} else if req.ContainerName != nil {
-		// No resolved ID but a name was given — filter by name so we don't
-		// return every container's logs.
-		q = q.Where(sq.Eq{"container_logs.container_name": *req.ContainerName})
-	}
-	if req.Stream != nil {
-		q = q.Where(sq.Eq{"container_logs.stream": *req.Stream})
-	}
-
-	if req.Limit == 0 || req.Limit > db.MAX_LIMIT {
+	if req.Limit <= 0 || req.Limit > db.MAX_LIMIT {
 		req.Limit = db.DEFAULT_LIMIT
 	}
-	q = q.Limit(uint64(req.Limit))
-	if req.Offset > 0 {
-		q = q.Offset(uint64(req.Offset))
+	if req.Offset < 0 {
+		req.Offset = 0
 	}
-
-	q = q.OrderBy("container_logs.recorded_at DESC")
+	filters := sq.And{}
+	if req.WorkerID != nil {
+		filters = append(filters, sq.Eq{"container_logs.worker_id": *req.WorkerID})
+	}
+	if req.Stream != nil {
+		filters = append(filters, sq.Eq{"container_logs.stream": *req.Stream})
+	}
+	// ContainerName is the fallback for rows stored before the name resolved
+	// to an ID (container_id NULL); on its own it filters by name so a lookup
+	// without an ID never returns every container's logs.
+	q := logScope{
+		table: "container_logs", columns: logColumns,
+		containerID: req.ContainerID, containerName: req.ContainerName,
+		filters: filters, limit: req.Limit, offset: req.Offset,
+	}
 
 	qStr, args, err := q.ToSql()
 	if err != nil {

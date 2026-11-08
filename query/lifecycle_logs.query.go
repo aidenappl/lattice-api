@@ -42,38 +42,21 @@ type ListLifecycleLogsRequest struct {
 }
 
 func ListLifecycleLogs(engine db.Queryable, req ListLifecycleLogsRequest) (*[]structs.LifecycleLog, error) {
-	q := sq.Select(lifecycleLogColumns...).From("lifecycle_logs")
-
-	if req.ContainerID != nil {
-		if req.ContainerName != nil {
-			q = q.Where(sq.Or{
-				sq.Eq{"lifecycle_logs.container_id": *req.ContainerID},
-				sq.And{
-					sq.Expr("lifecycle_logs.container_id IS NULL"),
-					sq.Eq{"lifecycle_logs.container_name": *req.ContainerName},
-				},
-			})
-		} else {
-			q = q.Where(sq.Eq{"lifecycle_logs.container_id": *req.ContainerID})
-		}
-	} else if req.ContainerName != nil {
-		// No resolved ID but a name was given — filter by name so we don't
-		// return every container's lifecycle logs.
-		q = q.Where(sq.Eq{"lifecycle_logs.container_name": *req.ContainerName})
-	}
-	if req.WorkerID != nil {
-		q = q.Where(sq.Eq{"lifecycle_logs.worker_id": *req.WorkerID})
-	}
-
-	if req.Limit == 0 || req.Limit > db.MAX_LIMIT {
+	if req.Limit <= 0 || req.Limit > db.MAX_LIMIT {
 		req.Limit = db.DEFAULT_LIMIT
 	}
-	q = q.Limit(uint64(req.Limit))
-	if req.Offset > 0 {
-		q = q.Offset(uint64(req.Offset))
+	if req.Offset < 0 {
+		req.Offset = 0
 	}
-
-	q = q.OrderBy("lifecycle_logs.recorded_at DESC")
+	filters := sq.And{}
+	if req.WorkerID != nil {
+		filters = append(filters, sq.Eq{"lifecycle_logs.worker_id": *req.WorkerID})
+	}
+	q := logScope{
+		table: "lifecycle_logs", columns: lifecycleLogColumns,
+		containerID: req.ContainerID, containerName: req.ContainerName,
+		filters: filters, limit: req.Limit, offset: req.Offset,
+	}
 
 	qStr, args, err := q.ToSql()
 	if err != nil {
