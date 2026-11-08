@@ -6,6 +6,7 @@ import (
 	"github.com/aidenappl/go-monitor"
 	"github.com/aidenappl/lattice-api/db"
 	"github.com/aidenappl/lattice-api/responder"
+	"github.com/aidenappl/lattice-api/telemetry"
 )
 
 // HandleAdminGetHealth is the detailed health view behind admin auth. The
@@ -17,5 +18,17 @@ func HandleAdminGetHealth(w http.ResponseWriter, r *http.Request) {
 	if err := db.DB.Ping(); err != nil {
 		status, dbStatus = "degraded", "error"
 	}
-	responder.New(w, map[string]any{"status": status, "db": dbStatus, "telemetry": monitor.Stats()})
+	// telemetry_delivery.stalled means events are waiting and none has been
+	// delivered for telemetry.STALL_AFTER: Monitor is not hearing from this
+	// process, so this is the only place it can be seen.
+	delivery := telemetry.Delivery()
+	if delivery.Stalled {
+		status = "degraded"
+	}
+	responder.New(w, map[string]any{
+		"status":             status,
+		"db":                 dbStatus,
+		"telemetry":          monitor.Stats(),
+		"telemetry_delivery": delivery,
+	})
 }
