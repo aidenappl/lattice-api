@@ -149,3 +149,21 @@ func TestNewDDLDoesNotGoInTheLegacyBlock(t *testing.T) {
 			"New DDL must go in db/migrations/NNN_*.sql, not in Init — see the doc comment on RunMigrations.", got, legacyStatementCount)
 	}
 }
+
+// TestMigrationHooksNameFiles catches a hook keyed by a misspelled or renamed
+// file, which would silently never run.
+func TestMigrationHooksNameFiles(t *testing.T) {
+	names, err := migrationFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]bool{}
+	for _, n := range names {
+		have[n] = true
+	}
+	for name := range migrationHooks {
+		if !have[name] {
+			t.Errorf("migration hook %q names no migration file", name)
+		}
+	}
+}

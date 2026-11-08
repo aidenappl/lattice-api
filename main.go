@@ -204,6 +204,7 @@ func main() {
 	admin.HandleFunc("/containers/{id}", middleware.RequireEditor(routers.HandleUpdateContainer)).Methods(http.MethodPut)
 	admin.HandleFunc("/containers/{id}", middleware.RequireEditor(app.containerActionHandler.HandleDeleteContainer)).Methods(http.MethodDelete)
 	admin.HandleFunc("/containers/{id}/logs", routers.HandleGetContainerLogs).Methods(http.MethodGet)
+	admin.HandleFunc("/container-logs/volume", routers.HandleGetContainerLogVolume).Methods(http.MethodGet)
 	admin.HandleFunc("/containers/{id}/lifecycle", routers.HandleGetLifecycleLogs).Methods(http.MethodGet)
 	admin.HandleFunc("/containers/{id}/metrics", routers.HandleGetContainerMetrics).Methods(http.MethodGet)
 	admin.HandleFunc("/containers/{id}/start", middleware.RequireEditor(app.containerActionHandler.HandleStartContainer)).Methods(http.MethodPost)

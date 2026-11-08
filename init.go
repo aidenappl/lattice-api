@@ -18,6 +18,7 @@ import (
 	"github.com/aidenappl/lattice-api/mailer"
 	"github.com/aidenappl/lattice-api/middleware"
 	"github.com/aidenappl/lattice-api/migrate"
+	"github.com/aidenappl/lattice-api/partitions"
 	"github.com/aidenappl/lattice-api/retention"
 	"github.com/aidenappl/lattice-api/routers"
 	"github.com/aidenappl/lattice-api/socket"
@@ -91,6 +92,10 @@ func initApp() *appContext {
 		})
 	}
 
+	// A log table migration 027 left unpartitioned (too large to rewrite on
+	// boot) is reported at every start until an operator partitions it.
+	partitions.CheckStartup(db.DB)
+
 	crypto.Init()
 	retention.Start(db.DB)
 	watcher.Start()
@@ -98,6 +103,7 @@ func initApp() *appContext {
 	mailer.StartEviction()
 	containerNameCache.StartEviction()
 	containerLogs.Start()
+	startLogRateSweeper()
 
 	if err := db.PingDB(db.DB); err != nil {
 		telemetry.Fatal("service.startup.db_unreachable", "failed to ping db: ", err)
