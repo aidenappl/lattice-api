@@ -786,11 +786,13 @@ func handleContainerLog(workerID int, payload map[string]any) {
 	}
 
 	// Resolve container_name to container_id and always store the name
+	stackID := 0
 	if name, ok := payload["container_name"].(string); ok && name != "" {
 		req.ContainerName = &name
 		// A remembered miss is an unmanaged container already warned about.
 		if c, err := containerNameCache.LookupForLog(name); err == nil {
 			req.ContainerID = &c.ID
+			stackID = c.StackID
 		} else if !errors.Is(err, errUnmanagedContainer) {
 			logger.WarnCtx(context.Background(), "container", "could not resolve container name to ID", logger.F{"container_name": name, "error": err})
 		}
@@ -805,6 +807,16 @@ func handleContainerLog(workerID int, payload map[string]any) {
 		}
 	}
 
+	// APL-120: at most the stack's log_lines_per_minute lines per container
+	// are stored; a marker row stands in for the dropped ones.
+	now := time.Now()
+	ok, marker := logLimiter.Allow(req, stackLogLineCaps.For(stackID, now), now)
+	if marker != nil {
+		containerLogs.Add(*marker)
+	}
+	if !ok {
+		return
+	}
 	containerLogs.Add(req)
 }
 

@@ -1,0 +1,21 @@
+-- 027_partition_log_tables.sql
+--
+-- APL-120: container_logs.ibd reached 45 GB and filled the control-plane disk.
+-- Retention's DELETE frees pages inside the file but never returns them to the
+-- filesystem; dropping a day partition does.
+--
+-- The work is the Go hook registered for this file in db/migrate.go
+-- (partitions.Migrate), which runs right after this file:
+--   - skips a table that is already partitioned (a manual run is harmless);
+--   - partitions container_logs and container_metrics by UTC day when the table
+--     is at most 1 GiB: the primary key becomes (id, recorded_at), and
+--     container_logs.id becomes BIGINT;
+--   - leaves a larger table alone and raises retention.unpartitioned (warn) at
+--     every boot. The manual statement and its space needs are in AGENTS.md,
+--     "Log table partitions".
+-- Until a table is partitioned, retention keeps purging it with batched DELETEs.
+--
+-- The guard is in Go, not here, because skipping must be visible (a warning and
+-- a Monitor event), which SQL cannot raise.
+
+SELECT 1;

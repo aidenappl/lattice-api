@@ -111,6 +111,7 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `server.go` | `startServer` — CORS config, `http.Server` with timeouts, TLS toggle, graceful shutdown on SIGINT/SIGTERM (7s drain, then `telemetry.Shutdown` delivers or spools buffered events inside Docker's 10s stop window). |
 | `message_handlers.go` | `configureWorkerHandler` / `configureAdminHandler` — the OnConnect/OnDisconnect/OnMessage callbacks. This is where inbound worker messages are routed by `msg.Type` and fanned out to the admin hub, DB, webhooks, and mailer. `safeGo` bounds handler goroutines (semaphore of 100). |
 | `container_log_batcher.go` | `containerLogs` — buffers container log lines and writes them as multi-row INSERTs (see *Container log lines are batched*). Started in `initApp`, drained in `server.go` on shutdown. |
+| `log_rate_limiter.go` | `logLimiter` / `stackLogLineCaps` — the per-container stored-log cap (APL-120, see *Container log lines are capped*), and the sweeper that stores "lines dropped" markers. |
 | `ws_dispatch.go` | Helper dispatch logic for worker→API messages (heartbeat metrics, container status/sync/logs, lifecycle logs, deployment progress). Referenced by `message_handlers.go`. |
 | `container_cache.go` | 60s in-memory `name → *structs.Container` cache to kill the N+1 lookup on every heartbeat/log/status message. Status/health writes call `Invalidate(name)` so the next read is fresh, and a background `StartEviction` goroutine prunes expired entries to bound memory. |
 | `env/env.go` | All env vars via `getEnv`/`getEnvOrPanic` (incl. optional `ACTIVITY_REPORT_URL`). `ValidateSecurityDefaults()` panics in production on weak `JWT_SIGNING_KEY` / admin password. |
@@ -130,6 +131,7 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `registry/client.go` | Docker Registry v2 HTTP client — `Ping`, `ListRepositories`, `ListTags`, `GetManifestDigest`. |
 | `healthscan/scanner.go` | Periodic worker-vs-DB reconciliation; emits `health_anomalies` to the admin hub. Includes `orphaned_database` / `orphaned_database_volume` from `db_sync` (`UpdateWorkerDatabaseOrphans`), and `low_disk` (`healthscan/low_disk.go`) from each online worker's latest heartbeat metrics (≤5 min old): free = `disk_total_mb − disk_used_mb` under 10% **or** under 5 GB. |
 | `watcher/watcher.go` | Polls registries for mutable-tag re-pushes (digest change) → fires `image.updated` / auto-deploy webhooks. |
+| `partitions/` | Day partitions for `container_logs` and `container_metrics` (APL-120): the partitioning DDL (migration 027's Go hook), the drop/create-ahead maintenance plan retention runs, and the boot-time `retention.unpartitioned` check. See *Log table partitions*. |
 | `retention/retention.go` | Hourly batch purge of old log/metric rows per retention window. Also `database_instance_events` (180d) and soft-deleted `database_snapshots` (90d, gated on `active = 0` via `purgeWhere` — a live snapshot row is the only record of where its remote file lives, so purging by age alone would orphan objects on the destination). |
 | `webhooks/dispatcher.go` | `Fire(event, data)` — async outbound webhooks, optional HMAC-SHA256 signing. `Deliver(ctx, Request)` is the one outbound HTTP path for user/admin-configured URLs (SSRF-safe client, returns status + a 512-byte body snippet); event webhooks and automation `http_request` steps both use it. |
 | `automations/` | The automation executor — the repo's one service layer (see *How code is written here*). `executor.go` (the single run loop, `Fire`/`FireWebhook`/`FireScheduled`/`FailStuckRuns`, run records, budgets), `actions.go` (`kindFor` — THE switch over action types — plus `redeploy_container` and `http_request`), `authorize.go` (the authorisation model, with its reasoning), `store.go` (`Store` interface + `DBStore`, a thin pass-through to `query`). |
@@ -171,9 +173,10 @@ All commands go through the `dev` CLI (`Devfile.yaml`).
   `mariadb:11` container for this.
 - **A `.env` file** (there is `.env.example`). Do not commit it. The server sources it.
 - **Docker** — only needed for `dev up`, and in production for the Docker-socket-mounted
-  self-update path. `go test ./...` does not require Docker. The one opt-in integration test,
-  `query/log_scope_integration_test.go` (`//go:build integration`), needs a throwaway MariaDB
-  named by `LATTICE_TEST_DSN` and skips without it (see *Verification*). There is no
+  self-update path. `go test ./...` does not require Docker. The opt-in integration tests
+  (`//go:build integration`: `query/log_scope_integration_test.go`,
+  `query/container_log_volume_integration_test.go`, `partitions/partitions_integration_test.go`)
+  need a throwaway MariaDB named by `LATTICE_TEST_DSN` and skip without it (see *Verification*). There is no
   `tbtest`/fixtures wiring here.
 
 **Schema:** there is no external migration runner and no `migrations/` SQL files loaded by the
@@ -315,6 +318,16 @@ This repo follows the global Go standards. Specifics and deviations:
   live log view is fed by the admin-hub broadcast, so the delay doesn't show there. Lines without a
   runner timestamp get `CURRENT_TIMESTAMP(6)` explicitly (the column default the single-row insert
   relied on). Do the same for any other per-message write stream that grows.
+- **Container log lines are capped (APL-120).** Before `containerLogs.Add`, `handleContainerLog`
+  asks `logLimiter.Allow` (`log_rate_limiter.go`): each container (keyed by Lattice ID, else worker +
+  name) may store its stack's `stacks.log_lines_per_minute` lines per fixed one-minute window
+  (`INT NOT NULL DEFAULT 1000`, migration 028; `-1` unlimited, `1`–`100000` valid, else 400 from
+  `PUT /stacks/{id}`; unmanaged containers get `structs.LOG_LINES_DEFAULT`). The rest are dropped and
+  one `stderr` row, `[lattice] N log lines dropped: over this stack's limit of L lines per minute`,
+  stamped at the window's end, stands in for them: written when the container's next window opens, or
+  by the 30 s sweeper if it went quiet. Stack limits are cached a minute (`stackLogLimits`) so the log
+  path never reads `stacks` per line. Only *storage* is capped: the admin-hub broadcast (live view)
+  still carries every line.
 - **Audit logging.** State-changing handlers call `logAudit(r, action, entity, id, details)`
   (in `routers/audit.go`). Add an audit call to any new mutating route.
 - **Tests.** Standard `testing`, table-driven, no testify. Present for `crypto`, `jwt`,
@@ -1155,7 +1168,7 @@ import) goes through `stackForUser` (`routers/stack_secrets.go`): non-admins get
 (`mergeMaskedEnvVars`): a key sent as `***` keeps its stored value, so an editor can save without
 having seen the secrets. Only admins may *remove* a key from `secret_env_keys` (403 otherwise),
 since un-marking would reveal it. `PUT /stacks/{id}` also takes `image_prune_keep` (see *Deploy
-strategies*). Deploys read the row directly and always get real values.
+strategies*) and `log_lines_per_minute` (see *Container log lines are capped*). Deploys read the row directly and always get real values.
 Values are not encrypted at rest (neither are non-secret ones) — masking is about who can read
 them through the API.
 | PUT | `/stacks/{id}/compose` | `HandleUpdateCompose` `[E]` |
@@ -1176,6 +1189,7 @@ them through the API.
 | GET / POST | `/stacks/{id}/containers` | `HandleGetContainers` / `HandleCreateContainer` `[E]` |
 | GET / PUT / DELETE | `/containers/{id}` | `HandleGetContainer` / `HandleUpdateContainer` `[E]` / `ContainerActionHandler.HandleDeleteContainer` `[E]` |
 | GET | `/containers/{id}/logs` | `HandleGetContainerLogs` |
+| GET | `/container-logs/volume` | `HandleGetContainerLogVolume` — bytes (message length) and lines stored per container per UTC day, largest first: `?days=1..7` (default 1 = today, else 400), `?limit=` (50, max 500). Rows: `day`, `container_id` (null for unmanaged), `container_name`, `stack_id`, `lines`, `bytes`. Reads every row in the window, so keep `days` small (APL-120) |
 | GET | `/containers/{id}/lifecycle` | `HandleGetLifecycleLogs` |
 | GET | `/containers/{id}/metrics` | `HandleGetContainerMetrics` |
 | POST | `/containers/{id}/{start,stop,kill,restart,pause,unpause,remove,recreate}` | `ContainerActionHandler.*` `[E]` (eight separate routes) |
@@ -1392,8 +1406,8 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
   `ALGORITHM=INPLACE LOCK=NONE` (writes keep flowing), then ship; `IF NOT EXISTS` makes the
   migration a no-op. Production's 2.2M-row `worker_metrics` took 16 s for 022.
 - **Background jobs** (all started in `initApp`): `versions` (GitHub tag poll via git refs, 30m), `retention`
-  (log/metric purge, hourly; windows: container_logs 7d, lifecycle 14d, worker_metrics 30d,
-  container_metrics 7d, deployment_logs 90d, audit_log 180d, database_instance_events 180d,
+  (log/metric purge, hourly; windows: container_logs 7d and container_metrics 7d by dropping day
+  partitions (see *Log table partitions*), lifecycle 14d, worker_metrics 30d, deployment_logs 90d, audit_log 180d, database_instance_events 180d,
   automation_runs 90d), `watcher` (registry digest poll, 5m), `healthscan` (worker-vs-DB
   reconcile, 5m), the snapshot scheduler, and on the same loop the `automation-scheduler` (30s
   tick) and `automation-run-timeout` sweeper (1m). Plus per-connection ping/pong and
@@ -1430,6 +1444,71 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
   workers: on-prem runners reach this API over the LAN via a UniFi DNS override (see
   lattice-runner `AGENTS.md`, Operations).
 
+### Log table partitions (APL-120)
+
+`container_logs.ibd` reached 45 GB of the control plane's 61 GB disk on 2026-11-08: retention's
+`DELETE` frees pages inside an InnoDB file but never returns them to the filesystem. Both
+`container_logs` and `container_metrics` are now **partitioned by UTC day**, and retention drops
+whole days, which frees their disk instantly with no free space needed.
+
+- **Layout** (`partitions/`): `p_old` (everything before the first day; late replays of old lines
+  land here and it is emptied every pass), one `pYYYYMMDD` per day (`VALUES LESS THAN` the next UTC
+  midnight), and `pmax` (`MAXVALUE`, kept empty). `container_logs` uses `RANGE COLUMNS(recorded_at)`
+  (DATETIME, stored as UTC by the API); `container_metrics` uses `RANGE (UNIX_TIMESTAMP(recorded_at))`,
+  because RANGE COLUMNS doesn't take TIMESTAMP.
+- **Key change.** MariaDB requires every unique key to include the partition column, so the primary
+  key becomes `(id, recorded_at)`. `container_logs.id` also becomes `BIGINT` (INT runs out at ~2.1 B
+  rows). Nothing looks a row up by `id` alone; the dedup key `uq_container_log_dedup` already includes
+  `recorded_at`, so `ON DUPLICATE KEY UPDATE id = id` still drops replays.
+- **Retention** (`retention.dropOrPurge`, hourly): splits `pmax` so today and the next two days
+  exist, drops day partitions older than 7 days, truncates `p_old`. A table that isn't partitioned
+  falls back to the old batched `DELETE` with the same window.
+- **Migration 027** (`027_partition_log_tables.sql` plus its Go hook, `migrationHooks` in
+  `db/migrate.go` → `partitions.Migrate`): skips a table that is already partitioned; partitions a
+  table of **at most 1 GiB** (`partitions.MaxAutoBytes`, data + index) on boot; leaves a larger one
+  alone. Partitioning rewrites the whole table and **blocks writes while it copies**, which is fine at
+  a few MB and not at tens of GB. **The hook never fails the boot**: if reading
+  `information_schema` or the ALTER itself fails (live DDL drifted from what the code expects, a
+  lock, no space for the copy), the table is skipped with the error, the hook returns nil and 027 is
+  recorded. Retention keeps the DELETE fallback for it. A skipped table, for either reason, raises
+  **`retention.unpartitioned`** (warn, `table`, `table_bytes` (-1 if unknown), `error` when the
+  ALTER or the read failed) at the hook and again at **every boot** (`partitions.CheckStartup`)
+  until it is partitioned. Alert on that event, and read `error` before following the runbook: a
+  failed ALTER needs its cause fixed (e.g. a unique key without `recorded_at`), not just a quiet
+  window.
+
+**Runbook: partitioning a table that 027 skipped.** Needs free disk of at least the table's size
+(data + indexes, `SELECT DATA_LENGTH + INDEX_LENGTH FROM information_schema.TABLES WHERE
+TABLE_SCHEMA = 'lattice' AND TABLE_NAME = 'container_logs'`) plus headroom, because the copy is
+built beside the original before it is swapped. Inserts on that table block for the copy's duration
+(log lines queue in the batcher, then are stored row by row; expect minutes per few GB). Cheapest
+option first: if the history isn't needed, `TRUNCATE TABLE container_logs` (what 2026-11-08 did)
+and restart lattice-api, so 027's hook partitions the now-empty table at boot. Otherwise, in a quiet
+window, run the DDL that `partitions.Table.PartitionDDL(now)` prints (the integration test
+`partitions/partitions_integration_test.go` shows it), which for `container_logs` has this shape,
+with one day partition per day from 7 days ago to 2 days ahead:
+
+```sql
+ALTER TABLE container_logs
+  MODIFY id BIGINT NOT NULL AUTO_INCREMENT, DROP PRIMARY KEY, ADD PRIMARY KEY (id, recorded_at)
+  PARTITION BY RANGE COLUMNS(recorded_at) (
+    PARTITION p_old VALUES LESS THAN ('2026-11-01 00:00:00'),
+    PARTITION p20261101 VALUES LESS THAN ('2026-11-02 00:00:00'),
+    -- … one per day …
+    PARTITION p20261110 VALUES LESS THAN ('2026-11-11 00:00:00'),
+    PARTITION pmax VALUES LESS THAN (MAXVALUE));
+```
+
+and for `container_metrics`: `MODIFY recorded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, DROP
+PRIMARY KEY, ADD PRIMARY KEY (id, recorded_at) PARTITION BY RANGE (UNIX_TIMESTAMP(recorded_at))
+(PARTITION p_old VALUES LESS THAN (<epoch of the first day>), … , PARTITION pmax VALUES LESS THAN
+MAXVALUE)`. Use the `pYYYYMMDD` / `p_old` / `pmax` names exactly: maintenance parses them. Once a
+table is partitioned, 027 and maintenance pick it up; a run of 027 afterwards is a no-op.
+
+**Finding the noisy containers:** `GET /admin/container-logs/volume?days=1` (bytes per container per
+day). Lower a stack's `log_lines_per_minute` with `PUT /stacks/{id}`, and fix the logging at its
+source.
+
 ### Monitor telemetry
 
 `lattice-api` reports to the **appleby** Monitor zone through `go-monitor` (`telemetry/`).
@@ -1462,6 +1541,7 @@ retries) before they are counted as dropped.
 | `panic.recovered` | error | Every recovered panic, with the stack where it happened: HTTP handlers (`RecoverMiddleware`), worker/admin WebSocket callbacks and pumps, `safeGo`, every background loop and goroutine. |
 | `<resource_type>.<action>.success` | info | A mirror of every `logAudit` call, on the request's ids. Details are left out — they are free text. |
 | `service.startup` / `service.shutdown` | info | Boot (version, spool on/off) and the signal that stopped it. |
+| `retention.unpartitioned` | warn | At every boot while `container_logs` or `container_metrics` is not partitioned by day (migration 027 skipped it as over 1 GiB, or its ALTER failed): `table`, `table_bytes`, `max_auto_bytes`, `runbook`, and `error` when partitioning failed. Retention can't free that table's disk until someone follows *Log table partitions*. |
 | `telemetry.heartbeat` | info | Every 5 min (`telemetry.RunWatchdog`), with go-monitor's counters. Meant to be **missed**: alert on its absence to catch a stalled shipper from outside. |
 | `service.startup.db_unreachable` · `service.startup.bootstrap_failed` · `service.listen_failed` | fatal | Boot failures, flushed before exit. |
 | `service.crashed` | fatal | A panic escaping `main` — the boot's own panics (weak `JWT_SIGNING_KEY`, missing `ENCRYPTION_KEY` in production). |
@@ -1601,6 +1681,9 @@ pre-APL-119 OR query:
 docker run -d --rm --name lattice-it-db -e MARIADB_ROOT_PASSWORD=x -p 127.0.0.1:33991:3306 mariadb:11
 DATABASE_DSN=x JWT_SIGNING_KEY=x LATTICE_TEST_DSN='root:x@tcp(127.0.0.1:33991)/' \
   go test -tags integration -run TestLogScopePlans -v ./query/
+# APL-120: partitioning DDL, size guard, maintenance, volume report on real MariaDB
+DATABASE_DSN=x JWT_SIGNING_KEY=x LATTICE_TEST_DSN='root:x@tcp(127.0.0.1:33991)/' \
+  go test -tags integration -run 'TestMigrate|TestContainerLogVolume' -v ./partitions/ ./query/
 docker rm -f lattice-it-db
 ``` **CI runs all
 four of the above in a `test` job that `build-and-push` depends on**, so unformatted code or a
