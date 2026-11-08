@@ -43,47 +43,9 @@ type ListLogsRequest struct {
 }
 
 func ListContainerLogs(engine db.Queryable, req ListLogsRequest) (*[]structs.ContainerLog, error) {
-	q := sq.Select(logColumns...).From("container_logs")
-
-	if req.WorkerID != nil {
-		q = q.Where(sq.Eq{"container_logs.worker_id": *req.WorkerID})
-	}
-	if req.ContainerID != nil {
-		if req.ContainerName != nil {
-			// Match by container_id OR (container_id IS NULL AND container_name matches)
-			// This catches logs stored before the container name could be resolved to an ID
-			q = q.Where(sq.Or{
-				sq.Eq{"container_logs.container_id": *req.ContainerID},
-				sq.And{
-					sq.Expr("container_logs.container_id IS NULL"),
-					sq.Eq{"container_logs.container_name": *req.ContainerName},
-				},
-			})
-		} else {
-			q = q.Where(sq.Eq{"container_logs.container_id": *req.ContainerID})
-		}
-	} else if req.ContainerName != nil {
-		// No resolved ID but a name was given — filter by name so we don't
-		// return every container's logs.
-		q = q.Where(sq.Eq{"container_logs.container_name": *req.ContainerName})
-	}
-	if req.Stream != nil {
-		q = q.Where(sq.Eq{"container_logs.stream": *req.Stream})
-	}
-
-	if req.Limit == 0 || req.Limit > db.MAX_LIMIT {
-		req.Limit = db.DEFAULT_LIMIT
-	}
-	q = q.Limit(uint64(req.Limit))
-	if req.Offset > 0 {
-		q = q.Offset(uint64(req.Offset))
-	}
-
-	q = q.OrderBy("container_logs.recorded_at DESC")
-
-	qStr, args, err := q.ToSql()
+	qStr, args, err := listContainerLogsQuery(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build sql query: %w", err)
+		return nil, err
 	}
 
 	rows, err := engine.Query(qStr, args...)
@@ -102,6 +64,77 @@ func ListContainerLogs(engine db.Queryable, req ListLogsRequest) (*[]structs.Con
 	}
 
 	return &logs, rows.Err()
+}
+
+// listContainerLogsQuery builds the logs query. Matching by container ID
+// with the name fallback is a UNION ALL of two branches rather than one OR:
+// with the OR, MariaDB could use no per-container index and walked
+// idx_cl_recorded backwards over every container's logs, which took over 10s
+// for a quiet container (APL-113). Each branch is served by its own index
+// (uq_container_log_dedup on container_id, idx_cl_name_recorded on
+// container_name) and
+// is limited to limit+offset rows, so the outer sort only sees those.
+func listContainerLogsQuery(req ListLogsRequest) (string, []any, error) {
+	if req.Limit == 0 || req.Limit > db.MAX_LIMIT {
+		req.Limit = db.DEFAULT_LIMIT
+	}
+	if req.Offset < 0 {
+		req.Offset = 0
+	}
+
+	branch := func(where sq.Sqlizer) sq.SelectBuilder {
+		q := sq.Select(logColumns...).From("container_logs").Where(where)
+		if req.WorkerID != nil {
+			q = q.Where(sq.Eq{"container_logs.worker_id": *req.WorkerID})
+		}
+		if req.Stream != nil {
+			q = q.Where(sq.Eq{"container_logs.stream": *req.Stream})
+		}
+		return q
+	}
+
+	if req.ContainerID != nil && req.ContainerName != nil {
+		// The second branch catches logs stored before the container name
+		// could be resolved to an ID.
+		window := uint64(req.Limit + req.Offset)
+		byID, idArgs, err := branch(sq.Eq{"container_logs.container_id": *req.ContainerID}).
+			OrderBy("container_logs.recorded_at DESC").Limit(window).ToSql()
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to build sql query: %w", err)
+		}
+		byName, nameArgs, err := branch(sq.And{
+			sq.Expr("container_logs.container_id IS NULL"),
+			sq.Eq{"container_logs.container_name": *req.ContainerName},
+		}).OrderBy("container_logs.recorded_at DESC").Limit(window).ToSql()
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to build sql query: %w", err)
+		}
+		qStr := "SELECT * FROM ((" + byID + ") UNION ALL (" + byName + ")) AS container_logs ORDER BY container_logs.recorded_at DESC LIMIT ?"
+		args := append(append(idArgs, nameArgs...), req.Limit)
+		if req.Offset > 0 {
+			qStr += " OFFSET ?"
+			args = append(args, req.Offset)
+		}
+		return qStr, args, nil
+	}
+
+	var where sq.Sqlizer = sq.And{}
+	if req.ContainerID != nil {
+		where = sq.Eq{"container_logs.container_id": *req.ContainerID}
+	} else if req.ContainerName != nil {
+		// No resolved ID but a name was given — filter by name so we don't
+		// return every container's logs.
+		where = sq.Eq{"container_logs.container_name": *req.ContainerName}
+	}
+	q := branch(where).OrderBy("container_logs.recorded_at DESC").Limit(uint64(req.Limit))
+	if req.Offset > 0 {
+		q = q.Offset(uint64(req.Offset))
+	}
+	qStr, args, err := q.ToSql()
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to build sql query: %w", err)
+	}
+	return qStr, args, nil
 }
 
 type CreateContainerLogRequest struct {

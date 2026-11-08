@@ -267,6 +267,13 @@ This repo follows the global Go standards. Specifics and deviations:
   clears it and resets `health_status` to `none`. Test for a configured check with
   `Container.HasHealthCheck()`, never `HealthCheck != nil`: the nil test left cleared containers stuck
   at `starting`. An image's own `HEALTHCHECK` still applies at the next deploy.
+- **`ListContainerLogs` with an ID and a name is a `UNION ALL`, never an `OR`** (APL-113). The
+  name fallback catches logs stored before the container's name resolved to an ID. As one `OR`, it
+  left MariaDB walking `idx_cl_recorded` backwards over every container's logs (>10s for a quiet
+  container). Each branch is index-served (`uq_container_log_dedup` for `container_id`,
+  `idx_cl_name_recorded` from migration `026` for `container_name`) and limited to `limit+offset`
+  before the outer sort. The SQL is built by `listContainerLogsQuery` and pinned by
+  `query/container_logs_list_test.go`.
 - **`containers.status` is `VARCHAR(32)`** (migration `024`), not the original
   `ENUM('running','stopped','error','pending')`: the runner reports `restarting` and container
   actions write `paused`, and both failed with Error 1265, leaving the old status in place. The
