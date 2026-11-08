@@ -29,6 +29,7 @@ func HandleUpdateStack(w http.ResponseWriter, r *http.Request) {
 		EnvVars              *string `json:"env_vars"`
 		SecretEnvKeys        *string `json:"secret_env_keys"`
 		PlacementConstraints *string `json:"placement_constraints"`
+		ImagePruneKeep       *int    `json:"image_prune_keep"`
 		Active               *bool   `json:"active"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -45,6 +46,10 @@ func HandleUpdateStack(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.DeploymentStrategy != nil && !structs.DeploymentStrategy(*body.DeploymentStrategy).IsValid() {
 		responder.SendError(w, http.StatusBadRequest, structs.INVALID_DEPLOYMENT_STRATEGY)
+		return
+	}
+	if body.ImagePruneKeep != nil && !structs.ValidImagePruneKeep(*body.ImagePruneKeep) {
+		responder.SendError(w, http.StatusBadRequest, structs.INVALID_IMAGE_PRUNE_KEEP)
 		return
 	}
 
@@ -100,6 +105,7 @@ func HandleUpdateStack(w http.ResponseWriter, r *http.Request) {
 		EnvVars:              envVars,
 		SecretEnvKeys:        secretKeys,
 		PlacementConstraints: body.PlacementConstraints,
+		ImagePruneKeep:       body.ImagePruneKeep,
 		Active:               body.Active,
 	})
 	if err != nil {

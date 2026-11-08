@@ -20,6 +20,7 @@ var stackColumns = []string{
 	"stacks.secret_env_keys",
 	"stacks.compose_yaml",
 	"stacks.placement_constraints",
+	"stacks.image_prune_keep",
 	"stacks.active",
 	"stacks.updated_at",
 	"stacks.inserted_at",
@@ -39,6 +40,7 @@ func scanStack(row scanner) (*structs.Stack, error) {
 		&s.SecretEnvKeys,
 		&s.ComposeYAML,
 		&s.PlacementConstraints,
+		&s.ImagePruneKeep,
 		&s.Active,
 		&s.UpdatedAt,
 		&s.InsertedAt,
@@ -165,6 +167,7 @@ type UpdateStackRequest struct {
 	SecretEnvKeys        *string
 	ComposeYAML          *string
 	PlacementConstraints *string
+	ImagePruneKeep       *int
 	Active               *bool
 }
 
@@ -223,6 +226,10 @@ func UpdateStack(engine db.Queryable, id int, req UpdateStackRequest) (*structs.
 	}
 	if req.PlacementConstraints != nil {
 		q = q.Set("placement_constraints", *req.PlacementConstraints)
+		hasUpdate = true
+	}
+	if req.ImagePruneKeep != nil {
+		q = q.Set("image_prune_keep", *req.ImagePruneKeep)
 		hasUpdate = true
 	}
 	if req.Active != nil {

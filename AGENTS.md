@@ -128,7 +128,7 @@ that carry runtime state or wire the hubs live in **package `main`** at the root
 | `structs/` | 20 `{Entity}.struct.go` domain types with `json` tags and pointer nullables. |
 | `socket/` | `hub.go` (WorkerHub + WorkerSession), `admin.go` (AdminHub + AdminSession with topic subscriptions), `handler.go` (WorkerHandler — upgrade, read/write pumps, ping/pong), `protocol.go` (all message-type constants + `Envelope`/`IncomingMessage`). |
 | `registry/client.go` | Docker Registry v2 HTTP client — `Ping`, `ListRepositories`, `ListTags`, `GetManifestDigest`. |
-| `healthscan/scanner.go` | Periodic worker-vs-DB reconciliation; emits `health_anomalies` to the admin hub. Includes `orphaned_database` / `orphaned_database_volume` from `db_sync` (`UpdateWorkerDatabaseOrphans`). |
+| `healthscan/scanner.go` | Periodic worker-vs-DB reconciliation; emits `health_anomalies` to the admin hub. Includes `orphaned_database` / `orphaned_database_volume` from `db_sync` (`UpdateWorkerDatabaseOrphans`), and `low_disk` (`healthscan/low_disk.go`) from each online worker's latest heartbeat metrics (≤5 min old): free = `disk_total_mb − disk_used_mb` under 10% **or** under 5 GB. |
 | `watcher/watcher.go` | Polls registries for mutable-tag re-pushes (digest change) → fires `image.updated` / auto-deploy webhooks. |
 | `retention/retention.go` | Hourly batch purge of old log/metric rows per retention window. Also `database_instance_events` (180d) and soft-deleted `database_snapshots` (90d, gated on `active = 0` via `purgeWhere` — a live snapshot row is the only record of where its remote file lives, so purging by age alone would orphan objects on the destination). |
 | `webhooks/dispatcher.go` | `Fire(event, data)` — async outbound webhooks, optional HMAC-SHA256 signing. `Deliver(ctx, Request)` is the one outbound HTTP path for user/admin-configured URLs (SSRF-safe client, returns status + a 512-byte body snippet); event webhooks and automation `http_request` steps both use it. |
@@ -907,6 +907,15 @@ state. **Rollback** (`HandleRollbackDeployment`) rebuilds specs from the previou
 deployment's recorded image/tag (everything else from the live container rows) and dispatches a
 `deploy` with `rollback: true`.
 
+**Post-deploy image prune (APL-86).** `stacks.image_prune_keep` (`INT NOT NULL DEFAULT 2`,
+migration 025; `-1` disables, `0`–`20` valid, else 400 from `PUT /stacks/{id}`) is sent on every
+deploy, rollback and public (token) deploy as `image_prune: {enabled, keep}`
+(`structs.ImagePrunePayload`); watchdog retries copy it. After verification the runner removes the
+stack's unused old images beyond the newest `keep` per repository and logs `images removed` /
+`reclaimed` in the deployment log (lattice-runner `deploy/prune.go`). Runners older than that
+ignore the field; runners with it but an older API assume enabled, keep 2. Rollback to a deployment
+older than the kept images re-pulls its tag. Not yet editable in lattice-web.
+
 ### Automations
 
 An **automation** is a named rule: exactly one **trigger** and an **ordered list of actions**.
@@ -1132,7 +1141,8 @@ import) goes through `stackForUser` (`routers/stack_secrets.go`): non-admins get
 `***`, mirroring global env vars. `PUT` with `env_vars` merges against the stored object
 (`mergeMaskedEnvVars`): a key sent as `***` keeps its stored value, so an editor can save without
 having seen the secrets. Only admins may *remove* a key from `secret_env_keys` (403 otherwise),
-since un-marking would reveal it. Deploys read the row directly and always get real values.
+since un-marking would reveal it. `PUT /stacks/{id}` also takes `image_prune_keep` (see *Deploy
+strategies*). Deploys read the row directly and always get real values.
 Values are not encrypted at rest (neither are non-secret ones) — masking is about who can read
 them through the API.
 | PUT | `/stacks/{id}/compose` | `HandleUpdateCompose` `[E]` |

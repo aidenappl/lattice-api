@@ -257,12 +257,26 @@ func (s *Scanner) scan(ctx context.Context) {
 	// map can't grow unbounded as workers are added and removed over time.
 	s.pruneContainerState(*workers)
 
+	// Low disk comes from heartbeat metrics, one query for every worker.
+	latestMetrics := map[int]*structs.WorkerMetrics{}
+	if all, err := query.GetLatestMetricsForAllWorkers(s.db); err != nil {
+		logger.ErrorCtx(ctx, "healthscan", "failed to load latest worker metrics", logger.F{"error": err})
+	} else {
+		for i := range all {
+			latestMetrics[all[i].WorkerID] = &all[i]
+		}
+	}
+
 	for _, w := range *workers {
 		// Only scan online workers that have reported container state
 		if !s.workerHub.IsConnected(w.ID) {
 			// Check for stale state: DB says containers are running but worker is offline
 			anomalies = append(anomalies, s.checkStaleWorker(ctx, w.ID, w.Name)...)
 			continue
+		}
+
+		if a := lowDiskAnomaly(w.ID, w.Name, latestMetrics[w.ID], time.Now()); a != nil {
+			anomalies = append(anomalies, *a)
 		}
 
 		s.containerStateMu.RLock()

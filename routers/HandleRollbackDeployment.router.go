@@ -11,6 +11,7 @@ import (
 	"github.com/aidenappl/lattice-api/query"
 	"github.com/aidenappl/lattice-api/responder"
 	"github.com/aidenappl/lattice-api/socket"
+	"github.com/aidenappl/lattice-api/structs"
 	"github.com/gorilla/mux"
 )
 
@@ -177,6 +178,7 @@ func (h *DeployHandler) HandleRollbackDeployment(w http.ResponseWriter, r *http.
 		"rollback_of":   targetID,
 		"attempt":       1,
 		"max_retries":   deployMaxRetryCount,
+		"image_prune":   structs.ImagePrunePayload(stack.ImagePruneKeep),
 	}
 
 	if networks, err := query.ListNetworksByStack(db.DB, stack.ID); err == nil && networks != nil && len(*networks) > 0 {
