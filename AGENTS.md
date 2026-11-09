@@ -1353,10 +1353,13 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
   **The target tag is checked in the registry before it is pinned** (`verifyTargetTag`): a tag
   that does not exist is a 400 `tag not found in registry: <repo>:<tag>` and `.env` is left
   untouched. It is skipped (logged, the pull decides) for images outside `REGISTRY_URL`, without
-  registry credentials, or when the registry can't be reached. **lattice-web publishes only
-  `latest`, `main` and `main-<sha>`** — never `vX.Y.Z` — so a web update must name one of those or
-  omit `version`; on 2026-11-08 a `v1.8.8` web pin passed every check and failed only at pull.
+  registry credentials, or when the registry can't be reached. **lattice-web publishes
+  `vX.Y.Z` only from v1.8.10 on** (lattice-web#23, APL-122); older releases have just `latest`,
+  `main` and `main-<sha>`, so pin one of those to go back further. On 2026-11-08 a `v1.8.8` web pin
+  passed every check and failed only at pull for exactly that reason.
 
+  The template `deploy/docker-compose.prod.yml` interpolates both `${LATTICE_API_TAG:-latest}` and
+  `${LATTICE_WEB_TAG:-latest}` and mounts the compose dir read-write (2026-11-09).
   **If the host compose file hard-codes a tag** (no `${LATTICE_WEB_TAG}`), a versioned update is a
   400 `cannot target a version: … does not interpolate ${…}`, and nothing changes; an update
   without `version` still pulls the hard-coded tag. Fix it on the host (an operator change, not
@@ -1495,10 +1498,11 @@ whole days, which frees their disk instantly with no free space needed.
 (data + indexes, `SELECT DATA_LENGTH + INDEX_LENGTH FROM information_schema.TABLES WHERE
 TABLE_SCHEMA = 'lattice' AND TABLE_NAME = 'container_logs'`) plus headroom, because the copy is
 built beside the original before it is swapped. Inserts on that table block for the copy's duration
-(log lines queue in the batcher, then are stored row by row; expect minutes per few GB). Cheapest
-option first: if the history isn't needed, `TRUNCATE TABLE container_logs` (what 2026-11-08 did)
-and restart lattice-api, so 027's hook partitions the now-empty table at boot. Otherwise, in a quiet
-window, run the DDL that `partitions.Table.PartitionDDL(now)` prints (the integration test
+(log lines queue in the batcher, then are stored row by row; expect minutes per few GB). A restart does **not**
+retry: once 027 is recorded in `schema_migrations` its hook never runs again, and `CheckStartup` only
+reports. Cheapest option first: if the history isn't needed, `TRUNCATE TABLE container_logs` and
+run the DDL below straight after it, while the table holds only seconds of rows, so the copy is
+instant. Otherwise, in a quiet window, run the DDL that `partitions.Table.PartitionDDL(now)` prints (the integration test
 `partitions/partitions_integration_test.go` shows it), which for `container_logs` has this shape,
 with one day partition per day from 7 days ago to 2 days ahead:
 
