@@ -20,7 +20,7 @@ services:
       retries: 5
 
   lattice-api:
-    image: ${REGISTRY_URL:-registry.appleby.cloud}/lattice-api:latest
+    image: ${REGISTRY_URL:-registry.appleby.cloud}/lattice-api:${LATTICE_API_TAG:-latest}
     restart: always
     ports:
       - "${API_PORT:-8000}:8000"
@@ -54,14 +54,14 @@ services:
       FORTA_COOKIE_DOMAIN: "${FORTA_COOKIE_DOMAIN:-}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${DOCKER_COMPOSE_DIR:-/opt/lattice}:/opt/lattice:ro
+      - ${DOCKER_COMPOSE_DIR:-/opt/lattice}:/opt/lattice  # read-write: a versioned self-update rewrites .env
       - /root/.docker:/root/.docker
     depends_on:
       mariadb:
         condition: service_healthy
 
   lattice-web:
-    image: ${REGISTRY_URL:-registry.appleby.cloud}/lattice-web:latest
+    image: ${REGISTRY_URL:-registry.appleby.cloud}/lattice-web:${LATTICE_WEB_TAG:-latest}
     restart: unless-stopped
     ports:
       - "${WEB_PORT:-3000}:3000"
