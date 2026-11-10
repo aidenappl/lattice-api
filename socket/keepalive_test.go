@@ -46,8 +46,16 @@ func TestWorkerHubCloseAllSendsGoingAway(t *testing.T) {
 
 	hub.CloseAll(websocket.CloseGoingAway, "server shutting down")
 
+	// OnConnect fires before the handler queues its "connected" hello, so the
+	// hello may or may not reach the wire ahead of the close frame (on macOS it
+	// usually does). Read past data messages: the assertion is that the
+	// connection ends with a 1001 close frame, not a reset (APL-128).
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	_, _, err = conn.ReadMessage()
+	for {
+		if _, _, err = conn.ReadMessage(); err != nil {
+			break
+		}
+	}
 	if !websocket.IsCloseError(err, websocket.CloseGoingAway) {
 		t.Fatalf("read after CloseAll = %v, want a 1001 close frame (not a reset)", err)
 	}
