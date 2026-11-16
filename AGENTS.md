@@ -1310,6 +1310,19 @@ Lattice workers**, which is why local auth exists as a fallback when the SSO IDP
 
 ## Operations
 
+### Lattice releases
+
+A push to `main` is a **release** only when the head commit message (the merge subject) contains
+`[release-patch]`, `[release-minor]` or `[release-major]`: CI bumps the latest `vX.Y.Z` tag, tags the
+image with it and creates the GitHub release. Without a marker CI still builds and pushes a
+SHA-tagged image, but `create-release` is skipped and nothing is released.
+
+**Merged but unreleased is not shipped.** lattice-api rolls out by version through its self-update path, so production keeps running the last release (APL-86 looked shipped while production stayed on old versions). Since HV-138 the resolve-version job says so: a main
+push without a marker gets a `::warning::` annotation ("Built <sha> but no release was cut: the merge
+subject had no [release-patch|minor|major]. Nothing will deploy by version.") and the same text in
+the run's job summary. If you see it and meant to ship, land a follow-up commit or merge whose
+subject carries the marker.
+
 - **Changing a container's environment needs a stack deploy, not a restart.** Restart,
   Recreate, a deploy token's `?container=`, and the `redeploy_container` automation step all
   rebuild the new container from the OLD one (`recreateContainerPayload` sends only
