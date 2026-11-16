@@ -122,6 +122,14 @@ func TestStatements(t *testing.T) {
 	}
 }
 
+func TestDropForeignKeysDDL(t *testing.T) {
+	got := logsTable().DropForeignKeysDDL([]string{"fk_logs_container", "fk_logs_worker"})
+	want := "ALTER TABLE container_logs DROP FOREIGN KEY `fk_logs_container`, DROP FOREIGN KEY `fk_logs_worker`"
+	if got != want {
+		t.Errorf("DropForeignKeysDDL =\n%s\nwant\n%s", got, want)
+	}
+}
+
 // A plan applied and re-planned at the same instant is a fixed point, so
 // running retention twice in an hour does no extra DDL.
 func TestPlanIsIdempotent(t *testing.T) {

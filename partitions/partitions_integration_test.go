@@ -206,6 +206,34 @@ func TestMigrateSkipsLargeTable(t *testing.T) {
 // A table whose live DDL can't take the partitioning (here a unique key
 // without recorded_at, which MariaDB rejects) is reported and skipped: the
 // hook still returns nil so 027 is recorded and the API boots.
+// TestMigrateDropsForeignKeys mirrors installs older than db.Init, whose
+// container_logs still carries fk_logs_container and fk_logs_worker (production
+// on 2026-11-16): partitioning fails with error 1217 until they are dropped.
+func TestMigrateDropsForeignKeys(t *testing.T) {
+	db := openDB(t)
+	mustExec(t, db, "CREATE TABLE workers (id INT AUTO_INCREMENT PRIMARY KEY)")
+	mustExec(t, db, "CREATE TABLE containers (id INT AUTO_INCREMENT PRIMARY KEY)")
+	mustExec(t, db, "INSERT INTO workers (id) VALUES (1)")
+	mustExec(t, db, "INSERT INTO containers (id) VALUES (1)")
+	mustExec(t, db, `ALTER TABLE container_logs
+		ADD CONSTRAINT fk_logs_container FOREIGN KEY (container_id) REFERENCES containers (id) ON DELETE SET NULL,
+		ADD CONSTRAINT fk_logs_worker FOREIGN KEY (worker_id) REFERENCES workers (id) ON DELETE CASCADE`)
+	mustExec(t, db, "INSERT INTO container_logs (container_id, worker_id, message) VALUES (1, 1, 'kept')")
+
+	if err := migrate(db, time.Now(), MaxAutoBytes); err != nil {
+		t.Fatalf("migrate returned %v, want nil", err)
+	}
+	if names, _ := Partitions(db, "container_logs"); len(names) == 0 {
+		t.Fatal("container_logs was not partitioned")
+	}
+	if fks, _ := ForeignKeys(db, "container_logs"); len(fks) != 0 {
+		t.Errorf("foreign keys left behind: %v", fks)
+	}
+	if n := count(t, db, "SELECT COUNT(*) FROM container_logs WHERE message = 'kept'"); n != 1 {
+		t.Errorf("rows after partitioning = %d, want 1", n)
+	}
+}
+
 func TestMigrateSurvivesFailedAlter(t *testing.T) {
 	db := openDB(t)
 	mustExec(t, db, "ALTER TABLE container_logs ADD UNIQUE KEY uq_drift (worker_id, id)")

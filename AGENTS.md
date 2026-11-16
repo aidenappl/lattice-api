@@ -1523,6 +1523,17 @@ PRIMARY KEY, ADD PRIMARY KEY (id, recorded_at) PARTITION BY RANGE (UNIX_TIMESTAM
 MAXVALUE)`. Use the `pYYYYMMDD` / `p_old` / `pmax` names exactly: maintenance parses them. Once a
 table is partitioned, 027 and maintenance pick it up; a run of 027 afterwards is a no-op.
 
+**Foreign keys first.** MariaDB can't partition a table that has foreign keys: the ALTER fails at
+once with `ERROR 1217 … a foreign key constraint fails` and changes nothing. Installs older than
+`db.Init` carry two on `container_logs`, `fk_logs_container` (`ON DELETE SET NULL`) and
+`fk_logs_worker` (`ON DELETE CASCADE`), so run `ALTER TABLE container_logs DROP FOREIGN KEY
+fk_logs_container, DROP FOREIGN KEY fk_logs_worker` before the DDL (list them with `SELECT
+CONSTRAINT_NAME FROM information_schema.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = 'lattice'
+AND TABLE_NAME = 'container_logs'`). Dropping them changes nothing at runtime: containers and workers
+are only ever soft-deleted (`active = 0`), so neither action ever fired. 027's hook drops them itself
+(`partitions.ForeignKeys`). Production was partitioned this way on 2026-11-16: a 1 GB, 1.47M-row
+table took 70 s, no rows were lost, and the rebuild returned 2 GB of disk.
+
 **Finding the noisy containers:** `GET /admin/container-logs/volume?days=1` (bytes per container per
 day). Lower a stack's `log_lines_per_minute` with `PUT /stacks/{id}`, and fix the logging at its
 source.
