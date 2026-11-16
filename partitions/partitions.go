@@ -220,6 +220,35 @@ func Partitions(engine *sql.DB, table string) ([]string, error) {
 	return names, rows.Err()
 }
 
+// ForeignKeys lists the foreign keys a table declares. MariaDB can't partition
+// a table that has any.
+func ForeignKeys(engine *sql.DB, table string) ([]string, error) {
+	rows, err := engine.Query(`SELECT CONSTRAINT_NAME FROM information_schema.REFERENTIAL_CONSTRAINTS
+		WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY CONSTRAINT_NAME`, table)
+	if err != nil {
+		return nil, fmt.Errorf("listing foreign keys of %s: %w", table, err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		names = append(names, n)
+	}
+	return names, rows.Err()
+}
+
+// DropForeignKeysDDL is the ALTER that drops the named foreign keys.
+func (t Table) DropForeignKeysDDL(names []string) string {
+	drops := make([]string, len(names))
+	for i, n := range names {
+		drops[i] = "DROP FOREIGN KEY `" + n + "`"
+	}
+	return fmt.Sprintf("ALTER TABLE %s %s", t.Name, strings.Join(drops, ", "))
+}
+
 // TableBytes is a table's data plus index size as InnoDB reports it.
 func TableBytes(engine *sql.DB, table string) (int64, error) {
 	var n sql.NullInt64
@@ -254,6 +283,12 @@ func Maintain(ctx context.Context, engine *sql.DB, t Table, now time.Time) error
 // partitioned tables are skipped, so a manual run followed by this is
 // harmless. It is migration 027's hook (db/migrate.go). It always returns nil.
 //
+// Installs that predate db.Init carry foreign keys on container_logs
+// (fk_logs_container, fk_logs_worker, from the deleted migrations 003/008/011),
+// and MariaDB can't partition a table with foreign keys. They are dropped
+// first. Neither ever fired: containers and workers are only soft-deleted
+// (active = 0), so their ON DELETE actions had nothing to act on.
+//
 // It never fails the boot: a failed migration leaves lattice-api serving on
 // the old schema, but this one is optional (retention falls back to DELETE), so
 // a table it can't read or can't partition (unexpected live DDL, a lock, no
@@ -283,6 +318,18 @@ func migrate(engine *sql.DB, now time.Time, maxBytes int64) error {
 		if size > maxBytes {
 			reportUnpartitioned(ctx, t, size, nil)
 			continue
+		}
+		fks, err := ForeignKeys(engine, t.Name)
+		if err != nil {
+			reportUnpartitioned(ctx, t, size, err)
+			continue
+		}
+		if len(fks) > 0 {
+			if _, err := engine.Exec(t.DropForeignKeysDDL(fks)); err != nil {
+				reportUnpartitioned(ctx, t, size, fmt.Errorf("dropping foreign keys failed: %w", err))
+				continue
+			}
+			logger.InfoCtx(ctx, "retention", "dropped foreign keys before partitioning", logger.F{"table": t.Name, "foreign_keys": strings.Join(fks, ",")})
 		}
 		if _, err := engine.Exec(t.PartitionDDL(now)); err != nil {
 			reportUnpartitioned(ctx, t, size, fmt.Errorf("partitioning failed: %w", err))
